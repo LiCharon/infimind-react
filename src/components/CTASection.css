@@ -1,0 +1,26 @@
+/* CTA Section */
+.cta-section {
+    background: linear-gradient(135deg, #FD7002 0%, #ff8c00 100%);
+    padding: 4rem 0;
+    text-align: center;
+}
+
+.cta-title {
+    color: #fff;
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 2rem;
+}
+
+@media (max-width: 768px) {
+    .cta-title {
+        font-size: 2rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .cta-title {
+        font-size: 1.8rem;
+    }
+}
+

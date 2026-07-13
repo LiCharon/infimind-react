@@ -1,0 +1,672 @@
+/* Banner Section - 固定背景 */
+.banner-section {
+    scroll-margin-top: 100px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100vh;
+    min-height: clamp(500px, 100vh, 800px);
+    max-height: 100vh;
+    overflow: hidden;
+    background: linear-gradient(135deg, #fafafa 0%, #fff5e6 50%, #ffe4b3 100%);
+    display: flex;
+    align-items: center;
+    z-index: 2;
+    will-change: transform, opacity, filter;
+    /* 移动端优化 */
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+}
+
+.banner-container {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    padding: 0 clamp(3rem, 8vw, 9rem) 0 0; /* 增加右边距 */
+    height: 100%;
+    align-items: center;
+    gap: clamp(1rem, 2vw, 4rem); /* 增加轮播图和右侧内容之间的间距 */
+    box-sizing: border-box;
+}
+
+/* Left Side: Slider */
+.banner-left {
+    flex: 1 1 70%;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    margin-left: 0;
+    padding-left: 0;
+    margin-top: clamp(1rem, 3vh, 3rem);
+}
+
+.banner-slider-wrapper {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    position: relative;
+    overflow: hidden;
+    border-radius: 12px;
+    box-sizing: border-box;
+}
+
+.banner-slider-track {
+    display: flex;
+    width: 300%;
+    height: 100%;
+    transition: transform 0.5s ease-in-out;
+    will-change: transform;
+}
+
+.banner-slide {
+    width: 33.3333%;
+    height: 100%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+
+/* Slider Content */
+.banner-slider-content {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 2rem;
+    overflow-y: auto;
+}
+
+.banner-image-slide {
+    width: 100%;
+    height: 100%;
+    min-height: clamp(300px, 40vh, 400px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(0.25rem, 0.5vh, 0.5rem);
+    padding: clamp(0.25rem, 1vh, 0.5rem) clamp(1rem, 2vw, 1.5rem) clamp(0.4rem, 1vh, 0.8rem);
+    background: transparent;
+    border-radius: 12px;
+    box-sizing: border-box;
+}
+
+/* 上方图片容器 */
+.banner-image-wrapper {
+    width: 100%;
+    max-width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0;
+    position: relative;
+    box-sizing: border-box;
+}
+
+/* 确保图片容器宽度匹配图片实际尺寸 */
+.banner-image-wrapper img {
+    display: block;
+}
+
+/* 下方文字描述 */
+.banner-image-text {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: auto;
+    height: auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: clamp(1rem, 2vh, 1.5rem);
+    margin: 0;
+    text-align: center;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.7) 0%, rgba(0, 0, 0, 0.4) 70%, transparent 100%);
+    z-index: 2;
+    pointer-events: none;
+    box-sizing: border-box;
+    border-radius: 0 0 12px 12px;
+}
+
+.banner-image-title {
+    font-size: clamp(1.2rem, 2.5vw, 2rem);
+    font-weight: 700;
+    color: #ffffff;
+    margin: 0 0 clamp(0.25rem, 0.5vh, 0.5rem) 0;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+    text-align: center;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.banner-image-desc {
+    font-size: 1.1rem;
+    color: #ffffff;
+    line-height: 1.8;
+    margin: 0;
+    text-align: center;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.banner-image-desc:last-child {
+    margin-bottom: 0;
+    color: #ffffff;
+    font-size: 1.05rem;
+}
+
+.banner-slide-image {
+    max-width: 100%;
+    max-height: min(95%, calc(100vh - 200px));
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+    display: block;
+    margin: 0;
+    padding: 0;
+    transition: transform 0.3s ease;
+}
+
+.banner-slide-image:hover {
+    transform: scale(1.01);
+}
+
+.banner-image-placeholder {
+    width: 100%;
+    height: 100%;
+    min-height: 300px;
+    background: linear-gradient(135deg, rgba(253, 112, 2, 0.1) 0%, rgba(255, 140, 0, 0.1) 100%);
+    border: 2px dashed rgba(253, 112, 2, 0.3);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #FD7002;
+    font-size: 1.2rem;
+    text-align: center;
+    padding: 2rem;
+}
+
+/* Slider Controls */
+.slider-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.9);
+    border: none;
+    border-radius: 50%;
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 10;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    color: #333;
+}
+
+.slider-btn:hover {
+    background: rgba(255, 255, 255, 1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transform: translateY(-50%) scale(1.1);
+}
+
+.slider-btn:active {
+    transform: translateY(-50%) scale(0.95);
+}
+
+.slider-btn-prev {
+    left: 1rem;
+}
+
+.slider-btn-next {
+    right: 1rem;
+}
+
+.slider-btn svg {
+    color: #FD7002;
+}
+
+/* Slider Indicators */
+.slider-indicators {
+    position: absolute;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 0.5rem;
+    z-index: 10;
+}
+
+.slider-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    transition: all 0.3s ease;
+    padding: 0;
+}
+
+.slider-indicator:hover {
+    background: rgba(255, 255, 255, 0.8);
+    transform: scale(1.2);
+}
+
+.slider-indicator.active {
+    background: #FD7002;
+    width: 24px;
+    border-radius: 5px;
+}
+
+.slider-title-section {
+    margin-bottom: 2rem;
+    text-align: left;
+}
+
+.slider-main-title {
+    font-size: 3rem;
+    font-weight: 700;
+    color: #000000;
+    margin: 0 0 0.5rem 0;
+    line-height: 1.2;
+    text-align: left;
+}
+
+.slider-subtitle {
+    font-size: 2rem;
+    color: #666;
+    margin: 0;
+    font-weight: 500;
+    text-align: left;
+}
+
+.slider-description {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    max-width: 100%;
+}
+
+.slider-intro {
+    font-size: 1.1rem;
+    color: #333;
+    margin: 0;
+    font-weight: 600;
+    line-height: 1.8;
+}
+
+.slider-text {
+    font-size: 1rem;
+    color: #555;
+    line-height: 1.8;
+    margin: 0;
+    text-align: justify;
+}
+
+.slider-cta {
+    font-size: 1.1rem;
+    color: #FD7002;
+    font-weight: 600;
+    margin: 1rem 0 0 0;
+    text-align: center;
+    padding-top: 1rem;
+    border-top: 2px solid rgba(253, 112, 2, 0.2);
+}
+
+/* Right Side: Content */
+.banner-right {
+    flex: 0 1 30%;
+    min-width: 200px;
+    max-width: 25%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0rem;
+    height: 100%;
+    padding-top: 0;
+    margin-top: clamp(-3rem, -3vh, 0);
+    padding-left: clamp(1rem, 2vw, 1.5rem);
+    padding-right: clamp(2rem, 3vw, 3rem); /* 增加右侧内边距 */
+    box-sizing: border-box;
+}
+
+/* Logo Area */
+.banner-logo {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+}
+
+.banner-logo-img {
+    max-width: min(420px, 100%);
+    width: 100%;
+    height: auto;
+    object-fit: contain;
+    margin: 0;
+    padding: 0;
+}
+
+.banner-logo-placeholder {
+    width: 260px;
+    max-width: 100%;
+    height: 100px;
+    background: linear-gradient(135deg, rgba(253, 112, 2, 0.2) 0%, rgba(255, 140, 0, 0.2) 100%);
+    border: 2px dashed rgba(253, 112, 2, 0.5);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    color: #FD7002;
+    font-weight: bold;
+}
+
+/* Text Area */
+.banner-text {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    position: relative;
+    z-index: 10;
+    pointer-events: auto !important;
+}
+
+.banner-title {
+    font-size: clamp(0.9rem, 1.5vw, 1.1rem);
+    font-weight: 600;
+    color: #333;
+    line-height: 1.2;
+    margin: 0;
+}
+
+.banner-desc {
+    font-size: clamp(0.75rem, 1.2vw, 0.85rem);
+    color: #666;
+    line-height: 1.6;
+    margin: 0;
+}
+
+/* Primary Button */
+.primary-btn {
+    background: linear-gradient(135deg, #FD7002 0%, #ff8c00 100%);
+    color: #fff;
+    text-decoration: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    display: inline-block;
+    border: none;
+    cursor: pointer;
+    position: relative;
+    z-index: 20;
+    pointer-events: auto !important;
+    -webkit-user-select: none;
+    user-select: none;
+    align-self: center;
+}
+
+.primary-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(253, 112, 2, 0.3);
+}
+
+.primary-btn.large {
+    padding: 1rem 2rem;
+    font-size: 1.1rem;
+}
+
+/* Responsive Design - 大屏幕优化 */
+@media (min-width: 1920px) {
+    .banner-container {
+        max-width: 1920px;
+        margin: 0 auto;
+    }
+}
+
+/* Responsive Design - 中等屏幕 */
+@media (max-width: 1400px) {
+    .banner-container {
+        padding: 0 clamp(2.5rem, 7vw, 9rem) 0 0;
+        gap: clamp(2.5rem, 5vw, 5rem); /* 增加间距 */
+    }
+    
+    .banner-right {
+        max-width: 28%;
+        padding-left: clamp(0.75rem, 1.5vw, 1.25rem);
+        padding-right: clamp(1.5rem, 2.5vw, 2.5rem);
+    }
+}
+
+@media (max-width: 1200px) {
+    .banner-container {
+        padding: 0 clamp(2rem, 6vw, 7rem) 0 0;
+        gap: clamp(2rem, 4vw, 4rem); /* 增加间距 */
+    }
+    
+    .banner-right {
+        max-width: 30%;
+        padding-right: clamp(1.5rem, 2.5vw, 2.5rem);
+    }
+}
+
+@media (max-width: 992px) {
+    .banner-section {
+        min-height: 100vh;
+        height: 100vh;
+        /* 移动端确保固定定位正常工作 */
+        position: fixed;
+        -webkit-transform: translateZ(0);
+        transform: translateZ(0);
+    }
+
+    .banner-container {
+        flex-direction: column-reverse;
+        padding: clamp(1.5rem, 4vw, 2rem) clamp(1rem, 3vw, 1.5rem);
+        gap: clamp(1.5rem, 4vw, 2rem); /* 移动端也适当增加间距 */
+        height: 100%;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .banner-left {
+        width: 100%;
+        height: auto;
+        min-height: clamp(250px, 40vh, 300px);
+        flex: 1;
+    }
+
+    .banner-slider-content {
+        padding: 1.5rem;
+    }
+
+    .banner-image-slide {
+        flex-direction: column;
+        gap: clamp(0.25rem, 0.5vh, 0.5rem);
+        padding: clamp(0.25rem, 1vh, 0.5rem) clamp(1rem, 3vw, 1.5rem) clamp(0.4rem, 1vh, 0.8rem);
+    }
+
+    .banner-image-text {
+        position: absolute;
+        bottom: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: auto;
+        height: auto;
+        padding: 1rem;
+        text-align: center;
+    }
+
+    .banner-image-title {
+        font-size: clamp(1.4rem, 4vw, 1.8rem);
+        margin-bottom: clamp(0.8rem, 2vh, 1.2rem);
+        text-align: center;
+    }
+
+    .banner-image-desc {
+        font-size: 1rem;
+        text-align: center;
+        line-height: 1.75;
+    }
+
+    .banner-image-wrapper {
+        width: 100%;
+    }
+
+    .banner-slide-image {
+        max-height: clamp(250px, 40vh, 300px);
+    }
+
+    .slider-main-title {
+        font-size: 2.5rem;
+    }
+
+    .slider-subtitle {
+        font-size: 1.3rem;
+    }
+
+    .slider-text {
+        font-size: 0.95rem;
+    }
+
+    .banner-right {
+        width: 100%;
+        max-width: 100%;
+        align-items: center;
+        text-align: center;
+        padding-top: 0;
+        flex: 0 0 auto;
+        padding-left: clamp(0.5rem, 2vw, 1rem);
+        padding-right: clamp(0.5rem, 2vw, 1rem);
+    }
+
+    .banner-logo {
+        justify-content: center;
+    }
+
+    .banner-text {
+        align-items: center;
+    }
+
+    .banner-title {
+        font-size: clamp(1.4rem, 4vw, 2rem);
+    }
+}
+
+@media (max-width: 576px) {
+    .banner-section {
+        min-height: 100vh;
+        height: 100vh;
+    }
+
+    .banner-container {
+        padding: clamp(1rem, 3vw, 1.5rem) clamp(0.75rem, 2vw, 1rem);
+        gap: clamp(1rem, 3vw, 1.5rem); /* 小屏幕也适当增加间距 */
+    }
+
+    .banner-left {
+        min-height: clamp(200px, 35vh, 250px);
+    }
+
+    .banner-image-slide {
+        flex-direction: column;
+        gap: clamp(0.25rem, 0.5vh, 0.5rem);
+        padding: clamp(0.25rem, 1vh, 0.5rem) clamp(0.75rem, 2vw, 1rem) clamp(0.4rem, 1vh, 0.8rem);
+    }
+
+    .banner-image-text {
+        position: absolute;
+        bottom: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: auto;
+        height: auto;
+        padding: 1rem;
+        text-align: center;
+    }
+
+    .banner-image-title {
+        font-size: clamp(1.2rem, 3.5vw, 1.6rem);
+        margin-bottom: clamp(0.75rem, 1.5vh, 1rem);
+        text-align: center;
+        line-height: 1.3;
+    }
+
+    .banner-image-desc {
+        font-size: 0.95rem;
+        text-align: center;
+        line-height: 1.75;
+        margin-bottom: 0.8rem;
+    }
+
+    .banner-image-wrapper {
+        width: 100%;
+    }
+
+    .banner-slide-image {
+        max-height: clamp(200px, 35vh, 250px);
+    }
+
+    .banner-title {
+        font-size: clamp(1.2rem, 3.5vw, 1.6rem);
+        line-height: 1.3;
+    }
+    
+    .banner-desc {
+        font-size: clamp(0.85rem, 2vw, 0.95rem);
+    }
+
+    .banner-slider-content {
+        padding: 1rem;
+    }
+
+    .slider-main-title {
+        font-size: 1.8rem;
+    }
+
+    .slider-subtitle {
+        font-size: 1rem;
+    }
+
+    .slider-intro {
+        font-size: 0.95rem;
+    }
+
+    .slider-text {
+        font-size: 0.85rem;
+        line-height: 1.6;
+    }
+
+    .slider-cta {
+        font-size: 0.95rem;
+    }
+
+    .primary-btn {
+        padding: 10px 24px;
+        font-size: 1rem;
+    }
+}

@@ -1,0 +1,49 @@
+/* Client Logos */
+.client-logos {
+    background: #f5f5f5;
+    padding: 1rem 0;
+    overflow: hidden;
+}
+
+.logo-scroll {
+    display: flex;
+    animation: scroll 30s linear infinite;
+    gap: 3rem;
+}
+
+.logo-item {
+    flex-shrink: 0;
+    height: 80px;
+    width: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 1rem;
+    background: #fff;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.logo-image {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+}
+
+.logo-item:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+@keyframes scroll {
+    0% {
+        transform: translateX(0);
+    }
+    100% {
+        transform: translateX(-50%);
+    }
+}
+

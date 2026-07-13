@@ -1,0 +1,397 @@
+/* Header Styles */
+.header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(253, 112, 2, 0.2);
+    transition: all 0.3s ease;
+}
+
+.navbar-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: clamp(0.75rem, 1.5vh, 1rem) clamp(2%, 3vw, 2rem);
+    padding-left: clamp(2%, 4vw, 3rem); /* 增加左边距，确保Logo不被遮挡 */
+    max-width: 1400px;
+    margin: 0 auto;
+    box-sizing: border-box;
+}
+
+.navbar-logo {
+    text-decoration: none;
+    color: #333;
+}
+
+.logo-text {
+    font-size: 1.5rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 0.2rem;
+}
+
+.logo-main-image {
+    height: clamp(4rem, 7.5vh, 5rem);
+    width: auto;
+    object-fit: cover;
+    vertical-align: bottom; /* 改为底部对齐 */
+    margin-left: clamp(-3rem, -2vw, -1.5rem);
+    margin-bottom: 0;
+}
+
+.logo-sub {
+    font-size: 1rem;
+    font-weight: 500;
+    color: #052C63;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: flex-end; /* 改为底部对齐，与父容器一致 */
+    gap: 0.5rem;
+}
+
+.logo-company-image {
+    height: clamp(2rem, 4vh, 2.5rem);
+    width: auto;
+    object-fit: contain;
+    vertical-align: bottom; /* 改为底部对齐 */
+    margin-bottom: 0;
+}
+
+.logo-sub-text {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #052C63;
+    margin-bottom: 0;
+    line-height: 1; /* 确保行高不影响对齐 */
+}
+
+.navbar-nav {
+    display: flex;
+    align-items: center;
+}
+
+.nav-list {
+    display: flex;
+    list-style: none;
+    gap: clamp(0.5rem, 1.5vw, 2rem);
+    align-items: center;
+    flex-wrap: nowrap;
+}
+
+.nav-item {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.nav-link {
+    color: #333;
+    text-decoration: none;
+    font-weight: 500;
+    padding: 0.5rem 0;
+    transition: color 0.3s ease;
+    cursor: pointer;
+    white-space: nowrap;
+    font-size: clamp(0.875rem, 1vw, 1rem);
+}
+
+.nav-link:hover,
+.nav-item.active .nav-link {
+    color: #FD7002;
+}
+
+/* Dropdown Styles */
+.dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(253, 112, 2, 0.2);
+    border-radius: 12px;
+    padding: 1.5rem;
+    min-width: min(600px, 90vw);
+    max-width: 90vw;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-10px);
+    transition: all 0.3s ease;
+    box-shadow: 0 20px 40px rgba(253, 112, 2, 0.15);
+}
+
+.nav-item:hover .dropdown-menu,
+.dropdown-menu.show {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.dropdown-section {
+    margin-bottom: 1.5rem;
+}
+
+.dropdown-section:last-child {
+    margin-bottom: 0;
+}
+
+.dropdown-section h4 {
+    color: #333;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    opacity: 0.8;
+}
+
+.product-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.product-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem;
+    color: #666;
+    text-decoration: none;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+.product-item:hover {
+    background: rgba(242, 242, 242, 0.1);
+    color: #FD7002;
+}
+
+.product-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    flex-shrink: 0;
+}
+
+.product-item:hover .product-icon {
+    color: #FD7002;
+}
+
+/* Primary Button */
+.primary-btn {
+    background: linear-gradient(135deg, #FD7002 0%, #ff8c00 100%);
+    color: #fff;
+    text-decoration: none;
+    padding: clamp(0.5rem, 1vw, 0.75rem) clamp(1rem, 2vw, 1.5rem);
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    display: inline-block;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+    font-size: clamp(0.875rem, 1vw, 1rem);
+    flex-shrink: 0;
+}
+
+.navbar-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-shrink: 0;
+    margin-left: clamp(0.5rem, 1vw, 1rem);
+}
+
+.primary-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(253, 112, 2, 0.3);
+}
+
+.primary-btn.large {
+    padding: 1rem 2rem;
+    font-size: 1.1rem;
+}
+
+/* Mobile Menu */
+.mobile-menu-btn {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.mobile-menu-btn span {
+    width: 25px;
+    height: 3px;
+    background: #333;
+    border-radius: 2px;
+    transition: all 0.3s ease;
+}
+
+.mobile-menu-btn.active span:nth-child(1) {
+    transform: rotate(45deg) translate(5px, 5px);
+}
+
+.mobile-menu-btn.active span:nth-child(2) {
+    opacity: 0;
+}
+
+.mobile-menu-btn.active span:nth-child(3) {
+    transform: rotate(-45deg) translate(7px, -6px);
+}
+
+/* Responsive Design - 中等屏幕优化 */
+@media (max-width: 1200px) and (min-width: 769px) {
+    .navbar-container {
+        padding: clamp(0.75rem, 1.5vh, 1rem) clamp(1.5%, 2.5vw, 1.5rem);
+        padding-left: clamp(1.5%, 3vw, 2rem);
+    }
+    
+    .nav-list {
+        gap: clamp(0.75rem, 1.2vw, 1.5rem);
+    }
+    
+    .nav-link {
+        font-size: clamp(0.8rem, 0.9vw, 0.95rem);
+        padding: 0.5rem clamp(0.25rem, 0.5vw, 0.5rem);
+    }
+    
+    .logo-main-image {
+        height: clamp(3.5rem, 6vh, 4.5rem);
+        margin-left: clamp(-2rem, -1.5vw, -1.5rem);
+    }
+    
+    .logo-sub-text {
+        font-size: clamp(0.75rem, 0.8vw, 0.85rem);
+    }
+    
+    .logo-company-image {
+        height: clamp(1.75rem, 3.5vh, 2.25rem);
+    }
+    
+    .dropdown-menu {
+        min-width: min(500px, 85vw);
+        max-width: 85vw;
+        padding: 1.25rem;
+    }
+    
+    .primary-btn {
+        padding: clamp(0.5rem, 0.8vw, 0.65rem) clamp(0.875rem, 1.5vw, 1.25rem);
+        font-size: clamp(0.8rem, 0.9vw, 0.95rem);
+    }
+}
+
+/* Responsive Design - 小屏幕（平板横屏） */
+@media (max-width: 992px) and (min-width: 769px) {
+    .nav-list {
+        gap: clamp(0.5rem, 1vw, 1rem);
+    }
+    
+    .nav-link {
+        font-size: clamp(0.75rem, 0.85vw, 0.9rem);
+    }
+    
+    .navbar-right {
+        margin-left: 0.5rem;
+    }
+}
+
+/* Responsive Design - 移动端 */
+@media (max-width: 768px) {
+    .navbar-container {
+        padding: clamp(0.75rem, 1.5vh, 1rem) clamp(3%, 4vw, 1.5rem);
+        padding-left: clamp(4%, 5vw, 2rem); /* 移动端也增加左边距 */
+    }
+    
+    .logo-main-image {
+        height: clamp(3.5rem, 4.5vh, 4.5rem);
+        margin-left: clamp(-1.5rem, -2vw, -1rem); /* 移动端也向左移动 */
+    }
+    
+    .navbar-nav {
+        display: none;
+    }
+    
+    .navbar-nav.active {
+        display: flex;
+        position: fixed;
+        top: clamp(70px, 10vh, 80px);
+        left: 0;
+        right: 0;
+        background: #FFFEFD;
+        backdrop-filter: blur(20px);
+        flex-direction: column;
+        padding: clamp(1.5rem, 4vw, 2rem);
+        border-top: 1px solid rgba(0, 0, 0, 0.1);
+        max-height: calc(100vh - clamp(70px, 10vh, 80px));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .nav-list {
+        flex-direction: column;
+        width: 100%;
+        gap: clamp(0.75rem, 2vw, 1rem);
+        align-items: stretch;
+    }
+    
+    .nav-item {
+        width: 100%;
+    }
+    
+    .nav-link {
+        display: block;
+        padding: clamp(0.75rem, 2vw, 1rem);
+        font-size: clamp(1rem, 3vw, 1.125rem);
+        color: #858585;
+        text-align: left;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    }
+    
+    .nav-link:hover {
+        background: rgba(214, 210, 210, 0.1);
+        color: #FD7002;
+    }
+    
+    .dropdown-menu {
+        position: static;
+        display: block;
+        opacity: 1;
+        visibility: visible;
+        transform: none;
+        min-width: 100%;
+        max-width: 100%;
+        margin-top: 0.5rem;
+        margin-left: 1rem;
+        background: #FFFEFD;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .navbar-right {
+        display: none;
+    }
+    
+    .navbar-right.mobile-visible {
+        display: flex;
+        width: 100%;
+        margin-top: 1rem;
+        margin-left: 0;
+    }
+    
+    .navbar-right.mobile-visible .primary-btn {
+        width: 100%;
+        text-align: center;
+        justify-content: center;
+        padding: clamp(0.875rem, 2.5vw, 1rem) clamp(1.5rem, 4vw, 2rem);
+        font-size: clamp(1rem, 3vw, 1.125rem);
+    }
+    
+    .mobile-menu-btn {
+        display: flex;
+    }
+}
+
+

@@ -1,0 +1,42 @@
+[
+  {
+    "name": "一般住宅房屋租赁合同",
+    "contract_type": "租赁合同",
+    "industry": "通用",
+    "description": "从 一般住宅房屋租赁合同.docx 导入的合同模板",
+    "source_file": "一般住宅房屋租赁合同.docx",
+    "text_file": "一般住宅房屋租赁合同.txt"
+  },
+  {
+    "name": "一般商品买卖合同",
+    "contract_type": "买卖合同",
+    "industry": "通用",
+    "description": "从 一般商品买卖合同.docx 导入的合同模板",
+    "source_file": "一般商品买卖合同.docx",
+    "text_file": "一般商品买卖合同.txt"
+  },
+  {
+    "name": "一般股权转让合同（部分股权转让、详细版）",
+    "contract_type": "股权转让合同",
+    "industry": "通用",
+    "description": "从 一般股权转让合同（部分股权转让、详细版）.docx 导入的合同模板",
+    "source_file": "一般股权转让合同（部分股权转让、详细版）.docx",
+    "text_file": "一般股权转让合同（部分股权转让、详细版）.txt"
+  },
+  {
+    "name": "主播独家经纪合作合同",
+    "contract_type": "经纪合同",
+    "industry": "通用",
+    "description": "从 主播独家经纪合作合同.docx 导入的合同模板",
+    "source_file": "主播独家经纪合作合同.docx",
+    "text_file": "主播独家经纪合作合同.txt"
+  },
+  {
+    "name": "广告投放类年度合同",
+    "contract_type": "广告合同",
+    "industry": "通用",
+    "description": "从 广告投放类年度合同.docx 导入的合同模板",
+    "source_file": "广告投放类年度合同.docx",
+    "text_file": "广告投放类年度合同.txt"
+  }
+]
