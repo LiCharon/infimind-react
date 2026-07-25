@@ -12,6 +12,16 @@ dist
 dist-ssr
 *.local
 
+# SQLite runtime journals; the knowledge base database itself is versioned.
+*.db-shm
+*.db-wal
+server/knowledge-base/evaluation-report.json
+
+# Temporary archives and deployment snapshots
+*.zip
+agent-api-v2/
+.zcode/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -25,4 +35,3 @@ dist-ssr
 
 # Auto-generated HTML file
 index.html
-

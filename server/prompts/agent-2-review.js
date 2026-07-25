@@ -32,9 +32,11 @@ export const AGENT_2_SYSTEM_PROMPT = `你是法飞飞的合同审查与批注 Ag
 7. evidence 必须是数组，未使用时输出 []；replacement 无法可靠给出时输出空字符串。不得编造金额、比例、期限、利率或管辖地。
 
 JSON 形状示例（仅示例字段形状，内容必须来自本合同）：
-{"conclusion":"……","findings":[{"level":"高","title":"……","location":"第X条","quote":"原文逐字摘录……","risk":"……","advice":"……","replacement":"","evidence":["E1"]}],"completeness":["……"]}`
+{"conclusion":"……","findings":[{"level":"高","title":"……","location":"第X条","quote":"原文逐字摘录……","risk":"……","advice":"……","replacement":"","evidence":["E1"]}],"completeness":["……"]}
 
-export function buildReviewUserMessage({ contractText, analysisReport, evidence, reviewPlan, userInstruction }) {
+支持多轮审查：当用户消息末尾出现「第X轮审查（共N轮）」和「前几轮已发现以下问题」清单时，本轮的目标是补充此前遗漏的新问题——不要重复已列出的问题，只输出尚未覆盖的风险或需完善事项。若确信已无新问题，返回空 findings 数组（completeness 字段仍可补充），不要为了凑数重复或改写已有问题。`
+
+export function buildReviewUserMessage({ contractText, analysisReport, evidence, reviewPlan, userInstruction, round = 1, previousFindings = [] }) {
   const evidenceSection = (evidence || []).slice(0, 12).map((item, index) => {
     const roleLabel = item.referenceRole === 'excellent_template' ? '正向模板条款' : item.kind === 'risk_rule' ? '风险反例规则' : '参考条款'
     const heading = [item.clauseNo, item.title, item.category].filter(Boolean).join('｜')
@@ -44,5 +46,11 @@ export function buildReviewUserMessage({ contractText, analysisReport, evidence,
     ? `${reviewPlan.contractType}；${reviewPlan.topics.map((topic) => `${topic.label}（${topic.priority}）`).join('、')}`
     : '未生成；请按合同原文审查。'
 
-  return `# 用户关注点\n${userInstruction?.trim() || '无；请按通用商业合同标准审查。'}\n\n# 审查计划\n${planSection}\n\n# 合同原文\n${contractText}\n\n# 结构分析报告\n${analysisReport}\n\n# 知识库证据\n${evidenceSection}\n\n请严格按系统要求输出 JSON。`
+  let suffix = '\n\n请严格按系统要求输出 JSON。'
+  if (round > 1 && Array.isArray(previousFindings) && previousFindings.length) {
+    const list = previousFindings.map((item, index) => `${index + 1}. 【${item.level || '风险'}】${item.title}${item.location ? `（${item.location}）` : ''}`).join('\n')
+    suffix = `\n\n# 第 ${round} 轮审查（共 3 轮）\n这是多轮审查的第 ${round} 轮。前几轮已发现以下 ${previousFindings.length} 个问题，请勿重复：\n${list}\n\n本轮请只输出此前遗漏的新问题（尚未在上面清单中出现的风险或需完善事项）。逐条给出完整 JSON 字段（level/title/location/quote/risk/advice/replacement/evidence）。若确信已无新问题，返回空 findings 数组。仍按系统要求输出单一 JSON 对象。`
+  }
+
+  return `# 用户关注点\n${userInstruction?.trim() || '无；请按通用商业合同标准审查。'}\n\n# 审查计划\n${planSection}\n\n# 合同原文\n${contractText}\n\n# 结构分析报告\n${analysisReport}\n\n# 知识库证据\n${evidenceSection}${suffix}`
 }

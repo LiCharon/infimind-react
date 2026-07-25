@@ -203,5 +203,9 @@
     .section-title {
         font-size: 2rem;
     }
-}
 
+    .product-display {
+        min-height: 460px;
+    }
+
+}

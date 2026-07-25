@@ -278,10 +278,11 @@ const Header = () => {
                       {contractRewriteItems.map((item, index) => {
                         const IconComponent = item.icon
                         return (
-                          <Link 
+                          <Link
                             key={index}
                             to={item.to}
                             className="product-item"
+                            reloadDocument
                             onClick={() => {
                               setIsMobileMenuOpen(false)
                               setActiveDropdown(null)

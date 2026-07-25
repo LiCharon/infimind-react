@@ -5,9 +5,12 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowLeft,
   Brain,
+  ChevronDown,
   ChevronLeft,
+  CircleDollarSign,
   Copy,
   Download,
+  ExternalLink,
   FileText,
   FolderOpen,
   History,
@@ -17,8 +20,8 @@ import {
   PanelLeft,
   PenLine,
   Plus,
+  RefreshCw,
   Send,
-  Sparkles,
   Trash2,
   X,
   Zap
@@ -26,45 +29,12 @@ import {
 import './ContractRewritePage.css'
 
 const REVIEW_ENDPOINT = '/api/contract-rewrite'
-const FINALIZE_ENDPOINT = '/api/contract-finalize'
 const CHAT_ENDPOINT = '/api/contract-chat'
+const BALANCE_ENDPOINT = '/api/account/balance'
 const ACCEPTED = '.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp'
 const MAX_FILE_SIZE = 80 * 1024 * 1024
 const THREAD_STORAGE_KEY = 'fafee-contract-threads-v1'
 const TASK_STORAGE_KEY = 'fafee-contract-tasks-v1'
-const DEMO_DOCUMENT = `# 商业合作协议（审查修订稿）
-
-甲方：__________
-
-乙方：__________
-
-根据《中华人民共和国民法典》及相关法律法规，甲、乙双方在平等、自愿、诚实信用的基础上，就合作事宜达成如下协议。
-
-## 第一条 合作内容
-
-1.1 乙方应按照双方确认的《项目需求说明书》完成服务。该说明书应明确约定交付成果、质量要求、完成期限和验收标准，并作为本协议附件。
-
-## 第二条 交付与验收
-
-2.1 乙方应于约定交付日前不少于五个工作日书面通知甲方。甲方在收到全部交付物后十个工作日内完成验收；如发现不符合约定的情形，有权要求乙方在合理期限内免费修复、补交或重新交付。
-
-2.2 未经甲方书面验收合格，不视为甲方放弃对交付物的质量、性能或隐蔽瑕疵提出异议的权利。
-
-## 第三条 费用与支付
-
-3.1 本协议含税总价为人民币【    】元。乙方应在甲方付款前开具合法有效的增值税专用发票。
-
-3.2 甲方在验收合格并收到前款发票后【    】个工作日内支付相应款项。任何付款不构成对乙方履约质量的最终确认。
-
-## 第四条 违约责任
-
-4.1 乙方逾期交付的，每逾期一日，应按逾期未交付部分对应价款的万分之【    】向甲方支付违约金；逾期超过【    】日的，甲方有权解除协议并要求乙方赔偿损失。
-
-4.2 因乙方交付不符合约定导致甲方损失的，乙方应赔偿甲方因此遭受的全部直接损失及合理维权费用。
-
-## 第五条 争议解决
-
-5.1 因本协议引起的或与本协议有关的争议，双方应先友好协商；协商不成的，任一方可向【    】有管辖权的人民法院提起诉讼。`
 
 const getExtension = (name = '') => name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
 const isSupported = (file) => ACCEPTED.includes(getExtension(file.name)) && file.size <= MAX_FILE_SIZE
@@ -74,54 +44,89 @@ const stripLegacyFileMarkers = (text = '') => text
   .split('\n')
   .filter((line) => !/^===\s*文件\s*[：:]/.test(line.trim()))
   .join('\n')
-const normalizeDraftPlaceholders = (text = '') => text
-  .replace(/【\s*待填写[^】]*】/g, '____')
-  .replace(/\[\s*待填写[^\]]*\]/g, '____')
 const createThread = (title = '新对话', taskId = null) => ({ id: createId('thread'), title, taskId, createdAt: Date.now(), updatedAt: Date.now(), messages: [] })
-const readStorage = (key, fallback) => {
+const asText = (value, fallback = '') => typeof value === 'string' ? value : fallback
+const asTimestamp = (value, fallback = Date.now()) => Number.isFinite(Number(value)) ? Number(value) : fallback
+const normalizeStoredMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return null
+  const files = Array.isArray(message.files)
+    ? message.files
+      .filter((file) => file && typeof file === 'object' && !Array.isArray(file))
+      .map((file) => ({
+        ...file,
+        name: asText(file.name, '合同文件'),
+        size: Number.isFinite(Number(file.size)) ? Number(file.size) : 0
+      }))
+    : []
+  return {
+    ...message,
+    id: asText(message.id, createId('message')),
+    role: message.role === 'user' ? 'user' : 'assistant',
+    content: asText(message.content),
+    status: asText(message.status),
+    originalText: asText(message.originalText),
+    contractText: asText(message.contractText),
+    rewrite: asText(message.rewrite),
+    files,
+    revisions: Array.isArray(message.revisions)
+      ? message.revisions.filter((rev) => rev && typeof rev === 'object' && !Array.isArray(rev))
+      : [],
+    rewriteStats: message.rewriteStats && typeof message.rewriteStats === 'object' ? message.rewriteStats : null,
+    reviewRounds: Array.isArray(message.reviewRounds)
+      ? message.reviewRounds.filter((item) => item && typeof item === 'object' && !Array.isArray(item)).map((item) => ({
+          round: Number.isFinite(Number(item.round)) ? Number(item.round) : 0,
+          newCount: Number.isFinite(Number(item.newCount)) ? Number(item.newCount) : 0,
+          newFindings: Array.isArray(item.newFindings) ? item.newFindings.filter((f) => f && typeof f === 'object') : []
+        }))
+      : [],
+    createdAt: asTimestamp(message.createdAt)
+  }
+}
+const normalizeStoredThreads = (value) => {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((thread) => {
+    if (!thread || typeof thread !== 'object' || Array.isArray(thread)) return []
+    const messages = Array.isArray(thread.messages)
+      ? thread.messages.map(normalizeStoredMessage).filter(Boolean)
+      : []
+    return [{
+      ...thread,
+      id: asText(thread.id, createId('thread')),
+      title: asText(thread.title, '历史对话'),
+      taskId: typeof thread.taskId === 'string' ? thread.taskId : null,
+      createdAt: asTimestamp(thread.createdAt),
+      updatedAt: asTimestamp(thread.updatedAt, asTimestamp(thread.createdAt)),
+      messages
+    }]
+  })
+}
+const normalizeStoredTasks = (value) => {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((task) => {
+    if (!task || typeof task !== 'object' || Array.isArray(task)) return []
+    const threadId = asText(task.threadId)
+    if (!threadId) return []
+    return [{
+      ...task,
+      id: asText(task.id, createId('task')),
+      title: asText(task.title, '历史审查任务'),
+      prompt: asText(task.prompt),
+      mode: task.mode === 'fast' ? 'fast' : 'thinking',
+      threadId,
+      createdAt: asTimestamp(task.createdAt)
+    }]
+  })
+}
+const readStorage = (key, fallback, normalize) => {
   try {
     const value = JSON.parse(window.localStorage.getItem(key) || '')
-    return Array.isArray(value) ? value : fallback
+    return normalize(value)
   } catch { return fallback }
 }
+const writeStorage = (key, value) => {
+  try { window.localStorage.setItem(key, JSON.stringify(value)) } catch { /* 浏览器禁用或存储空间不足时不阻断页面 */ }
+}
 const displayTitle = (content, fallback = '新对话') => content.trim().replace(/\s+/g, ' ').slice(0, 22) || fallback
-
-// 识别「【批注】…」「【风险批注】…」标记行
-const ANNOTATION_RE = /^【\s*(?:风险批注|批注)\s*】\s*(.*)$/
-const isAnnotationLine = (line) => ANNOTATION_RE.test((line || '').trim())
-
-// 将合同修订稿拆分为标题、摘要、正文三段。按已知章节名切分，避免与「## 第X条」条款标题冲突。
-function parseContractDocument(text) {
-  const lines = text.split('\n')
-  let title = ''
-  const summaryLines = []
-  const bodyLines = []
-  let section = 'body' // 默认按正文处理，兼容没有摘要段的纯合同
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (!title && /^#\s+/.test(line)) { title = line.replace(/^#\s+/, '').trim(); continue }
-    if (/^##\s*修订与待确认摘要/.test(line)) { section = 'summary'; continue }
-    if (/^##\s*合同正文/.test(line)) { section = 'body'; continue }
-    if (/^##\s*签署页/.test(line)) { section = 'body'; bodyLines.push('## 签署页'); continue }
-    if (section === 'summary') summaryLines.push(raw)
-    else bodyLines.push(raw)
-  }
-  return { title, summaryText: summaryLines.join('\n').trim(), bodyLines }
-}
-
-// 从全文中提取所有「【风险批注】/【批注】」内容，供侧栏汇总展示。
-function extractAnnotations(text) {
-  const out = []
-  for (const raw of (text || '').split('\n')) {
-    const m = (raw || '').trim().match(ANNOTATION_RE)
-    if (m) out.push(m[1].trim())
-  }
-  return out
-}
-
-// 风险确认页只能使用服务端 ReviewSession 返回的 findings。这里不解析 Markdown、
-// 不扫描原文中的历史【风险批注】标记，也不按标题或关键词重新猜测位置。
-const messageAnnotations = (message) => Array.isArray(message?.annotations) ? message.annotations : []
 
 const LEVEL_META = {
   高: { key: 'high', label: '高风险', cls: 'level-high' },
@@ -130,112 +135,49 @@ const LEVEL_META = {
 }
 const levelMeta = (level) => LEVEL_META[level] || LEVEL_META.中
 
-// 将正文逐行解析为结构化块；同时回溯标记「被批注」的上一条条款。
-function parseBodyBlocks(lines) {
-  const trimmed = lines.map((line) => (line || '').trim())
-  const annotationIdx = new Set()
-  for (let i = 0; i < trimmed.length; i += 1) if (isAnnotationLine(trimmed[i])) annotationIdx.add(i)
-  const annotatedIdx = new Set()
-  annotationIdx.forEach((i) => {
-    for (let j = i - 1; j >= 0; j -= 1) {
-      if (trimmed[j]) { annotatedIdx.add(j); break }
-    }
-  })
-  const blocks = []
-  let listBuffer = []
-  const flushList = (key) => {
-    if (listBuffer.length) { blocks.push({ type: 'list', items: listBuffer, key }); listBuffer = [] }
-  }
-  lines.forEach((raw, i) => {
-    const line = trimmed[i]
-    if (annotationIdx.has(i)) { flushList(`list-${i}`); blocks.push({ type: 'annotation', text: line.replace(ANNOTATION_RE, '$1').trim(), key: `anno-${i}` }); return }
-    if (!line) { flushList(`list-${i}`); return }
-    const heading = line.match(/^(#{2,4})\s+(.+)$/)
-    if (heading) { flushList(`list-${i}`); blocks.push({ type: 'heading', level: heading[1].length, text: heading[2], key: `h-${i}` }); return }
-    const item = line.match(/^[-*+]\s+(.+)$/)
-    if (item) { listBuffer.push(item[1]); return }
-    blocks.push({ type: 'clause', text: line, annotated: annotatedIdx.has(i), key: `p-${i}` })
-  })
-  flushList('list-final')
-  return blocks
+const ACTION_META = {
+  modify: { label: '修订', cls: 'action-modify' },
+  add: { label: '新增', cls: 'action-add' },
+  delete: { label: '删除', cls: 'action-delete' }
 }
+const actionMeta = (action) => ACTION_META[action] || ACTION_META.modify
 
-function ContractDocument({ text, comments: showAnnotations = true }) {
-  const { title, summaryText, bodyLines } = useMemo(() => parseContractDocument(text), [text])
-  const bodyBlocks = useMemo(() => parseBodyBlocks(bodyLines), [bodyLines])
-  const visible = showAnnotations !== false
-  return (
-    <article className="contract-document">
-      {title && <h1 className="contract-title">{title}</h1>}
-      {summaryText && (
-        <section className="contract-summary">
-          <div className="summary-head"><Sparkles size={15} /><span>修订与待确认摘要</span></div>
-          <div className="summary-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{summaryText}</ReactMarkdown></div>
-        </section>
-      )}
-      {bodyBlocks.length > 0 && (
-        <section className="contract-body">
-          {bodyBlocks.map((block) => {
-            if (block.type === 'heading') {
-              const Tag = `h${Math.min(block.level + 1, 4)}`
-              return <Tag className="clause-heading" key={block.key}>{block.text}</Tag>
-            }
-            if (block.type === 'list') {
-              return <ul className="clause-list" key={block.key}>{block.items.map((item, idx) => <li key={idx}>{inline(item)}</li>)}</ul>
-            }
-            if (block.type === 'annotation') {
-              if (!visible) return null
-              return (
-                <div className="risk-annotation" key={block.key}>
-                  <span className="risk-badge">【风险批注】</span>
-                  <span className="risk-text">{inline(block.text)}</span>
-                </div>
-              )
-            }
-            return <p className={`clause-text ${block.annotated && visible ? 'clause-flagged' : ''}`} key={block.key}>{inline(block.text)}</p>
-          })}
-        </section>
-      )}
-    </article>
-  )
-}
-
-// 阶段1文档：原文 + 内联批注（可勾选采纳）。只负责渲染滚动内容，工具栏/确认栏由外层文档面板渲染。
-function ReviewDocument({ originalText, annotations, selectedIds, onToggle }) {
-  const lines = useMemo(() => stripLegacyFileMarkers(originalText).split('\n'), [originalText])
-  // 服务端已验证每条批注的行号和逐字原文摘录；前端只按该定位结果渲染，不再猜测位置。
+// 修订稿文档：原合同按行渲染，每条修订块以「行内三明治视图」插在对应条款下方。
+// 原句、行号、风险等级均来自服务端 buildReviewResult（可信），Agent 3 只产出改写文本与批注说明。
+function RevisionDocument({ contractText, revisions }) {
+  const lines = useMemo(() => stripLegacyFileMarkers(contractText || '').split('\n'), [contractText])
   const { byLine, flaggedLines } = useMemo(() => {
     const map = new Map()
     const flagged = new Set()
-    annotations.forEach((anno) => {
-      const start = Number.isInteger(anno.lineStart) ? anno.lineStart : -1
-      const end = Number.isInteger(anno.lineEnd) ? anno.lineEnd : start
+    ;(Array.isArray(revisions) ? revisions : []).forEach((rev) => {
+      const start = Number.isInteger(rev.lineStart) ? rev.lineStart : -1
+      const end = Number.isInteger(rev.lineEnd) ? rev.lineEnd : start
       if (start < 0 || end < start || end >= lines.length) return
       for (let line = start; line <= end; line += 1) flagged.add(line)
       if (!map.has(end)) map.set(end, [])
-      map.get(end).push(anno)
+      map.get(end).push(rev)
     })
     return { byLine: map, flaggedLines: flagged }
-  }, [annotations, lines.length])
+  }, [revisions, lines.length])
   return (
-    <article className="contract-document review-document">
+    <article className="contract-document revision-document">
       <section className="contract-body">
         {lines.map((raw, i) => {
           const line = raw.trim()
-          const annos = byLine.get(i) || []
+          const revs = byLine.get(i) || []
           const flagged = flaggedLines.has(i)
-          if (!line) return annos.length ? <div className="inline-annotations" key={`gap-${i}`}>{annos.map((a) => <AnnotationCard key={a.id} anno={a} selected={selectedIds.includes(a.id)} onToggle={onToggle} />)}</div> : null
+          if (!line) return revs.length ? <div className="revision-stack" key={`gap-${i}`}>{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div> : null
           const heading = line.match(/^(#{1,4})\s+(.+)$/)
           if (heading) {
             const Tag = `h${Math.min(heading[1].length + 1, 4)}`
             return <React.Fragment key={`l-${i}`}>
               <Tag className={`clause-heading ${flagged ? 'clause-flagged' : ''}`}>{heading[2]}</Tag>
-              {annos.length > 0 && <div className="inline-annotations">{annos.map((a) => <AnnotationCard key={a.id} anno={a} selected={selectedIds.includes(a.id)} onToggle={onToggle} />)}</div>}
+              {revs.length > 0 && <div className="revision-stack">{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div>}
             </React.Fragment>
           }
           return <React.Fragment key={`l-${i}`}>
             <p className={`clause-text ${flagged ? 'clause-flagged' : ''}`}>{inline(line)}</p>
-            {annos.length > 0 && <div className="inline-annotations">{annos.map((a) => <AnnotationCard key={a.id} anno={a} selected={selectedIds.includes(a.id)} onToggle={onToggle} />)}</div>}
+            {revs.length > 0 && <div className="revision-stack">{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div>}
           </React.Fragment>
         })}
       </section>
@@ -243,22 +185,85 @@ function ReviewDocument({ originalText, annotations, selectedIds, onToggle }) {
   )
 }
 
-function AnnotationCard({ anno, selected, onToggle }) {
-  const meta = levelMeta(anno.level)
+// 三明治视图：原文（删除线）→ 改写句（红色）→ 批注说明（浅红底），垂直堆叠。
+function SandwichBlock({ revision: rev }) {
+  const meta = levelMeta(rev.level)
+  const act = actionMeta(rev.action)
   return (
-    <div className={`annotation-card ${meta.cls} ${selected ? 'selected' : ''}`}>
-      <label className="annotation-check">
-        <input type="checkbox" checked={selected} onChange={(e) => onToggle(anno.id)} />
-      </label>
-      <div className="annotation-body">
-        <div className="annotation-head">
-          <span className={`risk-level-tag ${meta.cls}`}>{meta.label}</span>
-          <strong>{anno.title}</strong>
+    <div className={`revision-sandwich ${meta.cls} ${act.cls}`}>
+      <div className="revision-row revision-original">
+        <span className="revision-label">原文</span>
+        <span className="revision-text original-text">{rev.originalText}</span>
+      </div>
+      {rev.action !== 'delete' && rev.rewrittenText && (
+        <div className="revision-row revision-rewritten">
+          <span className="revision-label">{act.label}</span>
+          <span className="revision-text rewritten-text">{rev.rewrittenText}</span>
         </div>
-        {anno.anchor && <p className="annotation-field"><i>原文定位</i>{anno.anchor}</p>}
-        {anno.location && <p className="annotation-field"><i>位置</i>{anno.location}</p>}
-        {anno.risk && <p className="annotation-field"><i>风险</i>{anno.risk}</p>}
-        {anno.advice && <p className="annotation-field"><i>建议</i>{anno.advice}</p>}
+      )}
+      {rev.action !== 'delete' && !rev.rewrittenText && (
+        <div className="revision-row revision-rewritten">
+          <span className="revision-label">{act.label}</span>
+          <span className="revision-text rewritten-text manual-hint">未能自动生成改写，请参考下方批注手动修订</span>
+        </div>
+      )}
+      {rev.action === 'delete' && (
+        <div className="revision-row revision-rewritten">
+          <span className="revision-label">{act.label}</span>
+          <span className="revision-text rewritten-text delete-hint">建议删除该条款</span>
+        </div>
+      )}
+      <div className="revision-row revision-note">
+        <span className="revision-label">批注</span>
+        <span className="revision-text note-text">{rev.riskNote}</span>
+      </div>
+    </div>
+  )
+}
+
+// 审查轮次进度面板：在对话气泡中实时展示「第X轮发现/新增了哪些问题」。
+// 每轮一个折叠条目，展开后罗列该轮新增的风险点（等级 + 标题 + 位置 + 风险摘要）。
+function ReviewRoundsPanel({ rounds, thinking }) {
+  if (!rounds.length && !thinking) return null
+  const totalFindings = rounds.reduce((sum, r) => sum + (r.newCount || 0), 0)
+  return (
+    <div className="review-rounds-panel">
+      <div className="rounds-panel-head">
+        <span className="rounds-panel-title">三轮审查进度</span>
+        <span className="rounds-panel-summary">{rounds.length}/3 轮完成{totalFindings > 0 ? ` · 累计发现 ${totalFindings} 条问题` : ''}</span>
+      </div>
+      <div className="rounds-panel-body">
+        {[1, 2, 3].map((roundNum) => {
+          const round = rounds.find((r) => r.round === roundNum)
+          const isThinking = thinking && !round && roundNum === (rounds.length + 1)
+          const isPending = !round && !isThinking
+          return (
+            <div key={roundNum} className={`round-item ${round ? 'round-done' : ''} ${isThinking ? 'round-thinking' : ''} ${isPending ? 'round-pending' : ''}`}>
+              <div className="round-item-head">
+                <span className="round-badge">{roundNum}</span>
+                <span className="round-label">{roundNum === 1 ? '首轮审查' : roundNum === 2 ? '二轮复审' : '三轮复审'}</span>
+                <span className="round-status">
+                  {round ? (round.newCount > 0 ? `新增 ${round.newCount} 条` : '未发现新问题') : isThinking ? <Loader2 size={13} className="spinner" /> : '待开始'}
+                </span>
+              </div>
+              {round && round.newFindings.length > 0 && (
+                <ul className="round-findings">
+                  {round.newFindings.map((finding, idx) => {
+                    const meta = levelMeta(finding.level)
+                    return (
+                      <li key={idx} className={`round-finding ${meta.cls}`}>
+                        <span className={`finding-level-tag ${meta.cls}`}>{meta.label}</span>
+                        <span className="finding-title">{finding.title}</span>
+                        {finding.location && <span className="finding-location">{finding.location}</span>}
+                        {finding.risk && <span className="finding-risk">{finding.risk}</span>}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -272,11 +277,11 @@ function ContractRewritePage() {
   // 用户是否贴近底部：用于流式输出时决定是否自动跟随滚动
   const stickToBottomRef = useRef(true)
   const [threads, setThreads] = useState(() => {
-    const saved = readStorage(THREAD_STORAGE_KEY, [])
+    const saved = readStorage(THREAD_STORAGE_KEY, [], normalizeStoredThreads)
     return saved.length ? saved : [createThread('商业合同审查与批注')]
   })
-  const [tasks, setTasks] = useState(() => readStorage(TASK_STORAGE_KEY, []))
-  const [activeThreadId, setActiveThreadId] = useState(() => readStorage(THREAD_STORAGE_KEY, [])[0]?.id || '')
+  const [tasks, setTasks] = useState(() => readStorage(TASK_STORAGE_KEY, [], normalizeStoredTasks))
+  const [activeThreadId, setActiveThreadId] = useState('')
   const [files, setFiles] = useState([])
   const [instruction, setInstruction] = useState('')
   const [mode, setMode] = useState('thinking')
@@ -285,20 +290,23 @@ function ContractRewritePage() {
   const [error, setError] = useState('')
   const [documentOpen, setDocumentOpen] = useState(false)
   const [documentMessageId, setDocumentMessageId] = useState('')
-  const [showComments, setShowComments] = useState(false)
   const [historyQuery, setHistoryQuery] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [taskTitle, setTaskTitle] = useState('')
   const [taskPrompt, setTaskPrompt] = useState('')
-  const [confirming, setConfirming] = useState(false)
-  // 批注勾选状态：按 message.id 维护，值为被选中的 annotation.id 数组
-  const [selectedAnnotations, setSelectedAnnotations] = useState({})
+  const [balanceOpen, setBalanceOpen] = useState(false)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+  const [balanceError, setBalanceError] = useState('')
+  const [balanceData, setBalanceData] = useState(null)
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) || threads[0]
   const activeMessages = activeThread?.messages || []
   const selectedDocument = activeMessages.find((message) => message.id === documentMessageId)
-  const documentText = normalizeDraftPlaceholders(selectedDocument?.rewrite || DEMO_DOCUMENT)
+  // 修订稿文档数据：合同原文 + 结构化修订块（三明治视图）。两者均来自后端 rewrite.result 事件。
+  const documentContractText = selectedDocument?.contractText || selectedDocument?.originalText || ''
+  const documentRevisions = selectedDocument?.revisions || []
+  const cnyBalance = balanceData?.balances?.find((item) => item.currency === 'CNY') || null
   const matchingThreads = useMemo(() => [...threads]
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .filter((thread) => thread.title.toLowerCase().includes(historyQuery.trim().toLowerCase())), [historyQuery, threads])
@@ -307,8 +315,8 @@ function ContractRewritePage() {
     if (threads.length && !threads.some((thread) => thread.id === activeThreadId)) setActiveThreadId(threads[0].id)
   }, [activeThreadId, threads])
 
-  useEffect(() => { window.localStorage.setItem(THREAD_STORAGE_KEY, JSON.stringify(threads)) }, [threads])
-  useEffect(() => { window.localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(tasks)) }, [tasks])
+  useEffect(() => { writeStorage(THREAD_STORAGE_KEY, threads) }, [threads])
+  useEffect(() => { writeStorage(TASK_STORAGE_KEY, tasks) }, [tasks])
 
   // 仅在用户已贴近底部时跟随滚动；流式增量更新时用 instant 避免动画抢夺滚动控制
   useEffect(() => {
@@ -369,6 +377,25 @@ function ContractRewritePage() {
     resetComposer()
     stickToBottomRef.current = true
   }
+  const loadBalance = async () => {
+    setBalanceLoading(true)
+    setBalanceError('')
+    try {
+      const response = await fetch(BALANCE_ENDPOINT, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || '暂时无法读取剩余用量。')
+      setBalanceData(payload)
+    } catch (requestError) {
+      setBalanceError(requestError.message || '暂时无法读取剩余用量。')
+    } finally {
+      setBalanceLoading(false)
+    }
+  }
+  const toggleBalancePanel = () => {
+    const nextOpen = !balanceOpen
+    setBalanceOpen(nextOpen)
+    if (nextOpen) loadBalance()
+  }
   const uploadFiles = (incoming) => {
     const next = incoming.filter(isSupported).slice(0, 6)
     if (next.length !== incoming.length) setError('仅支持 PDF、Word、PNG、JPG、WebP，且单个文件不超过 80MB。')
@@ -414,7 +441,9 @@ function ContractRewritePage() {
     let analysis = ''
     let review = ''
     let originalText = ''
-    let reviewAnnotations = []
+    let rewriteRevisions = []
+    let rewriteStats = null
+    let reviewRounds = []
     try {
       if (uploadedFiles.length) {
         const form = new FormData()
@@ -428,36 +457,81 @@ function ContractRewritePage() {
             setStage(data.stage || '')
             updateMessage(threadId, assistantId, { status: data.label || '正在处理…' })
           }
+          if (event === 'stage.progress') {
+            updateMessage(threadId, assistantId, { status: data.message || '正在处理…' })
+          }
+          if (event === 'review.round') {
+            // 三轮审核进度：start 显示当前轮次状态，end 追加本轮新增问题清单
+            setStage('review')
+            if (data.phase === 'end') {
+              // 本轮结束：记录新增问题快照，供对话区实时罗列
+              const snapshot = {
+                round: Number(data.round) || 0,
+                newCount: Number(data.newCount) || 0,
+                newFindings: Array.isArray(data.newFindings) ? data.newFindings : []
+              }
+              reviewRounds = [...reviewRounds.filter((r) => r.round !== snapshot.round), snapshot]
+              updateMessage(threadId, assistantId, { reviewRounds, status: data.message || `第 ${data.round}/${data.total} 轮审查完成` })
+            } else {
+              updateMessage(threadId, assistantId, { status: data.message || `第 ${data.round}/${data.total} 轮审查中…` })
+            }
+          }
           if (event === 'analysis.delta') { analysis += data.content || ''; updateMessage(threadId, assistantId, { content: analysis, analysis, status: '正在分析合同结构…' }) }
           if (event === 'review.delta') {
             review += data.content || ''
             // 拼接展示：分析报告 + 审查报告，而不是用审查覆盖分析
             const combined = analysis ? `${analysis}\n\n---\n\n${review}` : review
-            updateMessage(threadId, assistantId, { content: combined, analysis, review, status: '正在审查风险条款…' })
+            updateMessage(threadId, assistantId, { content: combined, analysis, review, reviewRounds, status: '正在审查风险条款…' })
           }
           if (event === 'review.original') {
+            // 兼容事件：保留原合同文本，供修订稿文档渲染原文
             originalText = data.text || ''
             const reviewSession = data.reviewSession || {}
-            reviewAnnotations = Array.isArray(reviewSession.findings) ? reviewSession.findings : []
             updateMessage(threadId, assistantId, {
               originalText,
-              annotations: reviewAnnotations,
               reviewSessionId: reviewSession.id || '',
               reviewStats: reviewSession.stats || null,
-              unresolvedAnnotations: Array.isArray(reviewSession.unresolved) ? reviewSession.unresolved : [],
+              analysis,
+              review
+            })
+          }
+          if (event === 'rewrite.result') {
+            // 结构化修订结果：合同原文 + 修订块数组。前端据此渲染「行内三明治视图」。
+            setStage('rewrite')
+            rewriteRevisions = Array.isArray(data.revisions) ? data.revisions : []
+            rewriteStats = data.stats || null
+            originalText = data.contractText || originalText
+            updateMessage(threadId, assistantId, {
+              contractText: data.contractText || originalText,
+              revisions: rewriteRevisions,
+              rewriteStats,
+              originalText: data.contractText || originalText,
               analysis,
               review,
-              phase: 'review',
-              status: '审查完成，请在右侧确认批注'
+              status: '正在生成修订稿…'
             })
           }
           if (event === 'error') throw new Error(data.message || '审查未完成，请稍后重试。')
         })
         const finalContent = analysis ? (review ? `${analysis}\n\n---\n\n${review}` : analysis) : (review || '合同审查已完成。')
-        updateMessage(threadId, assistantId, { content: finalContent, annotations: reviewAnnotations, analysis, review, originalText, phase: 'review', status: '', completed: true })
-        // 默认勾选全部已由服务端验证并定位的批注。
-        const annos = reviewAnnotations
-        if (annos.length) setSelectedAnnotations((prev) => ({ ...prev, [assistantId]: annos.map((a) => a.id) }))
+        updateMessage(threadId, assistantId, {
+          content: finalContent,
+          analysis,
+          review,
+          reviewRounds,
+          originalText,
+          contractText: originalText,
+          revisions: rewriteRevisions,
+          rewriteStats,
+          phase: 'rewrite',
+          status: '',
+          completed: true
+        })
+        // 审核改写一体完成后，自动展开修订稿文档供用户查看
+        if (rewriteRevisions.length || originalText) {
+          setDocumentMessageId(assistantId)
+          setDocumentOpen(true)
+        }
       } else {
         const history = activeMessages.slice(-10).map((message) => ({ role: message.role, content: message.content })).filter((message) => message.content)
         const response = await fetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ message: content, mode, history }) })
@@ -492,72 +566,42 @@ function ContractRewritePage() {
   }
   const openTask = (task) => { selectConversation(task.threadId); setInstruction(task.prompt || ''); setMode(task.mode || 'thinking') }
   const deleteTask = (event, taskId) => { event.stopPropagation(); setTasks((items) => items.filter((task) => task.id !== taskId)) }
-  const openDocument = (messageId) => { setDocumentMessageId(messageId); setDocumentOpen(true); setShowComments(false) }
+  const openDocument = (messageId) => { setDocumentMessageId(messageId); setDocumentOpen(true) }
 
-  // 批注勾选：target 可以是 'all' / 'none' / 具体 annotation.id
-  const toggleAnnotation = (messageId) => (target) => {
-    setSelectedAnnotations((prev) => {
-      const message = activeMessages.find((m) => m.id === messageId)
-      const annos = messageAnnotations(message)
-      const current = prev[messageId] || []
-      if (target === 'all') return { ...prev, [messageId]: annos.map((a) => a.id) }
-      if (target === 'none') return { ...prev, [messageId]: [] }
-      return { ...prev, [messageId]: current.includes(target) ? current.filter((id) => id !== target) : [...current, target] }
-    })
-  }
-
-  // 阶段2：基于用户确认采纳的批注，调用 Agent 3 生成修订稿。
-  const finalizeRewrite = async (messageId) => {
-    const message = activeMessages.find((m) => m.id === messageId)
-    if (!message || !message.originalText) return
-    const annotations = messageAnnotations(message)
-    const selectedIds = selectedAnnotations[messageId] || annotations.map((a) => a.id)
-    const selectedFindingIds = annotations.filter((a) => selectedIds.includes(a.id)).map((a) => a.id)
-    if (!message.reviewSessionId) { setError('本次审查缺少有效会话，请重新审查后再生成修订稿。'); return }
-    if (!selectedFindingIds.length) { setError('请至少选择一条批注后再生成修订稿。'); return }
-    setConfirming(true)
-    setError('')
-    const assistantId = createId('message')
-    appendMessage(activeThread.id, { id: assistantId, role: 'assistant', content: '', mode, createdAt: Date.now(), status: '正在依据已确认批注生成修订稿…', phase: 'rewrite' })
-    let rewrite = ''
-    try {
-      const response = await fetch(FINALIZE_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({
-          mode,
-          reviewSessionId: message.reviewSessionId,
-          selectedFindingIds
-        })
-      })
-      if (!response.ok || !response.body) throw new Error(await response.text() || '改写服务暂不可用。')
-      await readSSE(response, (event, data) => {
-        if (event === 'stage.start') updateMessage(activeThread.id, assistantId, { status: data.label || '正在生成修订稿…' })
-        if (event === 'rewrite.delta') { rewrite += data.content || ''; updateMessage(activeThread.id, assistantId, { content: '正在生成修订稿…', rewrite, status: '正在生成修订稿…' }) }
-        if (event === 'error') throw new Error(data.message || '改写未完成，请稍后重试。')
-      })
-      updateMessage(activeThread.id, assistantId, { content: '已根据您确认的批注生成修订稿。', rewrite: normalizeDraftPlaceholders(rewrite), status: '', phase: 'rewrite', completed: true })
-      setDocumentMessageId(assistantId)
-    } catch (requestError) {
-      updateMessage(activeThread.id, assistantId, { content: '本次改写未完成。', status: '', failed: true })
-      setError(requestError.message || '改写未完成，请稍后重试。')
-    } finally {
-      setConfirming(false)
-    }
-  }
+  // 导出 Word：基于「合同原文 + 结构化修订块」生成 HTML，三明治样式（原句删除线、改写红色、批注浅红底）。
   const exportWord = () => {
     const name = activeThread?.title || '商业合同审查稿'
-    const renderInline = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/【\s*([^】]+)\s*】/g, '【$1】')
-    const htmlBody = documentText.split('\n').map((raw) => {
+    const text = documentContractText || selectedDocument?.rewrite || ''
+    const revisions = Array.isArray(documentRevisions) ? documentRevisions : []
+    const renderInline = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    // 按行号把修订块分组（与 RevisionDocument 的 byLine 逻辑一致）
+    const revByEndLine = new Map()
+    revisions.forEach((rev) => {
+      const end = Number.isInteger(rev.lineEnd) ? rev.lineEnd : -1
+      if (end < 0) return
+      if (!revByEndLine.has(end)) revByEndLine.set(end, [])
+      revByEndLine.get(end).push(rev)
+    })
+    const renderRevBlock = (rev) => {
+      const original = `<p class="rev-row rev-original"><span class="rev-label">原文</span><span class="rev-text">${renderInline(rev.originalText)}</span></p>`
+      const rewritten = rev.action === 'delete'
+        ? `<p class="rev-row rev-rewritten"><span class="rev-label">删除</span><span class="rev-text">建议删除该条款</span></p>`
+        : (rev.rewrittenText ? `<p class="rev-row rev-rewritten"><span class="rev-label">${rev.action === 'add' ? '新增' : '修订'}</span><span class="rev-text">${renderInline(rev.rewrittenText)}</span></p>` : '')
+      const note = `<p class="rev-row rev-note"><span class="rev-label">批注</span><span class="rev-text">${renderInline(rev.riskNote)}</span></p>`
+      return `<div class="rev-sandwich">${original}${rewritten}${note}</div>`
+    }
+    const lines = stripLegacyFileMarkers(text).split('\n')
+    const htmlBody = lines.map((raw, i) => {
       const line = raw.trim()
-      if (!line) return ''
-      if (/^#\s+/.test(line)) return `<h1>${renderInline(line.replace(/^#\s+/, ''))}</h1>`
-      if (/^##\s+/.test(line)) return `<h2>${renderInline(line.replace(/^##\s+/, ''))}</h2>`
-      if (isAnnotationLine(line)) return `<p class="anno">${renderInline('【风险批注】' + line.replace(ANNOTATION_RE, '$1'))}</p>`
-      if (/^[-*+]\s+/.test(line)) return `<p class="li">${renderInline(line.replace(/^[-*+]\s+/, ''))}</p>`
-      return `<p>${renderInline(line)}</p>`
+      const revs = revByEndLine.get(i) || []
+      const revHtml = revs.map(renderRevBlock).join('')
+      if (!line) return revHtml
+      if (/^#\s+/.test(line)) return `<h1>${renderInline(line.replace(/^#\s+/, ''))}</h1>${revHtml}`
+      if (/^##\s+/.test(line)) return `<h2>${renderInline(line.replace(/^##\s+/, ''))}</h2>${revHtml}`
+      if (/^[-*+]\s+/.test(line)) return `<p class="li">${renderInline(line.replace(/^[-*+]\s+/, ''))}</p>${revHtml}`
+      return `<p>${renderInline(line)}</p>${revHtml}`
     }).join('')
-    const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:SimSun,serif;margin:48px;color:#111;line-height:1.85}h1{text-align:center;font-size:22pt}h2{margin-top:24px;font-size:15pt}p{font-size:12pt}p.anno{color:#c0392b;border-left:3px solid #c0392b;padding-left:10px;background:#fdf0ee}p.li{margin-left:24px;text-indent:-12pt}</style></head><body>${htmlBody}</body></html>`
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:SimSun,serif;margin:48px;color:#111;line-height:1.85}h1{text-align:center;font-size:22pt}h2{margin-top:24px;font-size:15pt}p{font-size:12pt}p.li{margin-left:24px;text-indent:-12pt}.rev-sandwich{margin:8px 0 16px 24px;border-left:3px solid #c0392b;background:#fafafa;overflow:hidden}.rev-row{display:flex;gap:10px;padding:6px 14px;font-size:11pt;margin:0}.rev-label{flex-shrink:0;width:32px;color:#888}.rev-original .rev-text{color:#999;text-decoration:line-through}.rev-rewritten{background:#fef5f5}.rev-rewritten .rev-text{color:#c0392b;font-weight:bold}.rev-note{background:#fdecea;border-top:1px dashed #f5c6cb}.rev-note .rev-text{color:#842029}</style></head><body>${htmlBody}</body></html>`
     const url = URL.createObjectURL(new Blob([html], { type: 'application/msword' }))
     const anchor = document.createElement('a')
     anchor.href = url; anchor.download = `${name}-审查批注稿.doc`; anchor.click(); URL.revokeObjectURL(url)
@@ -568,13 +612,35 @@ function ContractRewritePage() {
   return <main className={`contract-chat ${documentOpen ? 'document-expanded' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
     {!documentOpen && <aside className="chat-sidebar">
       <label className="sidebar-search"><History size={17} /><input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索历史对话" /><kbd>⌘ K</kbd></label>
-      <div className="sidebar-brand"><span className="brand-orb"><Sparkles size={15} /></span><strong>法飞飞</strong></div>
+      <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>法飞飞</strong></div>
       <button className="sidebar-action" onClick={() => createConversation()}><PenLine size={20} />新对话</button>
       <button className="sidebar-action" onClick={() => setTaskModalOpen(true)}><FolderOpen size={20} />新审查任务</button>
       <p className="history-label">历史对话</p>
       <nav className="history-list">{matchingThreads.map((thread) => <button className={thread.id === activeThread?.id ? 'selected' : ''} key={thread.id} onClick={() => selectConversation(thread.id)}><MessageCircle size={16} /><span>{thread.title}</span><i className="history-delete" title="删除对话" onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>)}</nav>
       {tasks.length > 0 && <><p className="history-label task-label">审查任务</p><nav className="history-list task-list">{tasks.map((task) => <button key={task.id} className={task.threadId === activeThread?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title="删除任务" onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
-      <div className="sidebar-footer"><span className="footer-avatar">法</span><span>法飞飞合同助手</span></div>
+      <div className="sidebar-footer-wrap">
+        {balanceOpen && <section className="balance-popover" role="dialog" aria-label="剩余用量">
+          <header><span className="footer-avatar">法</span><strong>法飞飞合同助手</strong><button type="button" aria-label="关闭用量面板" onClick={() => setBalanceOpen(false)}><X size={16} /></button></header>
+          <div className="balance-title"><CircleDollarSign size={19} /><strong>剩余用量</strong><button type="button" className="balance-refresh" onClick={loadBalance} disabled={balanceLoading} title="刷新用量"><RefreshCw size={16} className={balanceLoading ? 'spinner' : ''} /></button></div>
+          {balanceLoading && !balanceData && <p className="balance-state"><Loader2 size={15} className="spinner" />正在查询剩余用量…</p>}
+          {balanceError && <p className="balance-error">{balanceError}</p>}
+          {!balanceLoading && !balanceError && balanceData && !cnyBalance && <p className="balance-state">暂未返回人民币用量。</p>}
+          {!balanceError && cnyBalance && <section className="balance-summary">
+            <div className="balance-summary-head"><span>当前剩余用量</span></div>
+            <div className="balance-list">
+              <div className="balance-item">
+                <div><span>人民币</span><b>¥ {cnyBalance.total}</b></div>
+                <p>充值用量 ¥ {cnyBalance.toppedUp} · 赠送用量 ¥ {cnyBalance.granted}</p>
+              </div>
+            </div>
+          </section>}
+          {balanceData && <small className={balanceData.isAvailable ? 'balance-available' : 'balance-unavailable'}>{balanceData.isAvailable ? '当前用量可正常使用' : '当前用量不足，暂不可使用'}</small>}
+          <a className="balance-top-up" href="https://platform.deepseek.com/" target="_blank" rel="noreferrer">充值用量<ExternalLink size={14} /></a>
+        </section>}
+        <button className="sidebar-footer account-trigger" type="button" onClick={toggleBalancePanel} aria-expanded={balanceOpen}>
+          <span className="footer-avatar">法</span><span>法飞飞合同助手</span><ChevronDown size={17} className={balanceOpen ? 'balance-chevron open' : 'balance-chevron'} />
+        </button>
+      </div>
     </aside>}
 
     <section className="chat-column">
@@ -589,7 +655,7 @@ function ContractRewritePage() {
           {activeMessages.length === 0 && <div className="assistant-turn welcome-turn"><div><p>你好，我是法飞飞合同审查助手。上传合同后，我会结合对应合同类型的优质模板和风险案例，帮你梳理风险、生成修改建议，并输出一份可继续编辑的批注稿。</p></div></div>}
           {activeMessages.map((message) => message.role === 'user'
             ? <div className="user-turn" key={message.id}><p>{message.content}</p>{message.files?.map((file) => <div className="attached-file" key={`${message.id}-${file.name}`}><FileText size={18} /><span>{file.name}</span><small>{Math.ceil(file.size / 1024)} KB</small></div>)}</div>
-            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status"><Loader2 size={15} className="spinner" />{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'review' && message.originalText && <button className="open-document-card review-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>风险批注待确认</strong><small>点击右侧勾选批注，确认后生成修订稿</small></span></button>}{message.phase === 'rewrite' && message.rewrite && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>已生成 · 点击展开文档</small></span></button>}</>}</div></div>)}
+            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status"><Loader2 size={15} className="spinner" />{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>{message.revisions?.length ? `${message.revisions.length} 处修订 · ` : ''}点击展开文档</small></span></button>}</>}</div></div>)}
           {loading && <div className="assistant-turn loading-turn"><div><p>{status}</p></div></div>}
           {error && <p className="chat-error">{error}</p>}
           {!activeMessages.length && <div className="starter-prompts"><button onClick={() => setInstruction('请从甲方视角重点审查付款、验收和违约责任。')}>从甲方视角审查付款与违约责任 <span>→</span></button><button onClick={() => setInstruction('请检查合同是否缺少核心条款。')}>检查是否缺少核心条款 <span>→</span></button></div>}
@@ -605,45 +671,16 @@ function ContractRewritePage() {
     </section>
 
     {documentOpen && selectedDocument && <section className="document-column">
-      <header className="document-header"><span>{selectedDocument.phase === 'review' ? '风险批注待确认' : '修订稿'}</span><div>{selectedDocument.phase === 'rewrite' && <><button title="复制合同" onClick={() => navigator.clipboard?.writeText(documentText)}><Copy size={18} />复制</button><button title="下载 Word" onClick={exportWord}><Download size={18} />下载</button><button className={showComments ? 'comments-active' : ''} onClick={() => setShowComments((value) => !value)}><MessageCircle size={18} />批注</button></>}<button className="close-document" aria-label="关闭文档" onClick={() => setDocumentOpen(false)}><X size={21} /></button></div></header>
-      {selectedDocument.phase === 'review' ? (() => {
-        const annotations = messageAnnotations(selectedDocument)
-        const selectedIds = selectedAnnotations[selectedDocument.id] || annotations.map((a) => a.id)
-        const allSelected = annotations.length > 0 && annotations.every((a) => selectedIds.includes(a.id))
-        const selectedCount = annotations.filter((a) => selectedIds.includes(a.id)).length
-        const unresolved = selectedDocument.unresolvedAnnotations || []
-        return <>
-          <div className="review-toolbar">
-            <span className="review-toolbar-title">共 {annotations.length} 条批注，已选择 {selectedCount} 条</span>
-            <label className="review-select-all">
-              <input type="checkbox" checked={allSelected} onChange={(e) => toggleAnnotation(selectedDocument.id)(e.target.checked ? 'all' : 'none')} />
-              <span>全选</span>
-            </label>
-          </div>
-          <div className="document-scroll">
-            <ReviewDocument
-              originalText={selectedDocument.originalText || ''}
-              annotations={annotations}
-              selectedIds={selectedIds}
-              onToggle={toggleAnnotation(selectedDocument.id)}
-            />
-            {unresolved.length > 0 && <aside className="review-unresolved">
-              <strong>待核查定位项</strong>
-              <p>以下模型结论未能唯一对应到原文，因此没有加入本轮可确认批注，也不会被带入修订稿。</p>
-              <ul>{unresolved.map((item) => <li key={`${item.sourceIndex}-${item.title}`}><b>{item.title}</b>：{item.reason}{item.declaredAnchor ? `（模型定位 ${item.declaredAnchor}）` : ''}</li>)}</ul>
-            </aside>}
-          </div>
-          <div className="review-confirm-bar">
-            <span>已选择 <b>{selectedCount}</b> / {annotations.length} 条批注</span>
-            <button className="confirm-rewrite-btn" onClick={() => finalizeRewrite(selectedDocument.id)} disabled={confirming || selectedCount === 0}>
-              {confirming ? <Loader2 size={16} className="spinner" /> : <PenLine size={16} />}
-              {confirming ? '正在生成修订稿…' : '确认批注，生成修订稿'}
-            </button>
-          </div>
-        </>
-      })() : (
-        <div className="document-scroll"><ContractDocument text={documentText} comments={showComments} />{showComments && (() => { const annos = extractAnnotations(documentText); return annos.length > 0 ? <aside className="document-comments"><p><b>{annos.length}</b> 处风险批注</p>{annos.map((a, idx) => <div key={idx}>{inline(a)}</div>)}</aside> : null })()}</div>
-      )}
+      <header className="document-header"><span>审查修订稿</span><div><button title="复制原文" onClick={() => navigator.clipboard?.writeText(documentContractText)}><Copy size={18} />复制</button><button title="下载 Word" onClick={exportWord}><Download size={18} />下载</button><button className="close-document" aria-label="关闭文档" onClick={() => setDocumentOpen(false)}><X size={21} /></button></div></header>
+      <div className="document-scroll">
+        {documentRevisions.length > 0
+          ? <RevisionDocument contractText={documentContractText} revisions={documentRevisions} />
+          : <div className="document-empty"><FileText size={32} /><p>{selectedDocument?.status || '暂无修订内容'}</p></div>}
+        {documentRevisions.length > 0 && <aside className="revision-summary">
+          <p><b>{documentRevisions.length}</b> 处修订{selectedDocument?.rewriteStats ? `（修订 ${selectedDocument.rewriteStats.modify || 0} · 新增 ${selectedDocument.rewriteStats.add || 0} · 删除 ${selectedDocument.rewriteStats.delete || 0}）` : ''}</p>
+          <p className="revision-summary-tip">红色块为修订建议，灰色删除线为原句，红色为改写句，浅红底为批注说明。</p>
+        </aside>}
+      </div>
     </section>}
 
     {taskModalOpen && <div className="task-modal-backdrop" role="presentation" onMouseDown={() => setTaskModalOpen(false)}><form className="task-modal" onSubmit={createTask} onMouseDown={(event) => event.stopPropagation()}><div><strong>新审查任务</strong><button type="button" aria-label="关闭" onClick={() => setTaskModalOpen(false)}><X size={19} /></button></div><label>任务名称<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="例如：供应商年度采购合同" autoFocus /></label><label>审查要求<textarea value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} placeholder="可填写审查视角、关注条款或交付要求" /></label><p>创建后会打开独立对话，可上传合同后开始审查。</p><footer><button type="button" onClick={() => setTaskModalOpen(false)}>取消</button><button className="task-primary" type="submit">创建任务</button></footer></form></div>}

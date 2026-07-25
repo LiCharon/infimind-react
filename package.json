@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "node server/index.js",
-    "import:templates": "node server/scripts/import-templates.js"
+    "import:templates": "node server/scripts/import-templates.js",
+    "evaluate:knowledge-base": "RAG_RERANKER_MODE=heuristic node server/scripts/evaluate-knowledge-base.js"
   },
   "dependencies": {
     "@babel/types": "^7.29.0",
@@ -24,7 +25,9 @@
     "pdf-parse": "^2.4.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.10.1",
+    "remark-gfm": "^4.0.1",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {

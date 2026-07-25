@@ -154,6 +154,8 @@ const extractReviewPayload = (output = '') => {
   }
 }
 
+export { extractReviewPayload }
+
 const normalizeLevel = (value) => ({ 高: '高', 中: '中', 低: '低' }[String(value || '').trim()] || null)
 
 const documentHash = (text) => createHash('sha256').update(text).digest('hex')

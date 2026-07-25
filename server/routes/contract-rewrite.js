@@ -3,12 +3,13 @@ import multer from 'multer'
 import { extractText } from '../services/file-parser.js'
 import { getKnowledgeBaseStatus, listTemplates, searchEvidence } from '../services/knowledge-base.js'
 import { buildReviewPlan } from '../services/review-plan.js'
-import { buildReviewResult, renderReviewReport } from '../services/annotation-locator.js'
+import { buildReviewResult, renderReviewReport, extractReviewPayload } from '../services/annotation-locator.js'
+import { mergeRevisions } from '../services/revision-merger.js'
 import { createReviewSession, getReviewSession, publicReviewSession } from '../services/review-session-store.js'
 import { analyzeContract } from '../agents/contract-analyzer.js'
 import { reviewContract } from '../agents/contract-reviewer.js'
 import { rewriteContract } from '../agents/contract-rewriter.js'
-import { streamChat, getFlashModel, getProModel } from '../services/llm-client.js'
+import { streamChat, getFlashModel, getProModel, getUserBalance } from '../services/llm-client.js'
 
 const router = Router()
 
@@ -22,6 +23,16 @@ const upload = multer({
 // 两个阶段共享同一份合同原文，避免因不同截断长度造成审查、确认和改写结果错位。
 const MAX_CONTRACT_TEXT = 60000
 
+// 三轮审核：每轮在上一轮基础上补充遗漏问题，减少单轮遗漏；最终合并去重后再统一改写。
+const REVIEW_ROUNDS = 3
+
+// 合并多轮原始 findings 时的去重键：标题 + 原文摘录都相同才视为重复。
+const dedupeKey = (item) => {
+  const title = String(item?.title || '').replace(/\s+/g, '').trim()
+  const quote = String(item?.quote || '').replace(/\s+/g, '').trim()
+  return `${title}::${quote}`
+}
+
 const ACCEPTED_TYPES = [
   'application/pdf',
   'application/msword',
@@ -30,6 +41,18 @@ const ACCEPTED_TYPES = [
   'image/jpeg',
   'image/webp'
 ]
+
+// 用量只通过本地服务端读取，避免将密钥发送到浏览器。
+router.get('/account/balance', async (req, res) => {
+  try {
+    const balance = await getUserBalance()
+    res.set('Cache-Control', 'no-store')
+    res.json(balance)
+  } catch (error) {
+    console.warn('[contract-rewrite] Balance lookup failed:', error.message)
+    res.status(503).json({ error: '暂时无法读取剩余用量，请检查服务配置或稍后重试。' })
+  }
+})
 
 // 供审查工作台展示当前可参与比对的知识库资料。只返回元数据，合同正文不会暴露到浏览器。
 router.get('/knowledge-base/templates', (req, res) => {
@@ -306,63 +329,142 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
     })
 
     // ==========================================
-    // Step 3: Agent 2 - 合同审查
-    // 使用完整原文，确保审查结论与风险批注确认页的条款范围完全一致。
+    // Step 3: Agent 2 - 合同审查（三轮循环）
+    // 每轮在上一轮基础上补充遗漏问题；三轮原始 findings 合并去重后，
+    // 一次性交给 buildReviewResult 做代码定位与结构化校验。
     // ==========================================
     console.log(
       `[contract-rewrite] Agent 2 input sizes: contract=${reviewContractText.length}, analysis=${reviewAnalysis.length}, evidence=${evidence.length}`
     )
 
-    writeSSE('stage.start', { stage: 'review', label: '正在进行合同合规与履约风险审查' })
+    writeSSE('stage.start', { stage: 'review', label: `正在进行三轮合同合规与履约风险审查` })
 
-    let rawReviewOutput = ''
+    const combinedFindings = []     // 三轮合并的原始 candidates（模型 quote，未定位）
+    const accumulatedSummary = []   // 累计已发现问题摘要，供下一轮提示
+    const seenKeys = new Set()
+    let lastReviewOutput = ''
+    let totalRoundsExecuted = 0
+    // 逐轮发现快照：供前端实时展示「第X轮发现/新增了哪些问题」
+    const roundSnapshots = []
 
-    try {
-      rawReviewOutput = await reviewContract({
-        contractText: reviewContractText,
-        analysisReport: reviewAnalysis,
-        evidence,
-        reviewPlan,
-        userInstruction: message
-      }, modelProfile.model)
-    } catch (error) {
-      console.error('[contract-rewrite] Agent 2 error:', error.message)
-      writeSSE('error', { message: `合同审查失败: ${error.message}`, stage: 'review' })
-      writeSSE('done', {})
-      return res.end()
+    for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
+      writeSSE('review.round', {
+        round,
+        total: REVIEW_ROUNDS,
+        phase: 'start',
+        accumulated: combinedFindings.length,
+        message: `正在进行第 ${round} 轮审查（共 ${REVIEW_ROUNDS} 轮）${round > 1 ? `，前 ${round - 1} 轮已发现 ${combinedFindings.length} 条问题` : ''}`
+      })
+      let roundOutput = ''
+      try {
+        roundOutput = await reviewContract({
+          contractText: reviewContractText,
+          analysisReport: reviewAnalysis,
+          evidence,
+          reviewPlan,
+          userInstruction: message,
+          round,
+          previousFindings: accumulatedSummary
+        }, modelProfile.model)
+      } catch (error) {
+        console.error(`[contract-rewrite] Agent 2 round ${round} error:`, error.message)
+        writeSSE('error', { message: `第 ${round} 轮合同审查失败: ${error.message}`, stage: 'review' })
+        writeSSE('done', {})
+        return res.end()
+      }
+      lastReviewOutput = roundOutput
+      totalRoundsExecuted = round
+
+      // 解析本轮输出，合并去重后追加到 combinedFindings
+      let roundPayload
+      try {
+        roundPayload = extractReviewPayload(roundOutput)
+      } catch (error) {
+        console.warn(`[contract-rewrite] Agent 2 round ${round} payload parse failed:`, error.message)
+        // 本轮解析失败：仍推送一个结束信号，便于前端进度连贯
+        writeSSE('review.round', { round, total: REVIEW_ROUNDS, phase: 'end', newFindings: [], newCount: 0, accumulated: combinedFindings.length, message: `第 ${round} 轮审查结果解析异常，已跳过` })
+        continue
+      }
+      const roundFindings = Array.isArray(roundPayload.findings) ? roundPayload.findings : []
+      const newFindingsThisRound = []
+      let newThisRound = 0
+      roundFindings.forEach((candidate) => {
+        const key = dedupeKey(candidate)
+        if (seenKeys.has(key)) return
+        seenKeys.add(key)
+        newThisRound += 1
+        combinedFindings.push(candidate)
+        accumulatedSummary.push({
+          level: String(candidate?.level || '').trim() || '风险',
+          title: String(candidate?.title || '').trim() || '未命名问题',
+          location: String(candidate?.location || '').trim()
+        })
+        // 快照：仅携带前端展示所需的轻量字段（不含 quote 全文，避免数据量过大）
+        newFindingsThisRound.push({
+          level: String(candidate?.level || '').trim() || '风险',
+          title: String(candidate?.title || '').trim() || '未命名问题',
+          location: String(candidate?.location || '').trim(),
+          risk: String(candidate?.risk || '').trim().slice(0, 120)
+        })
+      })
+
+      roundSnapshots.push({ round, newCount: newThisRound, newFindings: newFindingsThisRound })
+      console.log(`[contract-rewrite] Round ${round}: ${roundFindings.length} findings (${newThisRound} new), combined total = ${combinedFindings.length}`)
+
+      // 推送本轮结束信号：携带本轮新增问题清单，前端据此实时罗列
+      writeSSE('review.round', {
+        round,
+        total: REVIEW_ROUNDS,
+        phase: 'end',
+        newFindings: newFindingsThisRound,
+        newCount: newThisRound,
+        accumulated: combinedFindings.length,
+        message: `第 ${round} 轮审查完成${newThisRound > 0 ? `，新增 ${newThisRound} 条问题（累计 ${combinedFindings.length} 条）` : '，未发现新问题'}`
+      })
+
+      // 提前终止：本轮没有任何新增问题，说明已无遗漏，无需继续后续轮次
+      if (roundFindings.length === 0 || newThisRound === 0) break
     }
+
+    // 合并后的 findings 交给 buildReviewResult 做代码定位与结构化校验
+    const mergedModelOutput = JSON.stringify({
+      conclusion: '三轮审查合并结果',
+      findings: combinedFindings,
+      completeness: []
+    })
 
     let reviewResult
     try {
-      reviewResult = buildReviewResult({ contractText: reviewContractText, modelOutput: rawReviewOutput })
+      reviewResult = buildReviewResult({ contractText: reviewContractText, modelOutput: mergedModelOutput })
     } catch (error) {
-      console.error('[contract-rewrite] Invalid review result:', error.message)
+      console.error('[contract-rewrite] Invalid merged review result:', error.message)
       writeSSE('error', { message: `审查结果未能通过结构化校验：${error.message}。请重新发起审查。`, stage: 'review' })
       writeSSE('done', {})
       return res.end()
     }
 
-    // 快速模型偶尔会返回空 findings（或整段格式失真）。这时在同一审核阶段做一次受控重试，
-    // 仍以同一份完整原文为输入；最终报告和确认页只使用重试后经校验的唯一 ReviewSession。
+    // 若三轮后仍无可定位批注，再补一次格式复核（保留原兜底逻辑，提升快速模式鲁棒性）
     if (reviewResult.stats.confirmed === 0) {
-      writeSSE('stage.progress', { stage: 'review', message: '首轮未得到可定位批注，正在进行一次格式与定位复核' })
+      writeSSE('stage.progress', { stage: 'review', message: '三轮未得到可定位批注，正在进行一次格式与定位复核' })
       try {
         const recoveryOutput = await reviewContract({
           contractText: reviewContractText,
           analysisReport: reviewAnalysis,
           evidence,
           reviewPlan,
-          userInstruction: `${message || '无'}\n\n【系统复核】上一轮未生成可确认的风险批注。请重新逐条审查合同，必须输出完整 JSON；只要存在风险或需完善事项，就必须给出条款位置、尽量逐字的 quote、风险和建议。不要输出行号，定位由程序完成。`
+          userInstruction: `${message || '无'}\n\n【系统复核】前三轮未生成可确认的风险批注。请重新逐条审查合同，必须输出完整 JSON；只要存在风险或需完善事项，就必须给出条款位置、尽量逐字的 quote、风险和建议。不要输出行号，定位由程序完成。`
         }, modelProfile.model)
         const recoveryResult = buildReviewResult({ contractText: reviewContractText, modelOutput: recoveryOutput })
         if (recoveryResult.stats.confirmed > 0 || recoveryResult.stats.generated > reviewResult.stats.generated) {
           reviewResult = recoveryResult
-          rawReviewOutput = recoveryOutput
+          lastReviewOutput = recoveryOutput
         }
       } catch (error) {
         console.warn('[contract-rewrite] Review recovery failed:', error.message)
       }
     }
+
+    void lastReviewOutput  // 保留变量便于日志排查
 
     const reviewReport = renderReviewReport(reviewResult)
     const reviewSession = createReviewSession({
@@ -379,27 +481,128 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
 
     writeSSE('stage.complete', {
       stage: 'review',
-      summary: `法律合规审查完成，${reviewResult.stats.confirmed} 条批注已定位到原文${reviewResult.stats.unresolved ? `，${reviewResult.stats.unresolved} 条待核查` : ''}`,
+      summary: `三轮审查完成（实际执行 ${totalRoundsExecuted} 轮），${reviewResult.stats.confirmed} 条批注已定位到原文${reviewResult.stats.unresolved ? `，${reviewResult.stats.unresolved} 条待核查` : ''}`,
       reportLength: reviewReport.length,
       annotationCount: reviewResult.stats.confirmed,
-      reviewStats: reviewResult.stats
+      reviewStats: { ...reviewResult.stats, rounds: totalRoundsExecuted },
+      // 逐轮发现快照：前端据此在对话区展示"第X轮发现/新增了哪些问题"
+      roundSnapshots
     })
 
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`[contract-rewrite] Stage 1 completed in ${elapsed}s`)
+    console.log(`[contract-rewrite] Review stage completed (rounds=${totalRoundsExecuted}, confirmed=${reviewResult.stats.confirmed})`)
 
     // ==========================================
-    // 阶段1完成：回传合同原文，供前端内联展示批注、等待用户确认。
-    // 改写（Agent 3）推迟到 /contract-finalize，用户确认批注后再触发。
+    // Step 4: Agent 3 - 自动改写（直接基于全部已定位 findings，无需用户确认）
+    // 对每条 finding 产出"如何修订"的结构化指令，服务端用 revision-merger 把
+    // 可信 finding（原句/行号）与 Agent 3 输出（改写文本/批注）配对。
     // ==========================================
+    let rewritePayload = { contractText: reviewContractText, revisions: [], stats: { rounds: totalRoundsExecuted, totalFindings: 0, modify: 0, add: 0, delete: 0 } }
+
+    if (reviewResult.findings.length > 0) {
+      // 「最终校验」阶段：明确告知用户进入定稿环节，缓解长时间等待的焦虑
+      writeSSE('stage.start', { stage: 'rewrite', label: '正在依据审查结果进行最终校验并生成修订稿' })
+
+      // 首轮：整批调用 Agent 3，一次性产出所有 revisions
+      let rewriteOutput = ''
+      try {
+        rewriteOutput = await rewriteContract({
+          contractText: reviewContractText,
+          analysisReport: reviewAnalysis,
+          findings: reviewResult.findings
+        }, (chunk) => {
+          // 改写阶段输出的是 JSON，无法逐字展示；保留回调接口用于未来扩展（如进度心跳）。
+          void chunk
+        }, modelProfile.model)
+      } catch (error) {
+        console.error('[contract-rewrite] Agent 3 error:', error.message)
+        writeSSE('error', { message: `合同改写失败: ${error.message}`, stage: 'rewrite' })
+        writeSSE('done', {})
+        return res.end()
+      }
+
+      let merged = mergeRevisions(reviewResult.findings, rewriteOutput)
+      console.log(`[contract-rewrite] Rewrite pass 1: ${merged.stats.matched}/${merged.revisions.length} matched${merged.recovered ? ' (recovered from truncation)' : ''}`)
+
+      // 分批降级补全：仍有 finding 未拿到改写（被截断或漏配）时，按 6 条一批重调。
+      // 这是对 maxTokens 截断的第二道防线——即使容错修复也只抢救到部分，补全确保每条都有改写。
+      const REWRITE_BATCH_SIZE = 6
+      const REWRITE_MAX_BATCHES = 4
+      let batchIndex = 0
+      let missingFindings = merged.revisions.filter((rev) => !rev.hasRewrite).map((rev) =>
+        reviewResult.findings.find((f) => f.id === rev.findingId)
+      ).filter(Boolean)
+
+      while (missingFindings.length > 0 && batchIndex < REWRITE_MAX_BATCHES) {
+        batchIndex += 1
+        const batch = missingFindings.slice(0, REWRITE_BATCH_SIZE)
+        const remaining = missingFindings.slice(REWRITE_BATCH_SIZE)
+        writeSSE('stage.progress', { stage: 'rewrite', message: `正在补全第 ${batchIndex} 批未生成的修订（剩余 ${missingFindings.length} 条）` })
+        console.log(`[contract-rewrite] Rewrite batch ${batchIndex}: re-generating ${batch.length} missing revisions`)
+
+        let batchOutput = ''
+        try {
+          batchOutput = await rewriteContract({
+            contractText: reviewContractText,
+            analysisReport: reviewAnalysis,
+            findings: batch
+          }, () => {}, modelProfile.model)
+        } catch (error) {
+          console.warn(`[contract-rewrite] Rewrite batch ${batchIndex} failed:`, error.message)
+          break
+        }
+
+        const batchMerged = mergeRevisions(batch, batchOutput)
+        // 用补全结果覆盖首批中对应 finding（只覆盖成功拿到改写的）
+        const batchById = new Map(batchMerged.revisions.filter((r) => r.hasRewrite).map((r) => [r.findingId, r]))
+        merged.revisions = merged.revisions.map((rev) => batchById.has(rev.findingId) ? { ...rev, ...batchById.get(rev.findingId) } : rev)
+        console.log(`[contract-rewrite] Rewrite batch ${batchIndex}: recovered ${batchById.size}/${batch.length} revisions`)
+
+        // 重新计算缺失项：本批未补全的 + 剩余未处理的
+        const stillMissing = batchMerged.revisions.filter((r) => !r.hasRewrite).map((r) =>
+          reviewResult.findings.find((f) => f.id === r.findingId)
+        ).filter(Boolean)
+        missingFindings = [...remaining, ...stillMissing]
+      }
+
+      if (missingFindings.length > 0) {
+        console.warn(`[contract-rewrite] ${missingFindings.length} revision(s) still missing after batch recovery; falling back to advice`)
+      }
+
+      // 重新统计（补全后部分 action 可能从兜底 modify 变化）
+      const finalTally = { modify: 0, add: 0, delete: 0 }
+      merged.revisions.forEach((rev) => { finalTally[rev.action] = (finalTally[rev.action] || 0) + 1 })
+
+      rewritePayload = {
+        contractText: reviewContractText,
+        revisions: merged.revisions,
+        stats: { rounds: totalRoundsExecuted, total: merged.revisions.length, matched: merged.revisions.filter((r) => r.hasRewrite).length, ...finalTally }
+      }
+      console.log(`[contract-rewrite] Rewrite completed: ${merged.revisions.length} revisions, ${rewritePayload.stats.matched} with rewrite (modify=${finalTally.modify}, add=${finalTally.add}, delete=${finalTally.delete})`)
+
+      writeSSE('stage.complete', {
+        stage: 'rewrite',
+        summary: `最终校验完成，共生成 ${merged.revisions.length} 处修订`,
+        revisionCount: merged.revisions.length
+      })
+    } else {
+      writeSSE('stage.start', { stage: 'rewrite', label: '未发现需修订条款' })
+      writeSSE('stage.complete', { stage: 'rewrite', summary: '未发现需修订条款', revisionCount: 0 })
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+    console.log(`[contract-rewrite] Pipeline completed in ${elapsed}s`)
+
+    // 回传合同原文 + ReviewSession（兼容旧前端的 review.original 事件）
     writeSSE('review.original', { text: parsedText, reviewSession: publicReviewSession(reviewSession) })
+    // 新事件：结构化修订结果，前端据此渲染「行内三明治视图」
+    writeSSE('rewrite.result', rewritePayload)
 
     writeSSE('done', {
       elapsed,
       mode,
       model: modelProfile.model,
       reportLength: reviewReport.length,
-      stages: ['parsing', 'analysis', 'knowledge', 'review']
+      stages: ['parsing', 'analysis', 'knowledge', 'review', 'rewrite']
     })
 
     return res.end()

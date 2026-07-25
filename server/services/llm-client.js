@@ -21,6 +21,42 @@ function buildHeaders() {
   }
 }
 
+/**
+ * 查询当前配置的 DeepSeek API Key 所属账户余额。
+ * 该请求只能由服务端发起，浏览器永远不会读取 API Key。
+ */
+export async function getUserBalance() {
+  if (!DEEPSEEK_API_KEY) throw new Error('尚未配置 DeepSeek API Key')
+
+  const endpoint = `${DEEPSEEK_BASE_URL.replace(/\/$/, '')}/user/balance`
+  const response = await fetch(endpoint, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`
+    }
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload?.error?.message || `余额查询失败（${response.status}）`)
+
+  return {
+    isAvailable: Boolean(payload?.is_available),
+    balances: Array.isArray(payload?.balance_infos) ? payload.balance_infos.map((item) => ({
+      currency: item?.currency === 'USD' ? 'USD' : 'CNY',
+      total: String(item?.total_balance ?? '0'),
+      granted: String(item?.granted_balance ?? '0'),
+      toppedUp: String(item?.topped_up_balance ?? '0')
+    })) : []
+  }
+}
+
+function resolveThinkingOptions(model, thinking, reasoningEffort) {
+  const type = thinking?.type || (model === DEEPSEEK_FLASH_MODEL ? 'disabled' : 'enabled')
+  return {
+    thinking: { type },
+    ...(type === 'enabled' ? { reasoning_effort: reasoningEffort || 'high' } : {})
+  }
+}
+
 async function deepseekFetch(path, body, retries = 3) {
   const url = `${DEEPSEEK_BASE_URL}${path}`
 
@@ -72,7 +108,9 @@ export async function chat(systemPrompt, userMessage, options = {}) {
   const {
     model = DEEPSEEK_MODEL,
     temperature = 0.3,
-    maxTokens = 8192
+    maxTokens = 8192,
+    thinking,
+    reasoningEffort
   } = options
 
   const messages = []
@@ -85,7 +123,8 @@ export async function chat(systemPrompt, userMessage, options = {}) {
     model,
     messages,
     temperature,
-    max_tokens: maxTokens
+    max_tokens: maxTokens,
+    ...resolveThinkingOptions(model, thinking, reasoningEffort)
   })
 
   const data = await response.json()
@@ -111,12 +150,21 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
   const {
     model = DEEPSEEK_MODEL,
     temperature = 0.3,
-    maxTokens = 8192
+    maxTokens = 8192,
+    history = [],
+    thinking,
+    reasoningEffort
   } = options
 
   const messages = []
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt })
+  }
+  if (Array.isArray(history)) {
+    history
+      .filter((message) => ['user', 'assistant'].includes(message?.role) && typeof message?.content === 'string' && message.content.trim())
+      .slice(-12)
+      .forEach((message) => messages.push({ role: message.role, content: message.content.slice(0, 6000) }))
   }
   messages.push({ role: 'user', content: userMessage })
 
@@ -128,7 +176,8 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
     messages,
     temperature,
     max_tokens: maxTokens,
-    stream: true
+    stream: true,
+    ...resolveThinkingOptions(model, thinking, reasoningEffort)
   })
 
   const reader = response.body.getReader()
