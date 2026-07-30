@@ -3,8 +3,8 @@ import multer from 'multer'
 import { extractText } from '../services/file-parser.js'
 import { getKnowledgeBaseStatus, listTemplates, searchEvidence } from '../services/knowledge-base.js'
 import { buildReviewPlan } from '../services/review-plan.js'
-import { buildReviewResult, renderReviewReport, extractReviewPayload } from '../services/annotation-locator.js'
-import { mergeRevisions } from '../services/revision-merger.js'
+import { buildReviewResult, renderReviewReport, extractReviewPayload, findingSimilarity } from '../services/annotation-locator.js'
+import { mergeRevisions, coalesceAdjacentAdds } from '../services/revision-merger.js'
 import { createReviewSession, getReviewSession, publicReviewSession } from '../services/review-session-store.js'
 import { analyzeContract } from '../agents/contract-analyzer.js'
 import { reviewContract } from '../agents/contract-reviewer.js'
@@ -388,16 +388,24 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
       const roundFindings = Array.isArray(roundPayload.findings) ? roundPayload.findings : []
       const newFindingsThisRound = []
       let newThisRound = 0
+      let droppedThisRound = 0
       roundFindings.forEach((candidate) => {
         const key = dedupeKey(candidate)
         if (seenKeys.has(key)) return
+        // 代码级近似去重：提示词只作辅助，换标题/换措辞/拆合表述的同一问题在这里拦下。
+        if (combinedFindings.some((existing) => findingSimilarity(candidate, existing).similar)) {
+          droppedThisRound += 1
+          return
+        }
         seenKeys.add(key)
         newThisRound += 1
         combinedFindings.push(candidate)
         accumulatedSummary.push({
           level: String(candidate?.level || '').trim() || '风险',
           title: String(candidate?.title || '').trim() || '未命名问题',
-          location: String(candidate?.location || '').trim()
+          location: String(candidate?.location || '').trim(),
+          quote: String(candidate?.quote || '').replace(/\s+/g, '').slice(0, 80),
+          risk: String(candidate?.risk || '').replace(/\s+/g, ' ').slice(0, 80)
         })
         // 快照：仅携带前端展示所需的轻量字段（不含 quote 全文，避免数据量过大）
         newFindingsThisRound.push({
@@ -408,7 +416,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
         })
       })
 
-      roundSnapshots.push({ round, newCount: newThisRound, newFindings: newFindingsThisRound })
+      roundSnapshots.push({ round, newCount: newThisRound, dropped: droppedThisRound, newFindings: newFindingsThisRound })
       console.log(`[contract-rewrite] Round ${round}: ${roundFindings.length} findings (${newThisRound} new), combined total = ${combinedFindings.length}`)
 
       // 推送本轮结束信号：携带本轮新增问题清单，前端据此实时罗列
@@ -418,8 +426,9 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
         phase: 'end',
         newFindings: newFindingsThisRound,
         newCount: newThisRound,
+        dropped: droppedThisRound,
         accumulated: combinedFindings.length,
-        message: `第 ${round} 轮审查完成${newThisRound > 0 ? `，新增 ${newThisRound} 条问题（累计 ${combinedFindings.length} 条）` : '，未发现新问题'}`
+        message: `第 ${round} 轮审查完成${newThisRound > 0 ? `，新增 ${newThisRound} 条问题（累计 ${combinedFindings.length} 条）` : '，未发现新问题'}${droppedThisRound > 0 ? `，去重过滤 ${droppedThisRound} 条近似重复` : ''}`
       })
 
       // 提前终止：本轮没有任何新增问题，说明已无遗漏，无需继续后续轮次
@@ -479,12 +488,14 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
       console.warn(`[contract-rewrite] ${reviewResult.stats.unresolved} finding(s) require manual re-review; they were not made selectable`)
     }
 
+    const crossRoundDeduped = roundSnapshots.reduce((sum, item) => sum + (Number(item.dropped) || 0), 0)
+
     writeSSE('stage.complete', {
       stage: 'review',
-      summary: `三轮审查完成（实际执行 ${totalRoundsExecuted} 轮），${reviewResult.stats.confirmed} 条批注已定位到原文${reviewResult.stats.unresolved ? `，${reviewResult.stats.unresolved} 条待核查` : ''}`,
+      summary: `三轮审查完成（实际执行 ${totalRoundsExecuted} 轮），${reviewResult.stats.confirmed} 条批注已定位到原文${reviewResult.stats.unresolved ? `，${reviewResult.stats.unresolved} 条待核查` : ''}${crossRoundDeduped ? `，跨轮去重 ${crossRoundDeduped} 条` : ''}`,
       reportLength: reviewReport.length,
       annotationCount: reviewResult.stats.confirmed,
-      reviewStats: { ...reviewResult.stats, rounds: totalRoundsExecuted },
+      reviewStats: { ...reviewResult.stats, rounds: totalRoundsExecuted, crossRoundDeduped },
       // 逐轮发现快照：前端据此在对话区展示"第X轮发现/新增了哪些问题"
       roundSnapshots
     })
@@ -520,7 +531,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
         return res.end()
       }
 
-      let merged = mergeRevisions(reviewResult.findings, rewriteOutput)
+      let merged = mergeRevisions(reviewResult.findings, rewriteOutput, reviewContractText)
       console.log(`[contract-rewrite] Rewrite pass 1: ${merged.stats.matched}/${merged.revisions.length} matched${merged.recovered ? ' (recovered from truncation)' : ''}`)
 
       // 分批降级补全：仍有 finding 未拿到改写（被截断或漏配）时，按 6 条一批重调。
@@ -551,7 +562,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
           break
         }
 
-        const batchMerged = mergeRevisions(batch, batchOutput)
+        const batchMerged = mergeRevisions(batch, batchOutput, reviewContractText)
         // 用补全结果覆盖首批中对应 finding（只覆盖成功拿到改写的）
         const batchById = new Map(batchMerged.revisions.filter((r) => r.hasRewrite).map((r) => [r.findingId, r]))
         merged.revisions = merged.revisions.map((rev) => batchById.has(rev.findingId) ? { ...rev, ...batchById.get(rev.findingId) } : rev)
@@ -568,20 +579,24 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
         console.warn(`[contract-rewrite] ${missingFindings.length} revision(s) still missing after batch recovery; falling back to advice`)
       }
 
-      // 重新统计（补全后部分 action 可能从兜底 modify 变化）
+      // 重新统计（补全后部分 action 可能从兜底 modify 变化）。统计口径保持 per-finding，与审查报告一致。
       const finalTally = { modify: 0, add: 0, delete: 0 }
       merged.revisions.forEach((rev) => { finalTally[rev.action] = (finalTally[rev.action] || 0) + 1 })
 
+      // 展示层归并：同一插入位置的连续 add 合并为一个修订块（不改变上面的 per-finding 统计）。
+      const displayRevisions = coalesceAdjacentAdds(merged.revisions)
+      const mergedAddCount = merged.revisions.length - displayRevisions.length
+
       rewritePayload = {
         contractText: reviewContractText,
-        revisions: merged.revisions,
-        stats: { rounds: totalRoundsExecuted, total: merged.revisions.length, matched: merged.revisions.filter((r) => r.hasRewrite).length, ...finalTally }
+        revisions: displayRevisions,
+        stats: { rounds: totalRoundsExecuted, total: merged.revisions.length, matched: merged.revisions.filter((r) => r.hasRewrite).length, blocks: displayRevisions.length, ...finalTally }
       }
-      console.log(`[contract-rewrite] Rewrite completed: ${merged.revisions.length} revisions, ${rewritePayload.stats.matched} with rewrite (modify=${finalTally.modify}, add=${finalTally.add}, delete=${finalTally.delete})`)
+      console.log(`[contract-rewrite] Rewrite completed: ${merged.revisions.length} revisions, ${rewritePayload.stats.matched} with rewrite (modify=${finalTally.modify}, add=${finalTally.add}, delete=${finalTally.delete})${mergedAddCount ? `, ${mergedAddCount} add revision(s) coalesced for display` : ''}`)
 
       writeSSE('stage.complete', {
         stage: 'rewrite',
-        summary: `最终校验完成，共生成 ${merged.revisions.length} 处修订`,
+        summary: `最终校验完成，共生成 ${merged.revisions.length} 处修订${mergedAddCount ? '（同一位置的多条新增已合并展示）' : ''}`,
         revisionCount: merged.revisions.length
       })
     } else {

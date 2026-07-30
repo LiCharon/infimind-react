@@ -1,12 +1,13 @@
 import React, { useState } from 'react'
-import { 
+import {
   Brain,
-  FileText, 
-  Scale, 
-  BookOpen, 
-  Calculator, 
-  Building2, 
-  User 
+  FileText,
+  Scale,
+  BookOpen,
+  Calculator,
+  Building2,
+  User,
+  FileSearch
 } from 'lucide-react'
 import './ProductSection.css'
 
@@ -20,6 +21,15 @@ const ProductSection = () => {
       title: '法飞飞AI用工风险助手',
       desc: '智能AI助手，一站式解决企业全流程用工风险管理问题',
       video: '/法飞飞AI.mp4'
+    },
+    {
+      id: 'contract-review',
+      icon: FileSearch,
+      title: '商业合同审查与批注',
+      desc: '三轮智能审查，精准定位风险条款，生成专业批注稿和修订建议',
+      link: '/contract-rewrite',
+      linkText: '立即体验',
+      isInternal: true
     },
     {
       id: 'labor-contract',
@@ -90,7 +100,11 @@ const ProductSection = () => {
                   </div>
                   <h3>{product.title}</h3>
                   <p>{product.desc}</p>
-                  <a href="https://jsj.top/f/NctQWw" target="_blank" rel="noopener noreferrer" className="learn-more">了解更多 →</a>
+                  {product.isInternal ? (
+                    <a href={product.link} className="learn-more">{product.linkText || '了解更多'} →</a>
+                  ) : (
+                    <a href="https://jsj.top/f/NctQWw" target="_blank" rel="noopener noreferrer" className="learn-more">了解更多 →</a>
+                  )}
                 </div>
               )
             })}
@@ -112,6 +126,19 @@ const ProductSection = () => {
                     muted
                     playsInline
                   />
+                ) : product.isInternal ? (
+                  <div className="product-internal-preview">
+                    <div className="internal-preview-content">
+                      <div className="internal-preview-icon">
+                        {React.createElement(product.icon, { size: 64, strokeWidth: 1.5 })}
+                      </div>
+                      <h3>{product.title}</h3>
+                      <p>{product.desc}</p>
+                      <a href={product.link} className="internal-preview-btn">
+                        {product.linkText || '立即体验'} →
+                      </a>
+                    </div>
+                  </div>
                 ) : (
                   <div className="product-img-placeholder">
                     {product.title}演示

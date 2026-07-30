@@ -19,6 +19,8 @@
 
 /* 被修订的条款：波浪线下划线，提示用户此处有修订块。 */
 .clause-flagged { text-decoration: underline wavy #fd7002; text-decoration-skip-ink: none; text-underline-offset: 4px; }
+/* 精确命中的问题子句：只给子句片段加波浪线，替代整行标注。 */
+.quote-mark { text-decoration: underline wavy #fd7002; text-decoration-skip-ink: none; text-underline-offset: 4px; }
 @media (max-width: 1100px) { .chat-sidebar { width: 230px; flex-basis: 230px; }.composer-wrap { left: 230px; }.document-expanded .chat-column { width: 42%; flex-basis: 42%; min-width: 360px; }.document-expanded .composer-wrap { width: 42%; min-width: 360px; }.document-scroll { padding-right: 50px; padding-left: 50px; } }
 @media (max-width: 760px) { .chat-sidebar { display: none; }.chat-header { height: 64px; flex-basis: 64px; padding: 0 13px; }.conversation-inner { width: calc(100% - 30px); padding-top: 28px; }.assistant-turn p, .user-turn > p { font-size: 15px; }.composer-wrap { left: 0; padding: 12px 14px 16px; }.composer { min-height: 102px; border-radius: 20px; padding: 13px 15px 10px; }.tool-text.mobile-hide { display: none; }.tool-text { font-size: 13px !important; }.document-expanded { display: block; overflow: auto; }.document-expanded .chat-column, .document-column { width: 100%; min-width: 0; height: 62vh; }.document-expanded .composer-wrap { position: fixed; left: 0; width: 100%; min-width: 0; }.document-column { height: 100vh; }.document-expanded .chat-column { display: none; }.document-header { height: 60px; flex-basis: 60px; padding: 0 12px; }.document-header > span, .document-header button:not(.close-document) { display: none; }.document-scroll { padding: 42px 22px 70px; }.contract-document h1 { margin-bottom: 32px; font-size: 28px; }.contract-document h2 { margin-top: 32px; font-size: 20px; }.contract-document p { font-size: 15px; line-height: 1.85; } }
 
@@ -102,9 +104,12 @@
 .revision-label { flex: 0 0 auto; width: 34px; padding-top: 1px; color: #9a9a9e; font-size: 12px; font-weight: 500; }
 .revision-text { flex: 1; min-width: 0; word-break: break-word; }
 
-/* 原句：灰色 + 删除线，明确表达"被替换/删除"。 */
+/* 原句：整条条款灰色显示作上下文；仅问题子句加删除线，无法精确命中时整条划线。 */
 .revision-original { background: #fff; }
-.revision-original .original-text { color: #999; text-decoration: line-through; text-decoration-color: #c0392b; text-decoration-thickness: 1.5px; }
+.revision-original .original-text { color: #999; }
+.revision-original .original-text.strike-all, .revision-original .quote-strike { text-decoration: line-through; text-decoration-color: #c0392b; text-decoration-thickness: 1.5px; }
+/* add 修订的插入锚点行：只提示插入位置，不划线。 */
+.revision-original .anchor-text { color: #666; }
 
 /* 改写句：红色加粗，是修订的核心内容。 */
 .revision-rewritten { background: #fef5f5; }

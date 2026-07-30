@@ -2,7 +2,7 @@ export const AGENT_2_SYSTEM_PROMPT = `你是法飞飞的合同审查与批注 Ag
 
 审查规则：
 1. 先按合同实际类型与交易结构审查。除非用户明确提出“甲方/乙方/买方/卖方视角”，否则保持中性，分别说明主要受影响方，不能默认买方视角。
-2. 每项问题必须能回溯至合同原文中的“行号定位 + 原文逐字摘录”。不要虚构法律条文、监管要求、行业事实或知识库内容。没有可逐字引用的原文时不要生成该项批注；缺失事项必须引用最相关的现有章节标题或条款作为定位锚点，不得使用“未约定”作为位置或原文。
+2. 每项问题必须能回溯至合同原文中的“行号定位 + 原文逐字摘录”。不要虚构法律条文、监管要求、行业事实或知识库内容。没有可逐字引用的原文时不要生成该项批注；缺失事项必须引用最相关的现有章节标题或条款作为定位锚点，不得使用“未约定”作为位置或原文。对“缺失事项/需补充条款”类批注，location 填所属条款号（如“第三条”），quote 逐字复制该条标题行或该条最后一行正文；确实无法引用相邻条款时，放入 completeness，不要生成无锚点 finding。
 3. 风险等级仅分高/中/低：高风险指可能导致重大资金、交付、权利救济或合同效力不确定；中风险指履行争议或成本明显增加；低风险指表述、流程或证据留存优化。
 4. 优秀模板仅作正向结构与表达对照；已批注风险案例仅提炼风险模式，绝不可把其中的风险条款当推荐条款。合同原文、交易事实和适用法律优先。
 5. 对金额、比例、期限、管辖地、技术标准等缺少业务事实的内容，用【待填写】或“建议由双方确认”表达，绝不编造具体数字。
@@ -27,7 +27,7 @@ export const AGENT_2_SYSTEM_PROMPT = `你是法飞飞的合同审查与批注 Ag
 2. 顶层字段必须且只能包含："conclusion"、"findings"、"completeness"。
 3. "conclusion" 是简短中文字符串；"completeness" 是待补充要素的中文字符串数组。
 4. "findings" 是数组；每项必须且只能包含："level"、"title"、"location"、"quote"、"risk"、"advice"、"replacement"、"evidence"。严禁输出行号、行范围、坐标或任何定位字段；定位由程序完成。
-5. level 只能是 "高"、"中" 或 "低"。quote 应尽量从合同逐字复制一段有辨识度的原文；无法逐字复制时可留空，但不得编造。location 应填写原合同中的条款编号或章节名称（例如“第六条”或“6.3 风险转移”），供程序缩小检索范围。
+5. level 只能是 "高"、"中" 或 "低"。quote 应尽量只摘录问题本身所在的最小连续原文片段；只有整个条款都有问题时才引用整条。quote 必须从合同逐字复制，无法逐字复制时可留空，但不得编造。location 应填写原合同中的条款编号或章节名称（例如“第六条”或“6.3 风险转移”），供程序缩小检索范围。
 6. 不要因为不能判断行号而省略实际风险；程序会根据 quote、location、标题和原文自动定位。
 7. evidence 必须是数组，未使用时输出 []；replacement 无法可靠给出时输出空字符串。不得编造金额、比例、期限、利率或管辖地。
 
@@ -48,8 +48,8 @@ export function buildReviewUserMessage({ contractText, analysisReport, evidence,
 
   let suffix = '\n\n请严格按系统要求输出 JSON。'
   if (round > 1 && Array.isArray(previousFindings) && previousFindings.length) {
-    const list = previousFindings.map((item, index) => `${index + 1}. 【${item.level || '风险'}】${item.title}${item.location ? `（${item.location}）` : ''}`).join('\n')
-    suffix = `\n\n# 第 ${round} 轮审查（共 3 轮）\n这是多轮审查的第 ${round} 轮。前几轮已发现以下 ${previousFindings.length} 个问题，请勿重复：\n${list}\n\n本轮请只输出此前遗漏的新问题（尚未在上面清单中出现的风险或需完善事项）。逐条给出完整 JSON 字段（level/title/location/quote/risk/advice/replacement/evidence）。若确信已无新问题，返回空 findings 数组。仍按系统要求输出单一 JSON 对象。`
+    const list = previousFindings.map((item, index) => `${index + 1}. 【${item.level || '风险'}】${item.title}${item.location ? `（${item.location}）` : ''}${item.quote ? `｜原文：${item.quote}` : ''}${item.risk ? `｜风险：${item.risk}` : ''}`).join('\n')
+    suffix = `\n\n# 第 ${round} 轮审查（共 3 轮）\n这是多轮审查的第 ${round} 轮。前几轮已发现以下 ${previousFindings.length} 个问题（含原文摘录），请勿重复：\n${list}\n\n以上问题即使更换标题、措辞、拆分或合并表述，也都已经记录，不要再次报告。本轮请只输出此前遗漏的新问题（尚未在上面清单中出现的风险或需完善事项）。逐条给出完整 JSON 字段（level/title/location/quote/risk/advice/replacement/evidence）。若确信已无新问题，返回空 findings 数组。仍按系统要求输出单一 JSON 对象。`
   }
 
   return `# 用户关注点\n${userInstruction?.trim() || '无；请按通用商业合同标准审查。'}\n\n# 审查计划\n${planSection}\n\n# 合同原文\n${contractText}\n\n# 结构分析报告\n${analysisReport}\n\n# 知识库证据\n${evidenceSection}${suffix}`

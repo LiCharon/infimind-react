@@ -7,6 +7,7 @@
  * - Agent 3 只负责"如何修订"：action(改/增/删)、rewrittenText、riskNote。
  * - 漏配或解析失败的 finding，用 advice/replacement 兜底，保证每条风险都有对应的修订块。
  */
+import { findQuoteRanges, isClauseHeadingLine, locationTokens } from './annotation-locator.js'
 
 const asText = (value) => (typeof value === 'string' ? value.trim() : '')
 
@@ -92,14 +93,89 @@ const normalizeAction = (value) => {
   return 'modify'
 }
 
+const asSequence = (value, fallback) => {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
+// add 锚点解析：优先使用 Agent 3 给出的逐字 insertAfterQuote；无法唯一确认时，
+// 标题锚点插入到所属条款末尾，普通锚点插入到 finding 行后；再失败则 unresolved，不猜位置。
+const resolveAddAnchor = ({ finding, matched, contractLines }) => {
+  const lineStart = Number.isInteger(finding?.lineStart) ? finding.lineStart : -1
+  const lineEnd = Number.isInteger(finding?.lineEnd) ? finding.lineEnd : lineStart
+  const clauseEnd = Number.isInteger(finding?.clauseEnd) ? finding.clauseEnd : -1
+  const insertAfterQuote = asText(matched?.insertAfterQuote)
+
+  if (insertAfterQuote && contractLines.length) {
+    const ranges = findQuoteRanges(contractLines, insertAfterQuote)
+    let chosen = null
+    let anchorStatus = 'verified'
+    if (ranges.length === 1) {
+      chosen = ranges[0]
+    } else if (ranges.length > 1) {
+      const tokens = locationTokens(finding?.location || '')
+      const locationLines = tokens.length
+        ? contractLines.map((line, index) => ({ line, index })).filter(({ line }) => tokens.some((token) => line.includes(token))).map(({ index }) => index)
+        : []
+      chosen = ranges.toSorted((left, right) => {
+        const distance = (range) => locationLines.length
+          ? Math.min(...locationLines.map((line) => Math.abs(range.end - line)))
+          : Math.abs(range.end - lineEnd)
+        return distance(left) - distance(right)
+      })[0]
+      anchorStatus = 'code-located'
+    }
+    if (chosen && Number.isInteger(chosen.end) && contractLines[chosen.end]) {
+      return {
+        insertAfterLine: chosen.end,
+        anchorText: String(contractLines[chosen.end] || '').trim(),
+        anchorStatus
+      }
+    }
+  }
+
+  if (lineStart >= 0 && contractLines[lineStart] && isClauseHeadingLine(contractLines[lineStart]) && clauseEnd >= lineStart && contractLines[clauseEnd]) {
+    return {
+      insertAfterLine: clauseEnd,
+      anchorText: String(contractLines[lineStart] || '').trim(),
+      anchorStatus: 'code-located'
+    }
+  }
+
+  if (lineEnd >= 0 && contractLines[lineEnd]) {
+    return {
+      insertAfterLine: lineEnd,
+      anchorText: String(contractLines[lineEnd] || '').trim() || asText(finding?.originalText),
+      anchorStatus: 'code-located'
+    }
+  }
+
+  return { insertAfterLine: -1, anchorText: asText(finding?.originalText), anchorStatus: 'unresolved' }
+}
+
+const sortLineForRevision = (revision) => {
+  if (revision.action === 'add') return revision.insertAfterLine >= 0 ? revision.insertAfterLine : Number.MAX_SAFE_INTEGER
+  return Number.isInteger(revision.lineStart) ? revision.lineStart : Number.MAX_SAFE_INTEGER
+}
+
+const sortRevisions = (revisions) => revisions.sort((left, right) => {
+  const lineDiff = sortLineForRevision(left) - sortLineForRevision(right)
+  if (lineDiff) return lineDiff
+  const sequenceDiff = (left.sequence || 0) - (right.sequence || 0)
+  if (sequenceDiff) return sequenceDiff
+  return String(left.findingId).localeCompare(String(right.findingId))
+})
+
 /**
  * 把可信的 findings 与 Agent 3 的 revisions 按 findingId（或顺序）配对。
  *
- * @param {Array} findings - 来自 buildReviewResult 的 canonical findings（含可信 originalText/lineStart/lineEnd）
- * @param {string} agentOutput - Agent 3 返回的完整 JSON 文本，形如 { revisions: [{ findingId, action, rewrittenText, riskNote }] }
+ * @param {Array} findings - 来自 buildReviewResult 的 canonical findings（含可信 originalText/lineStart/lineEnd/quoteSpans）
+ * @param {string} agentOutput - Agent 3 返回的完整 JSON 文本，形如 { revisions: [{ findingId, action, rewrittenText, riskNote, insertAfterQuote?, sequence? }] }
+ * @param {string} contractText - 原合同全文，用于解析 add 的 insertAfterQuote 与条款末尾锚点
  * @returns {{ revisions: Array, stats: object, recovered: boolean, matchedIds: string[] }}
  */
-export function mergeRevisions(findings = [], agentOutput = '') {
+export function mergeRevisions(findings = [], agentOutput = '', contractText = '') {
+  const contractLines = String(contractText || '').split('\n')
   let payload = { revisions: [] }
   let recovered = false
   try {
@@ -139,6 +215,10 @@ export function mergeRevisions(findings = [], agentOutput = '') {
     const rewrittenText = agentRewrittenText || asText(finding.replacement) || ''
     // 批注说明优先用 Agent 3 的 riskNote，兜底用 finding 的 advice / risk。
     const riskNote = asText(matched?.riskNote) || asText(finding.advice) || asText(finding.risk) || ''
+    const sequence = asSequence(matched?.sequence, index + 1)
+    const addAnchor = action === 'add'
+      ? resolveAddAnchor({ finding, matched, contractLines })
+      : { insertAfterLine: -1, anchorText: '', anchorStatus: 'not-applicable' }
 
     if (matched) matchedIds.push(finding.id)
     tally[action] += 1
@@ -152,6 +232,10 @@ export function mergeRevisions(findings = [], agentOutput = '') {
       lineStart: finding.lineStart,
       lineEnd: finding.lineEnd,
       originalText: finding.originalText,
+      quoteText: asText(finding.quoteText),
+      quoteSpans: Array.isArray(finding.quoteSpans) ? finding.quoteSpans : [],
+      quoteStatus: finding.quoteStatus === 'exact' ? 'exact' : 'none',
+      clauseEnd: Number.isInteger(finding.clauseEnd) ? finding.clauseEnd : -1,
       risk: finding.risk,
       advice: finding.advice,
       evidence: finding.evidence,
@@ -159,10 +243,16 @@ export function mergeRevisions(findings = [], agentOutput = '') {
       action,
       rewrittenText,
       riskNote,
+      sequence,
+      insertAfterLine: addAnchor.insertAfterLine,
+      anchorText: addAnchor.anchorText,
+      anchorStatus: addAnchor.anchorStatus,
       // 标记本条是否成功匹配到 Agent 3 的改写输出（用于分批补全判断）
       hasRewrite: Boolean(agentRewrittenText)
     })
   })
+
+  sortRevisions(revisions)
 
   return {
     revisions,
@@ -176,4 +266,48 @@ export function mergeRevisions(findings = [], agentOutput = '') {
     recovered,
     matchedIds
   }
+}
+
+const LEVEL_RANK = { 高: 3, 中: 2, 低: 1 }
+const CIRCLED_NUMBERS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
+
+// 同锚点 add 合并：纯粹是"渲染前的展示归并"，必须在匹配/分批补全全部完成后调用。
+// insertAfterLine 相同的多条 add（如围绕同一条款的补充约定）按 sequence 排序后合并为一个修订块：
+// rewrittenText 依序拼接成连贯段落，riskNote 编号罗列，level 取最高，findingId 用复合形式。
+// stats 不做调整——统计口径始终保持 per-finding，与审查报告一致。
+export function coalesceAdjacentAdds(revisions = []) {
+  const groupsByAnchor = new Map()
+  revisions.forEach((rev) => {
+    if (rev?.action !== 'add' || !Number.isInteger(rev.insertAfterLine) || rev.insertAfterLine < 0) return
+    if (!groupsByAnchor.has(rev.insertAfterLine)) groupsByAnchor.set(rev.insertAfterLine, [])
+    groupsByAnchor.get(rev.insertAfterLine).push(rev)
+  })
+
+  // findingId -> 合并块（组首）或 null（被吞并的成员）
+  const mergedByFindingId = new Map()
+  groupsByAnchor.forEach((group) => {
+    if (group.length < 2) return
+    const sorted = group.slice().sort((left, right) => (left.sequence || 0) - (right.sequence || 0))
+    const first = sorted[0]
+    const texts = sorted.map((rev) => asText(rev.rewrittenText)).filter(Boolean)
+    const notes = sorted.map((rev) => asText(rev.riskNote)).filter(Boolean)
+    mergedByFindingId.set(first.findingId, {
+      ...first,
+      findingId: sorted.map((rev) => rev.findingId).join('+'),
+      mergedFindingIds: sorted.map((rev) => rev.findingId),
+      mergedCount: sorted.length,
+      level: sorted.reduce((top, rev) => (LEVEL_RANK[rev.level] || 0) > (LEVEL_RANK[top] || 0) ? rev.level : top, first.level),
+      rewrittenText: texts.join('\n'),
+      riskNote: notes.length > 1
+        ? notes.map((note, index) => `${CIRCLED_NUMBERS[index] || `${index + 1}.`}${note}`).join(' ')
+        : (notes[0] || asText(first.riskNote)),
+      hasRewrite: sorted.every((rev) => rev.hasRewrite)
+    })
+    sorted.slice(1).forEach((rev) => mergedByFindingId.set(rev.findingId, null))
+  })
+
+  if (!mergedByFindingId.size) return revisions
+  return revisions
+    .map((rev) => mergedByFindingId.has(rev.findingId) ? mergedByFindingId.get(rev.findingId) : rev)
+    .filter(Boolean)
 }

@@ -63,6 +63,132 @@ const overlapScore = (query, source) => {
   return matched / queryGrams.size
 }
 
+const CLAUSE_HEADING_RE = /^\s*(?:#{1,4}\s*)?第[一二三四五六七八九十百千万零〇两\d]+条/
+
+const isClauseHeadingLine = (line = '') => CLAUSE_HEADING_RE.test(String(line))
+
+// 条款末尾：从定位行向后扫描到下一个“第X条”标题，供新增条款兜底插入到所属条款之后。
+const findClauseEnd = (lines, startLine) => {
+  if (!Array.isArray(lines) || !Number.isInteger(startLine) || startLine < 0) return -1
+  for (let index = startLine + 1; index < lines.length; index += 1) {
+    if (isClauseHeadingLine(lines[index])) return index - 1
+  }
+  return lines.length - 1
+}
+
+// 只做精确子串命中：把 normalizeForMatch 会丢弃的空白/引号保留为偏移映射，
+// 命中后回映成原始行内字符区间。无法精确映射时不猜 span，交由前端回退整段显示。
+const findQuoteSpansInRange = (lines, range, quote = '') => {
+  const needle = normalizeForMatch(quote)
+  if (!Array.isArray(lines) || !range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || needle.length < 6) {
+    return { quoteText: '', quoteSpans: [], quoteStatus: 'none' }
+  }
+
+  let normalizedHaystack = ''
+  const charMap = []
+  for (let line = range.start; line <= range.end; line += 1) {
+    const rawLine = String(lines[line] ?? '')
+    for (let offset = 0; offset < rawLine.length; offset += 1) {
+      const char = rawLine[offset]
+      if (/[\s　]/.test(char) || /[“”"'‘’]/.test(char)) continue
+      normalizedHaystack += char
+      charMap.push({ line, offset })
+    }
+  }
+
+  const hitIndex = normalizedHaystack.indexOf(needle)
+  const hitEnd = hitIndex + needle.length - 1
+  if (hitIndex < 0 || !charMap[hitIndex] || !charMap[hitEnd]) {
+    return { quoteText: '', quoteSpans: [], quoteStatus: 'none' }
+  }
+
+  const start = charMap[hitIndex]
+  const end = charMap[hitEnd]
+  const quoteSpans = []
+  for (let line = start.line; line <= end.line; line += 1) {
+    const rawLine = String(lines[line] ?? '')
+    const spanStart = line === start.line ? start.offset : 0
+    const spanEnd = line === end.line ? end.offset + 1 : rawLine.length
+    if (spanEnd > spanStart) quoteSpans.push({ line, start: spanStart, end: spanEnd })
+  }
+
+  const quoteText = quoteSpans.map((span) => String(lines[span.line] ?? '').slice(span.start, span.end)).join('\n').trim()
+  const originalText = lines.slice(range.start, range.end + 1).join('\n').trim()
+  if (!quoteText || !originalText.includes(quoteText)) {
+    return { quoteText: '', quoteSpans: [], quoteStatus: 'none' }
+  }
+  return { quoteText, quoteSpans, quoteStatus: 'exact' }
+}
+
+const rangesOverlap = (left, right) => Boolean(
+  left && right &&
+  Number.isInteger(left.start) && Number.isInteger(left.end) &&
+  Number.isInteger(right.start) && Number.isInteger(right.end) &&
+  left.start <= right.end && right.start <= left.end
+)
+
+const bidirectionalOverlap = (left = '', right = '') => {
+  const a = normalizeForMatch(left)
+  const b = normalizeForMatch(right)
+  if (!a || !b) return 0
+  if (a === b) return 1
+  return (overlapScore(a, b) + overlapScore(b, a)) / 2
+}
+
+// quote 相似度：完全相等为 1；包含关系返回真实长度比（子片段≠同一问题，交给 title 二次把关）；
+// 否则用双向 n-gram 重叠度。
+const quoteSimilarity = (left = '', right = '') => {
+  const a = normalizeForMatch(left)
+  const b = normalizeForMatch(right)
+  if (!a || !b) return 0
+  if (a === b) return 1
+  if (a.includes(b) || b.includes(a)) {
+    return Math.min(a.length, b.length) / Math.max(a.length, b.length)
+  }
+  return bidirectionalOverlap(a, b)
+}
+
+const findingRange = (value = {}) => {
+  if (Number.isInteger(value.lineStart)) return { start: value.lineStart, end: Number.isInteger(value.lineEnd) ? value.lineEnd : value.lineStart }
+  if (value.range && Number.isInteger(value.range.start)) return { start: value.range.start, end: Number.isInteger(value.range.end) ? value.range.end : value.range.start }
+  return null
+}
+
+// 跨轮/跨措辞近似判重：quote 最可信，其次要求区间或位置相近，避免把同一条款的两个不同问题误合并。
+const findingSimilarity = (left = {}, right = {}) => {
+  const quoteSim = quoteSimilarity(left.quote ?? left.quoteText ?? '', right.quote ?? right.quoteText ?? '')
+  const titleSim = bidirectionalOverlap(left.title ?? '', right.title ?? '')
+  const leftLocation = normalizeForMatch(left.location ?? '')
+  const rightLocation = normalizeForMatch(right.location ?? '')
+  const sameLocation = Boolean(leftLocation && rightLocation && leftLocation === rightLocation)
+  const rangeOverlap = rangesOverlap(findingRange(left), findingRange(right))
+
+  // quote 高度一致（同一句的截断/扩写）直接判重；但 quote 完全相同时，缺失条款类批注常共用
+  // 同一锚点行（如"到期时还本付息"），此时要看"问题同一性"：标题与风险描述需同时有重合
+  // （共用锚点的不同缺失项，标题可能撞词如"还款"，但风险描述通常无关，借此区分）。
+  const issueSim = bidirectionalOverlap(`${left.title ?? ''} ${left.risk ?? ''}`, `${right.title ?? ''} ${right.risk ?? ''}`)
+  const riskSim = bidirectionalOverlap(left.risk ?? '', right.risk ?? '')
+  const issueMatch = issueSim >= 0.35 || (titleSim >= 0.3 && riskSim >= 0.15)
+  if (quoteSim >= 0.85 && (quoteSim < 1 || issueMatch)) return { similar: true, reason: 'quote', quoteSim, titleSim, sameLocation, rangeOverlap }
+  if (quoteSim >= 0.55 && titleSim >= 0.45) return { similar: true, reason: 'quote-title', quoteSim, titleSim, sameLocation, rangeOverlap }
+  if (rangeOverlap && quoteSim >= 0.45 && issueMatch) return { similar: true, reason: 'range-quote', quoteSim, titleSim, sameLocation, rangeOverlap }
+  if (rangeOverlap && titleSim >= 0.75 && quoteSim >= 0.20) return { similar: true, reason: 'range-title', quoteSim, titleSim, sameLocation, rangeOverlap }
+  if (sameLocation && titleSim >= 0.82 && quoteSim >= 0.25) return { similar: true, reason: 'location-title', quoteSim, titleSim, sameLocation, rangeOverlap }
+  return { similar: false, reason: '', quoteSim, titleSim, sameLocation, rangeOverlap }
+}
+
+export {
+  normalizeForMatch,
+  findQuoteRanges,
+  locationTokens,
+  lineNgrams,
+  overlapScore,
+  isClauseHeadingLine,
+  findClauseEnd,
+  findQuoteSpansInRange,
+  findingSimilarity
+}
+
 const findCodeLocatedRange = (lines, { location = '', quote = '', title = '', risk = '' }) => {
   const exactRanges = findQuoteRanges(lines, quote)
   if (exactRanges.length === 1) return { range: exactRanges[0], status: 'verified' }
@@ -89,7 +215,9 @@ const findCodeLocatedRange = (lines, { location = '', quote = '', title = '', ri
     const nearest = exactRanges.toSorted((left, right) => Math.min(...locationLines.map((line) => Math.abs(left.start - line))) - Math.min(...locationLines.map((line) => Math.abs(right.start - line))))[0]
     return { range: nearest, status: 'code-located' }
   }
-  if (best && (locationLines.length || best.score >= 0.18)) return { range: { start: best.index, end: best.index }, status: 'code-located' }
+  // 有 location 线索也只能降低门槛，不能 0 分放行；否则“缺失条款”类批注会被随意锚到标题行。
+  const minimumScore = locationLines.length ? 0.10 : 0.18
+  if (best && best.score >= minimumScore) return { range: { start: best.index, end: best.index }, status: 'code-located' }
   return null
 }
 
@@ -204,6 +332,30 @@ export function buildReviewResult({ contractText = '', modelOutput = '' }) {
       deduplicatedCount += 1
       return
     }
+
+    const spanInfo = findQuoteSpansInRange(lines, range, quote)
+    const clauseEnd = findClauseEnd(lines, range.start)
+    const candidateCore = {
+      title,
+      location: asText(candidate?.location),
+      risk,
+      quote: spanInfo.quoteText || quote,
+      lineStart: range.start,
+      lineEnd: range.end
+    }
+    const isDuplicate = findings.some((existing) => findingSimilarity(candidateCore, {
+      title: existing.title,
+      location: existing.location,
+      risk: existing.risk,
+      quote: existing.quoteText || existing.originalText,
+      lineStart: existing.lineStart,
+      lineEnd: existing.lineEnd
+    }).similar)
+    if (isDuplicate) {
+      deduplicatedCount += 1
+      return
+    }
+
     seen.add(duplicateKey)
     const status = located.status
     if (status !== 'verified') repairedCount += 1
@@ -213,8 +365,12 @@ export function buildReviewResult({ contractText = '', modelOutput = '' }) {
       title,
       location: asText(candidate?.location),
       anchor: `L${range.start + 1}${range.end > range.start ? `-L${range.end + 1}` : ''}`,
-      // 只展示代码从合同中实际取到的原文，不能展示模型改写或概括出的 quote。
+      // 条款上下文：展示完整所在条款；问题子句由 quoteText/quoteSpans 单独标出。
       originalText: sourceText,
+      quoteText: spanInfo.quoteText,
+      quoteSpans: spanInfo.quoteSpans,
+      quoteStatus: spanInfo.quoteStatus,
+      clauseEnd,
       risk,
       advice,
       replacement: asText(candidate?.replacement),
@@ -237,6 +393,7 @@ export function buildReviewResult({ contractText = '', modelOutput = '' }) {
       repaired: repairedCount,
       unresolved: unresolved.length,
       deduplicated: deduplicatedCount,
+      quoteExact: findings.filter((finding) => finding.quoteStatus === 'exact').length,
       confirmed: findings.length
     }
   }
@@ -255,6 +412,7 @@ export function renderReviewReport(reviewResult) {
       `- 定位：${finding.anchor}`,
       `- 位置：${finding.location || '相关条款'}`,
       `- 原文：${finding.originalText}`,
+      ...(finding.quoteText && finding.quoteText !== finding.originalText ? [`- 问题子句：${finding.quoteText}`] : []),
       `- 风险：${finding.risk}`,
       `- 建议：${finding.advice}`
     )

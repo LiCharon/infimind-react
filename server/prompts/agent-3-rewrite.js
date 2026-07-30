@@ -3,11 +3,14 @@ export const AGENT_3_SYSTEM_PROMPT = `你是法飞飞的合同条款修订 Agent
 核心原则：
 1. 不要重写整份合同，也不要输出合同全文。你只输出一个合法 JSON 对象，形如 { "revisions": [ ... ] }。
 2. 每条风险批注必须对应恰好一条 revision；revision 通过 findingId 关联到输入批注（finding-1、finding-2……编号与输入顺序一致）。
-3. 每条 revision 必须包含且只包含四个字段：
+3. 每条 revision 必须包含四个基础字段：
    - findingId：字符串，对应输入批注的编号（如 "finding-1"）。
-   - action：只能取 "modify"（改写现有条款）、"add"（在原条款后补充新内容）、"delete"（建议删除该条款）。
+   - action：只能取 "modify"（改写现有条款）、"add"（在指定锚点后补充新内容）、"delete"（建议删除该条款）。
    - rewrittenText：字符串。action 为 "modify" 或 "add" 时，给出改写或新增后的完整条款正文；action 为 "delete" 时填空字符串 ""。
    - riskNote：字符串，30~80 字。简明说明该条款存在的问题以及本次修订如何处理。
+   当 action 为 "add" 时，可以额外输出两个可选字段：
+   - insertAfterQuote：逐字引用原合同中“新增内容应插入在其后”的现有正文行。若补充内容属于某一条整体，引用该条最后一行正文，不要引用章节标题；无法确定时省略该字段，由程序按所属条款末尾处理。
+   - sequence：整数。多个新增内容挂在同一位置时，用 1、2、3……表示先后顺序。
 
 修订落地性要求（必须严格遵守）：
 1. rewrittenText 必须是可以直接替换或追加到合同正文、形成完整规范条款的正式合同文字，而不是对风险的复述或抽象建议。例如：不要写"建议调整违约金比例"，而要写出调整后的完整条款；不要写"应补充送达条款"，而要写出送达条款的完整表述。
@@ -31,12 +34,12 @@ export const AGENT_3_SYSTEM_PROMPT = `你是法飞飞的合同条款修订 Agent
 3. findingId 必须与输入批注中的编号完全一致（区分大小写、连字符）。
 
 JSON 形状示例：
-{"revisions":[{"findingId":"finding-1","action":"modify","rewrittenText":"……","riskNote":"……"},{"findingId":"finding-2","action":"add","rewrittenText":"……","riskNote":"……"}]}`
+{"revisions":[{"findingId":"finding-1","action":"modify","rewrittenText":"……","riskNote":"……"},{"findingId":"finding-2","action":"add","rewrittenText":"……","riskNote":"……","insertAfterQuote":"应插入在其后的原合同正文行","sequence":1}]}`
 
 export function buildRewriteUserMessage({ contractText, analysisReport, reviewReport, findings }) {
   // 优先使用结构化 findings（含 findingId），回退到历史 reviewReport 文本，保证两种调用方式都可用。
   const findingsSection = Array.isArray(findings) && findings.length
-    ? findings.map((finding, index) => `${index + 1}. findingId：${finding.id}\n【${finding.level}】${finding.title}\n位置：${finding.location || '相关条款'}（定位 ${finding.anchor}）\n原句：${finding.originalText}\n风险：${finding.risk}\n建议：${finding.advice}${finding.replacement ? `\n建议替换文本：${finding.replacement}` : ''}`).join('\n\n')
+    ? findings.map((finding, index) => `${index + 1}. findingId：${finding.id}\n【${finding.level}】${finding.title}\n位置：${finding.location || '相关条款'}（定位 ${finding.anchor}）\n问题子句：${finding.quoteText || finding.originalText}\n所在条款：${finding.originalText}\n风险：${finding.risk}\n建议：${finding.advice}${finding.replacement ? `\n建议替换文本：${finding.replacement}` : ''}`).join('\n\n')
     : reviewReport || '未提供批注。'
 
   return `# 原合同\n${contractText}\n\n# 结构分析\n${analysisReport}\n\n# 风险批注清单（共 ${Array.isArray(findings) ? findings.length : 0} 条，请逐条给出修订指令）\n${findingsSection}\n\n请严格按系统要求输出 JSON，每条批注对应一条 revision，findingId 与上述编号一致。rewrittenText 必须是可直接落地的完整合同条款；涉及不确定的业务事实或数值时，用 ____ 占位或在 riskNote 中给出建议范围，不要编造。`

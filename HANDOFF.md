@@ -1,730 +1,200 @@
 # 法飞飞商业合同审查项目交接说明
 
-> 更新时间：2026-07-16 23:15（Asia/Shanghai）  
-> 工作区：`/Users/ypc/Desktop/桌面 - ypc的MacBook Air/项目开发/讯飞法飞飞AI/infimind-react`  
-> 当前分支：`main`  
-> 当前 HEAD：`ff068ad fix(contract-review): unify annotation source and positioning`
+> 更新时间：2026-07-28（Asia/Shanghai）
+> 工作区：`/Users/ypc/Desktop/桌面 - ypc的MacBook Air/项目开发/讯飞法飞飞AI/infimind-react`
+> 当前分支：`main`，HEAD：`703326b feat(contract-review): 三轮审核 + 自动改写 + 行内三明治视图`
+> **当前有一大批未提交改动（见第 6 节），是最近两个会话的成果，已通过静态验证但未做真实合同端到端验证。**
+> CodeGraph：`.codegraph/` 已初始化（codegraph CLI 可用，`codegraph status/query`），该目录未跟踪，默认不提交。
 
-## 1. 当前任务是什么
+---
 
-我们正在把原来的 `/contract-rewrite` “合同改写试用页”替换成新的“商业合同审查与批注”产品，并把前后端完整部署到腾讯云宝塔面板。
+## 1. 我们在做什么任务
 
-完整业务链路目标：
+`/contract-rewrite` 是"商业合同审查与批注"产品：用户上传合同 → Agent 1 结构分析 → 知识库检索 → Agent 2 最多三轮审查 → 代码统一定位 → Agent 3 逐条改写 → 前端"行内三明治视图"批注稿 + 导出 Word。
 
-1. 用户上传 PDF、Word 或合同图片。
-2. Agent 1 分析合同结构、主体和缺失项。
-3. Agent 2 输出结构化风险结论。
-4. 服务端代码把每条风险确定性定位到合同原文。
-5. 正常对话报告和“风险批注待确认”页面必须使用同一份风险数据。
-6. 用户勾选风险批注。
-7. Agent 3 只根据用户确认的风险生成修订稿。
-8. 待填写内容统一显示为 `____`。
+**最近两个会话在解决高强度测试（多份长合同）暴露的三个问题：**
 
-当前最紧急的问题不是 Agent 链路，而是：
+1. **批注位置混乱**，尤其"新增补充条款"类批注锚点乱飞。
+2. **多轮审查重复报告**：即使 prompt 要求基于上轮复审，同一问题换措辞仍会重复出现，需要代码级去重。
+3. **整行标注看不清**：问题点标注整条条款，原文全部划线，用户看不清具体问题子句；且一个条款有多个问题时每个批注都把整条划掉。
 
-> 用户在本地普通浏览器运行当前源代码时仍然看到白屏。构建通过，新浏览器自动化可以正常渲染，但用户真实浏览器的运行时异常还没有抓到，因此问题尚未闭环。
+**本轮追加的第四个问题（用户截图确认）**：围绕同一条款的多个"新增"批注（如提前还款/收款确认/还款顺序）语义上是一段连贯补充约定，却渲染成三个独立块，且锚点原文重复三遍。已用"同锚点 add 展示层合并"解决。
 
-## 2. 项目入口和常用命令
+---
 
-前端路由：
+## 2. 已完成的工作（最近两个会话，未提交）
 
-- 首页：`/`
-- 商业合同审查：`/contract-rewrite`
+### 2.1 精确定位与子句级 span（`server/services/annotation-locator.js`）
 
-常用命令：
+- `findQuoteSpansInRange`：把 finding 的 quote 精确映射为行内字符区间 `quoteSpans: [{line, start, end}]`，产出 `quoteText` 和 `quoteStatus('exact'|'none')`；只做精确子串命中，无法映射时不猜，前端回退整条显示。
+- `findClauseEnd` / `isClauseHeadingLine`：识别"第X条"标题，求条款末尾行，供 add 锚点兜底。
+- `findCodeLocatedRange` 增加最低分门槛（有 location 线索 0.10，无 0.18），不再 0 分放行到标题行。
+- `buildReviewResult` 输出的 finding 新增：`quoteText`、`quoteSpans`、`quoteStatus`、`clauseEnd`；`originalText` 保留整条条款作上下文。
+- `renderReviewReport` 输出"问题子句"行。
+
+### 2.2 代码级去重 `findingSimilarity`（同文件，阈值经实测调过）
+
+判重信号：quote 相似度（`quoteSimilarity`）+ 标题/风险描述相似度（`bidirectionalOverlap`，bigram）+ 行区间重叠 + location 相同。规则要点：
+
+- quote 完全相等（=1）**不等于**同一问题：缺失条款类批注会共用同一锚点行（如"到期时还本付息"）。此时要求"问题同一性" `issueMatch`：`issueSim(标题+风险) ≥ 0.35` 或 `标题 ≥ 0.3 且 风险 ≥ 0.15` 才判重。实测：真重复（违约金比例缺失 vs 违约金未约定具体比例）riskSim=0.268 可合并；不同缺失项（提前还款 vs 还款顺序）标题撞词 0.43 但 riskSim=0，不合并。
+- quote 仅为包含关系（0.55~0.85）时返回真实长度比，需 titleSim ≥ 0.45 才判重；`quoteSim ≥ 0.85` 的截断/扩写直接判重。
+- `buildReviewResult` 内的二次判重已把 `risk` 传入比对（之前没有，issueSim 会退化为只有标题）。
+
+去重是双层的：路由层跨轮 `findingSimilarity` 拦（`roundSnapshots` 带 `dropped` 计数，SSE 消息会报"去重过滤 N 条"）+ `buildReviewResult` 定位后再拦一次。Agent 2 prompt 也配合：前轮清单带原文摘录和风险，明确"换标题/换措辞/拆合表述都已记录"。
+
+### 2.3 add 锚点解析（`server/services/revision-merger.js`）
+
+- `resolveAddAnchor`：优先用 Agent 3 的 `insertAfterQuote` 逐字定位（多处命中时按 location 就近）；失败则条款标题锚点插到 `clauseEnd`；再失败插到 finding 行后；全失败 `anchorStatus: 'unresolved'`，**不猜位置**。
+- Agent 3 prompt 新增可选字段 `insertAfterQuote`（引用锚点行正文，不要引用章节标题）和 `sequence`（同位置多个新增的顺序）。
+- `mergeRevisions(findings, agentOutput, contractText)` 第三个参数必传；revision 新增 `sequence`、`insertAfterLine`、`anchorText`、`anchorStatus`。
+- `sortRevisions`：add 按 `insertAfterLine` 排序，其余按 `lineStart`，次序按 `sequence`。
+
+### 2.4 同锚点 add 展示层合并 `coalesceAdjacentAdds`（同文件末尾）
+
+- **调用时机是关键**：在路由 `contract-rewrite.js` 的分批补全（retry）循环**完成之后、SSE 发送之前**调用。匹配/补全/`matchedIds`/`hasRewrite`/stats 全程保持 per-finding 的 1:1 口径，合并只是渲染前归并。
+- 规则：`insertAfterLine` 相同且 ≥2 条 add → 按 `sequence` 排序合并：`rewrittenText` 用 `\n` 拼接、`riskNote` 用 ①②③ 编号、`level` 取最高（高>中>低）、`findingId` 复合（`finding-1+finding-2+finding-3`）、附 `mergedFindingIds`/`mergedCount`。单条 add 不动。
+- `rewritePayload.stats` 保持 per-finding（total/modify/add/delete），新增 `blocks` 字段（展示块数）供前端判断是否有合并。
+
+### 2.5 前端（`src/pages/ContractRewritePage.jsx` + `.css`）
+
+- `RevisionDocument`：add 修订块挂在 `insertAfterLine` 之后（锚点缺失退回 `lineEnd`）；add 的锚点行不再标为问题行。导出 Word 的分组逻辑与此一致。
+- 子句级标注：新增 `MarkedLineText` 组件——文档体内有精确 `quoteSpans` 的行只给问题子句加橙色波浪线 `.quote-mark`（含前导空白偏移校正、重叠区间合并）；无精确 span 时回退整行 `clause-flagged`。
+- 三明治视图 `OriginalRow`：整条条款灰色显示作上下文，仅问题子句 `<s class="quote-strike">` 划线；`quoteStatus` 非 exact 或 indexOf 失败时回退整条划线 `.strike-all`；add 没有"被替换原文"，显示「位置：插入于 ××× 之后」（`.anchor-text`，不划线）。
+- 导出 Word：原文行同样只划问题子句（`<s>`），add 显示插入位置；Word 内联 CSS 已同步。
+- 计数口径：文档卡片和底部汇总的"N 处修订"改用 `rewriteStats.total`（finding 数）；`stats.blocks < total` 时追加「同一位置的多条新增已合并展示」。旧 localStorage 数据无 `blocks` 字段，自动按原样渲染。
+- 底部提示文案已更新为子句划线语义。
+
+### 2.6 验证状态
+
+- 后端 10 项场景回归全部通过（共用锚点不合并、换措辞去重、同句截写去重、add 三合一、复合 id、批注编号、sequence 拼接、modify 不动、stats 口径、单 add 不合并）。测试脚本当时是 `node --input-type=module -e` 内联跑的，**没有落盘成测试文件**。
+- `node --check` 三个后端文件通过；`npm run build` 通过；`git diff --check` 干净。
+- **未做**：真实合同端到端验证（见第 4 节）。
+
+---
+
+## 3. 架构速览
+
+### 关键文件
+
+- 前端：`src/pages/ContractRewritePage.jsx`（对话页 + `RevisionDocument`/`SandwichBlock`/`OriginalRow`/`MarkedLineText` + 导出 Word）、`src/pages/ContractRewritePage.css`。
+- 后端路由：`server/routes/contract-rewrite.js`（SSE 管线：analysis → knowledge → review×3 → rewrite → 补全 → 合并 → `rewrite.result`）。
+- 定位/去重：`server/services/annotation-locator.js`（`buildReviewResult`/`findingSimilarity`/`findQuoteSpansInRange`）。
+- 配对/合并：`server/services/revision-merger.js`（`mergeRevisions`/`resolveAddAnchor`/`coalesceAdjacentAdds`）。
+- 提示词：`server/prompts/agent-2-review.js`（quote 只摘最小问题片段；缺失事项给锚点 quote）、`agent-3-rewrite.js`（1 finding = 1 revision；add 可带 insertAfterQuote/sequence）。
+
+### 数据流（finding → revision → 前端）
+
+finding：`id, level, title, location, anchor, originalText(整条), quoteText, quoteSpans, quoteStatus, clauseEnd, risk, advice, replacement, evidence, lineStart, lineEnd`
+revision：finding 字段 + `action(modify/add/delete), rewrittenText, riskNote, sequence, insertAfterLine, anchorText, anchorStatus, hasRewrite`；合并块另有 `mergedFindingIds, mergedCount`。
+stats：`{ rounds, total, matched, modify, add, delete, blocks }` —— total/modify/add/delete 是 per-finding，blocks 是合并后展示块数。
+
+### 命令与端口
 
 ```bash
-npm install
-npm run dev
-npm run build
-npm run preview
-npm run server
+npm run dev        # 前端
+npm run server     # 后端，默认端口 LOCAL_SERVER_PORT || 8789
+npm run build      # vite 构建
+npm run lint       # ⚠️ 当前跑不了：ESLint 9 需要 eslint.config.js，仓库没有（历史遗留，非本次改动引入）
+codegraph status   # 代码索引；codegraph query "符号名" 查定义/引用
 ```
 
-知识库相关：
+前端只调 `POST /api/contract-rewrite`、`POST /api/contract-chat`、`GET /api/account/balance`。`POST /api/contract-finalize` 是旧接口，前端不调，待清理。
 
-```bash
-npm run import:templates
-npm run evaluate:knowledge-base
-```
+---
 
-注意：服务器部署时不要随便运行 `npm run import:templates`。服务器如果没有原始 Word 模板源目录，重新导入可能破坏当前已生成的知识库。
+## 4. 当前卡在哪儿
 
-## 3. 当前代码架构
+1. **缺真实端到端验证**：所有改动只过了合成数据冒烟 + build。必须用真实长合同（尤其那份"微信借款 8000 元"的借款合同，用户截图来源）跑一轮，确认：三条缺失项不被去重误吞、合并为一个新增块、子句划线位置正确、导出 Word 一致。
+2. **改动未提交**：见第 6 节文件清单。端到端验证通过后才建议提交。
+3. 历史遗留（与本轮无关但仍是卡点）：
+   - 用户真实浏览器白屏问题加了多层兜底，仍需真实环境复核（构建通过+全新浏览器正常都不算数）。
+   - `agent-api-v2/` 和 `agent-api-v2.zip` 是 2026-07-16 旧包，**不含** revision-merger 和三轮自动改写链路，且 zip 内含 `.env.local`（敏感），不能按现状部署。
+   - 端口事实源不统一：代码默认 `8789`，旧部署文档写 `8790`，上线前必须二选一。
+   - 侧栏"充值用量"链接仍指向 DeepSeek 官方平台，业务逻辑错误，未移除（`ContractRewritePage.jsx` 余额弹层里）。
+   - 关键链路无自动化测试覆盖。
 
-### 3.1 前端
+---
 
-主要文件：
+## 5. 下一步计划
 
-- `src/App.jsx`
-  - `/contract-rewrite` 渲染 `ContractRewritePage`。
-- `src/pages/ContractRewritePage.jsx`
-  - 新对话式合同审查页面。
-  - 文件上传、SSE 流式审查、风险确认、生成修订稿。
-  - 历史对话和审查任务存储。
-  - “剩余用量”查询面板。
-- `src/pages/ContractRewritePage.css`
-  - 合同审查页面全部样式。
-- `src/components/Header.jsx`
-  - 首页产品菜单的商业合同审查入口。
-- `public/logo.png`
-  - 新的蓝橙色法飞飞图标，仅替换橙色星形图标，文字仍由页面渲染。
+1. **真实合同端到端回归**（本地 `npm run dev` + `npm run server`）：
+   - 借款合同：三条还款相关补充应合并为一个新增块（位置行显示一次锚点、新增文本一段连贯、批注 ①②③），审查报告仍列 3 条 finding；
+   - 多份长合同：观察跨轮去重的 `dropped` 计数是否合理（误吞或漏重都要回查 `findingSimilarity` 阈值）；
+   - 子句划线：长条款只划问题子句，add 锚点行不被误标；
+   - 导出 Word 与页面一致；快速/深度两种模式各跑一次。
+2. **验证通过后提交**。按功能分组提交（定位+去重 / add 锚点+合并 / 前端展示），提交前 `git status --short` + `git diff --check` 逐项过，不要 `git add .` 一把梭。
+3. 把内联冒烟脚本固化成测试文件（如 `server/scripts/test-dedup.js` 或正规测试框架），目前判重阈值只在一台机器上手工验证过。
+4. 遗留事项（按旧计划）：复核真实浏览器白屏 → 移除 DeepSeek 充值入口 → 清理 legacy finalize 接口 → 重新打部署包（必须排除 `.env.local`）→ 部署后端并统一端口 → 线上回归。
 
-前端接口：
+部署要点（沿用旧文档，仍然有效）：
+
+- 前端解压到 `/www/wwwroot/www.flylegal.cn/dist/`，SPA `try_files $uri $uri/ /index.html;`，`index.html` 不缓存、hash 文件长缓存。
+- 后端 Node 22，工作目录为后端包根；Nginx `location /api/` 反代到 `127.0.0.1:8789`（或 8790，必须与 Node 实际端口一致），`proxy_buffering off`、`proxy_read_timeout 600s`，`proxy_pass` 后不要加多余路径。
+- 部署后验证：`curl http://127.0.0.1:8789/api/health`、`/api/knowledge-base/status`、`/api/account/balance`，再查 `https://www.flylegal.cn/api/knowledge-base/status`。若 404 说明 Nginx 还指向旧后端/旧端口。
+
+---
+
+## 6. Git 和工作区状态
+
+HEAD `703326b` 之上的未提交改动（即第 2 节全部内容）：
 
 ```text
-POST /api/contract-rewrite
-POST /api/contract-finalize
-POST /api/contract-chat
-GET  /api/account/balance
+ M HANDOFF.md
+ M server/prompts/agent-2-review.js      # 缺失事项锚点规则 + 前轮清单带原文/风险
+ M server/prompts/agent-3-rewrite.js     # insertAfterQuote/sequence 字段
+ M server/routes/contract-rewrite.js     # 跨轮去重接线 + coalesceAdjacentAdds 接入
+ M server/services/annotation-locator.js # quoteSpans + findingSimilarity + 阈值修正
+ M server/services/revision-merger.js    # resolveAddAnchor + coalesceAdjacentAdds
+ M src/pages/ContractRewritePage.jsx     # 子句划线 + add 挂载 + 合并展示 + 计数口径
+ M src/pages/ContractRewritePage.css     # .quote-mark / .quote-strike / .anchor-text
+ ?? .codegraph/                          # 不提交
 ```
 
-### 3.2 后端 Agent 链路
+**绝对不要执行** `git reset --hard`、`git checkout -- .`、`git clean -fd`——以上全部是未提交的工作成果。也不要删除不理解的模板、数据库、媒体文件。
 
-主要文件：
+---
 
-- `server/routes/contract-rewrite.js`
-  - 审查、对话、确认批注后改写、知识库状态、剩余用量接口。
-- `server/prompts/agent-1-analysis.js`
-  - 合同结构分析提示词。
-- `server/prompts/agent-2-review.js`
-  - 风险审核提示词，要求只返回严格 JSON。
-- `server/prompts/agent-3-rewrite.js`
-  - 根据确认批注生成修订稿。
-- `server/services/annotation-locator.js`
-  - 使用代码将 Agent 2 的逐字 quote 定位到原文。
-  - 将同一份 findings 渲染成对话报告。
-- `server/services/review-session-store.js`
-  - 保存单次审查的合同原文和 canonical findings。
-- `server/services/knowledge-base.js`
-  - SQLite 知识库和证据检索。
-- `server/services/vector-store.js`
-  - 可选 Qdrant 向量库。
-- `server/services/evidence-reranker.js`
-  - 可选 SiliconFlow reranker 或本地 heuristic。
+## 7. 密钥和安全
 
-Agent 2 的结构化结果必须包含：
+- 不要提交 `.env.local`；`agent-api-v2.zip` 已确认内含 `.env.local`，按敏感材料处理，不要外发。
+- 不要开放 Node 公网端口，只经 Nginx 反代。
+- 服务器上不要随便跑 `npm run import:templates`：没有原始 Word 模板源目录时重新导入会破坏已生成的知识库。
 
-```json
-{
-  "conclusion": "...",
-  "findings": [
-    {
-      "level": "高",
-      "title": "...",
-      "location": "第X条",
-      "quote": "合同原文逐字摘录",
-      "risk": "...",
-      "advice": "...",
-      "replacement": "",
-      "evidence": ["E1"]
-    }
-  ],
-  "completeness": ["..."]
-}
-```
+---
 
-模型不得输出行号或坐标。代码根据 quote 定位原文。
+## 8. 已踩过的坑：绝对不要再踩
 
-## 4. 已经完成的工作
+### 本轮新踩的坑（判重与合并）
 
-### 4.1 批注统一数据源
+1. **quote 完全相等 ≠ 同一问题**。缺失条款类批注按 prompt 要求引用同一锚点行，三条不同问题 quote 一字不差。判重必须看"问题同一性"（标题+风险描述），不能只看 quote。
+2. **quote 包含关系也不能直接判重**。整行锚点包含另一条问题的子句片段是常态（"任何一方违约，应向对方支付违约金。"包含"应向对方支付违约金"），包含只给真实长度比，需标题佐证。
+3. **标题撞词分不开真假重复**。"违约金比例缺失/违约金未约定具体比例"（titleSim 0.417，真重复）和"缺少提前还款约定/缺少还款顺序约定"（titleSim 0.429，不同问题）仅靠标题阈值无法区分，风险描述相似度（0.268 vs 0.0）才是分界线。调阈值时用真实数据验证，别拍脑袋。
+4. **展示层合并绝不能提前**。`coalesceAdjacentAdds` 若放进 `mergeRevisions` 内部，按 `findingId` 做键的分批补全覆盖逻辑直接失效（合并块对不上任何单一 findingId）。合并只能发生在 retry 完成之后、SSE 之前。
+5. **统计口径必须 per-finding**。审查报告说 3 个问题、修订稿说 1 处新增，用户会以为丢了批注。stats 按 finding 计，`blocks` 单独报，前端文案对齐。
+6. **不要让 Agent 3 合并批注**。协议是 1 finding = 1 revision，合并交给代码做（确定性）；放开协议会让匹配/补全/统计全部复杂化。
+7. **`npm run lint` 跑不了是历史遗留**（ESLint 9 无 flat config），别以为是自己的改动弄坏的；验证后端用 `node --check`，前端用 `npm run build`。
 
-此前最大的问题是：
+### 历史坑（仍然有效）
 
-- 正常对话报告有 38 条风险，但确认页只显示 26 条。
-- 有时报告到第 13.4 条，确认页却分析到第 16.4 条。
-- 确认页会出现报告里没有的第 14.2 条。
-- 有时显示 18 条但只能选择 3 条。
-- 有时直接显示 0 条批注。
+8. 正常报告和确认/修订分别生成风险 → 两处口径必漂移；批注只能来自同一份 canonical findings。
+9. 让模型输出行号做定位 → 模型行号不可信；定位必须由程序用 quote/location 完成，prompt 已禁止模型输出定位字段。
+10. 把确认页或修订稿当第二次审核 → 改写只消费已定位 findings，不产生新风险。
+11. 把无法定位的模型结论也做成批注 → 定位失败的进 unresolved，不猜、不展示。
+12. 只看"生成数量"不核对数据来源 → 每条批注的原文必须能在合同里找到。
+13. 只更新 dist 期待 Agent 链路变化 → 提示词/三轮/合并在后端，必须重新部署后端。
+14. 部署旧的 `agent-api-v2.zip` → 它不含当前链路且含 `.env.local`。
+15. 看到白屏就认定目录层级错；用全新浏览器测过就宣称用户环境已修复 → 两者都被证伪过。
+16. 把 DeepSeek 官方充值入口直接给普通用户 → 业务逻辑错误，待移除。
+17. 随意清理脏工作区、一次性 `git add .` → 工作区常有未提交成果和大文件/密钥/部署包。
+18. 端口事实源不统一（8789 vs 8790）→ 代码、`.env.local`、Nginx 三处必须对齐。
 
-根因是正常对话报告和批注确认页曾经各自解析或生成风险，事实来源不统一。
+### 实用技巧
 
-现在的方案：
+- 看中文截图：主会话没有读图工具时，用 macOS 自带 Vision OCR（无需安装）：写个 swift 脚本调 `VNRecognizeTextRequest`（`recognitionLanguages = ["zh-Hans"]`），`swift /tmp/ocr.swift <图>`。本机 tesseract 只有 eng 语言包。
+- `codegraph query "符号名"` 比 grep 更适合查定义和引用关系；索引过期时先 `codegraph index`。
 
-1. Agent 2 只输出完整 JSON。
-2. `annotation-locator.js` 解析 JSON。
-3. 服务端代码定位 quote。
-4. 形成唯一 `reviewResult.findings`。
-5. 创建 `reviewSession`。
-6. 对话报告由同一份 findings 渲染。
-7. 确认页只使用 `reviewSession.findings`。
-8. Agent 3 接收 `reviewSessionId + selectedFindingIds`。
+---
 
-不要恢复“从 Markdown 报告重新解析批注”的旧逻辑。
+## 9. 给新会话的第一句话建议
 
-### 4.2 程序定位批注
-
-定位不再由模型输出行号。
-
-当前行为：
-
-- 精确匹配模型 quote。
-- 必要时做受控的文本归一化修复。
-- 无法唯一定位的结论进入 `unresolved`，不会成为可勾选批注。
-- 对话报告和确认页使用已验证 finding。
-
-用户明确要求：
-
-> 生成的批注必须对应原文，不能允许没有原文位置的批注进入修订稿。
-
-### 4.3 修订稿占位符
-
-前端会把：
-
-```text
-【待填写】
-【待填写费用明细】
-[待填写]
-```
-
-统一转换为：
-
-```text
-____
-```
-
-### 4.4 乱码文件标题
-
-批注确认页曾显示类似：
-
-```text
-=== 文件: 4.2ä...docx ===
-```
-
-已经加入 `stripLegacyFileMarkers`，移除旧文件拼接标记。不要重新把上传文件名拼进合同正文。
-
-### 4.5 风险确认页 UI 清理
-
-已经移除或要求移除：
-
-- “本轮模型发现 X 条 / 已验证 X 条 / 自动修复定位 X 条”统计 UI。
-- 确认页顶部乱码文件标题。
-
-当前源代码仍保留 `unresolved` 的“待核查定位项”区域。用户此前明确表示不希望模型负责定位；后续应确认是否彻底隐藏这块 UI，仅在服务端日志记录 unresolved。
-
-### 4.6 新合同审查页面
-
-页面标题和入口文字已经改成：
-
-```text
-商业合同审查与批注
-```
-
-当前源码中已不存在“合同改写功能试用”文字。
-
-### 4.7 Logo
-
-合同审查侧栏使用：
-
-```text
-public/logo.png
-```
-
-只用图标，不在图片内重复“法飞飞”文字。
-
-### 4.8 剩余用量功能
-
-合同审查左侧底部新增“剩余用量”面板。
-
-已完成：
-
-- `GET /api/account/balance`
-- 调用 DeepSeek `/user/balance`
-- 前端只显示人民币。
-- 用户可见文案统一使用“剩余用量/用量”，不显示“API余额”。
-- 删除“余额由当前配置的 DeepSeek API Key 查询”说明文字。
-
-未闭环问题：
-
-- 当前页面仍有“充值用量”链接，指向 `https://platform.deepseek.com/`。
-- 用户已经指出：项目调用的是开发者个人账号 API Key，普通用户登录自己的 DeepSeek 账号充值不会增加项目 Key 的余额。
-- 因此这个链接的业务逻辑是错误的。下一会话应移除该链接，或设计项目自己的充值/计费系统，不能继续引导用户去 DeepSeek 官方账号充值。
-
-### 4.9 后端部署目录
-
-已创建：
-
-```text
-agent-api-v2/
-agent-api-v2.zip
-```
-
-`agent-api-v2/` 包含：
-
-- `server/`
-- `package.json`
-- `package-lock.json`
-- `.env.example`
-- `.env.local`
-- SQLite 知识库、索引和模板文本
-
-默认部署端口：
-
-```text
-8790
-```
-
-初始部署采用：
-
-```text
-RAG_VECTOR_URL=
-RAG_RERANKER_MODE=heuristic
-```
-
-即先使用本地 SQLite 和 heuristic，不要求同时部署 Qdrant/SiliconFlow。
-
-## 5. 当前白屏问题：已知事实
-
-### 5.1 线上旧构建验证
-
-对白屏发生时的线上版本做过直接 HTTP 校验：
-
-- `/contract-rewrite` 返回 200。
-- HTML MIME 正确。
-- 主 JS 返回 200，MIME 为 `application/javascript`。
-- CSS 返回 200，MIME 为 `text/css`。
-- React vendor、framer-motion、icons 分包全部返回 200。
-- 线上文件与本地对应构建产物 SHA-256 完全一致。
-
-因此已经排除：
-
-- `dist/dist` 嵌套目录。
-- 主 JS 缺失。
-- CSS 缺失。
-- vendor 分包缺失。
-- 线上文件与本地文件内容不一致。
-
-绝对不要再次仅根据“白屏”就断定是 `dist` 目录层级问题。必须先检查响应和浏览器控制台。
-
-### 5.2 本地自动验证
-
-用 Vite production preview 和全新 Edge 数据目录测试，同一份构建可以正常渲染：
-
-```text
-商业合同审查与批注
-法飞飞合同助手
-上传合同或输入你特别关注的审查重点…
-```
-
-随后向浏览器注入了故意损坏的历史存储数据，包括：
-
-- `title: null`
-- 错误时间格式
-- 非字符串消息内容
-- 损坏附件数组
-- 无效审查任务
-
-加入存储迁移后，自动测试仍能正常渲染。
-
-### 5.3 已加入但尚未证实能解决用户白屏的修复
-
-`src/pages/ContractRewritePage.jsx` 新增：
-
-- `normalizeStoredMessage`
-- `normalizeStoredThreads`
-- `normalizeStoredTasks`
-- `readStorage` 结构校验
-- `writeStorage` 异常保护
-
-这可以避免旧 localStorage 数据直接使 React 首次渲染崩溃。
-
-但是：
-
-> 用户在最后一次反馈中明确说：“本地还是白屏”。
-
-因此不能把 localStorage 当成已经确认的最终根因。它只是已修复的一个潜在崩溃点。
-
-### 5.4 当前最新构建
-
-最新本地 `dist/index.html` 引用：
-
-```text
-/js/index-DNjwAjzy.js
-/assets/index-CdY73dba.css
-```
-
-最新前端部署包：
-
-```text
-fafee-dist-contents-20260716-2216.zip
-```
-
-SHA-256：
-
-```text
-a70c24948aa087054841f9d9f7e04471c89164e2f7498655e5e8b378ec9eb78b
-```
-
-注意：这个最新包包含 localStorage 迁移修复，但用户随后仍报告本地白屏。不要在没有进一步诊断前声称该包已经解决白屏。
-
-## 6. 当前卡在哪里
-
-卡点是没有拿到用户真实本地浏览器的运行时错误。
-
-构建成功不代表运行时成功。全新自动化浏览器正常，也不代表用户现有浏览器环境正常。
-
-下一会话第一步必须获得以下证据之一：
-
-1. 用户本地白屏页面的 DevTools Console 第一条红色错误。
-2. Network 中失败或被阻止的 JS 请求。
-3. 在根组件加入 Error Boundary 后显示出的错误信息。
-4. 确认用户实际打开的是哪个本地 URL 和哪个 Vite 进程。
-
-优先怀疑但尚未证明：
-
-- 用户浏览器仍连接旧的 Vite 进程。
-- 用户打开了错误端口或另一份项目目录。
-- 浏览器扩展拦截脚本。
-- 用户真实历史数据还有未覆盖的数据结构。
-- 页面存在另一个只在用户浏览器环境触发的运行时错误。
-- HMR 状态损坏，需要彻底停止并重启开发服务。
-
-不要继续盲猜。先抓 Console。
-
-## 7. 下一步执行计划
-
-### 第一步：关闭所有旧开发进程
-
-检查运行中的 Vite：
-
-```bash
-pgrep -af "vite|npm run dev"
-```
-
-只终止确认属于本项目的旧进程，不要批量 kill 其他项目。
-
-重新启动：
-
-```bash
-cd "/Users/ypc/Desktop/桌面 - ypc的MacBook Air/项目开发/讯飞法飞飞AI/infimind-react"
-npm run dev
-```
-
-记录终端显示的精确 URL。
-
-### 第二步：抓真实控制台
-
-在用户看到白屏的 Edge 页面：
-
-1. 按 `F12`。
-2. 打开 Console。
-3. 刷新页面。
-4. 复制第一条红色错误及完整堆栈。
-5. 打开 Network，筛选 JS，检查是否有红色失败项。
-
-不要先清空浏览器全部数据，否则可能丢失复现条件。
-
-### 第三步：加入 Error Boundary
-
-如果无法方便取得 Console，在 React 根节点增加 Error Boundary：
-
-- 捕获渲染异常。
-- 页面显示错误摘要和“清理本页历史数据后重试”按钮。
-- 开发环境显示 stack。
-- 生产环境不要暴露密钥或服务器内部信息。
-
-这样以后即使再有异常，也不能只显示白屏。
-
-### 第四步：验证旧存储迁移
-
-至少测试：
-
-- 无 localStorage。
-- 合法历史数据。
-- 非法 JSON。
-- 数组中含 null。
-- thread 缺 title/messages/id。
-- message.content 不是字符串。
-- files/annotations/unresolved 不是数组。
-- localStorage 写入抛异常。
-
-### 第五步：恢复强制加载入口
-
-用户此前要求首页合同入口强制加载新页面：
-
-```jsx
-<Link
-  reloadDocument
-  to="/contract-rewrite"
-  className="product-item"
->
-```
-
-重要：
-
-> 当前 `src/components/Header.jsx` 中没有 `reloadDocument`，而且该文件当前不在 Git 修改列表中。
-
-白屏解决后，需要重新确认并加回这个属性，再构建测试。不要误以为它已经存在。
-
-### 第六步：重新构建和部署
-
-```bash
-npm run build
-git diff --check
-```
-
-部署包必须解压到：
-
-```text
-/www/wwwroot/www.flylegal.cn/dist/
-```
-
-网站运行目录应为：
-
-```text
-/www/wwwroot/www.flylegal.cn/dist
-```
-
-SPA 配置：
-
-```nginx
-location / {
-    try_files $uri $uri/ /index.html;
-}
-```
-
-建议：
-
-- `index.html` 不缓存。
-- 带 hash 的 JS/CSS 可长期缓存。
-- 每次部署同时上传新 `index.html` 和全部新 hash 文件。
-
-### 第七步：部署新 Agent 后端
-
-服务器目录建议：
-
-```text
-/www/wwwroot/www.flylegal.cn/agent-api-v2
-```
-
-Node 22，工作目录必须是 `agent-api-v2`，端口 8790。
-
-Nginx：
-
-```nginx
-location /api/ {
-    proxy_pass http://127.0.0.1:8790;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
-}
-```
-
-`proxy_pass` 后面不要加多余路径，避免 `/api` 被错误重写。
-
-验证：
-
-```bash
-curl http://127.0.0.1:8790/api/health
-curl -i http://127.0.0.1:8790/api/knowledge-base/status
-curl -i https://www.flylegal.cn/api/knowledge-base/status
-```
-
-如果线上 `/api/knowledge-base/status` 仍然 404，说明 Nginx 还指向旧后端。
-
-### 第八步：完整回归
-
-必须至少跑一次：
-
-1. 从首页点击“商业合同审查与批注”。
-2. 页面直接显示新 UI。
-3. 上传合同。
-4. 对话报告生成。
-5. 确认页批注数量与报告完全一致。
-6. 每条批注能定位原文。
-7. 全选和单选正常。
-8. 生成修订稿。
-9. 修订稿待填写内容为 `____`。
-10. 下载和复制正常。
-11. 快速模式和深度思考模式各测一次。
-12. “剩余用量”接口正常。
-
-## 8. 部署现状和历史判断
-
-之前线上探测曾得到：
-
-```json
-{"status":"ok","service":"contract-rewrite-local"}
-```
-
-但同时：
-
-- `/api/knowledge-base/status` 为 404。
-- `/api/account/balance` 为 404。
-- 在线审核输出仍是旧版 Markdown Agent 链路。
-
-这说明当时线上 `/api` 指向旧 Node 服务。
-
-该状态可能已经变化，下一会话必须重新在线验证，不能直接当作当前事实。
-
-仅更新 `dist` 永远不会更新 Agent 提示词和服务端审查链路。
-
-## 9. Git 和工作区状态
-
-当前分支：
-
-```text
-main
-```
-
-当前 HEAD：
-
-```text
-ff068ad fix(contract-review): unify annotation source and positioning
-```
-
-工作区非常脏，包含大量用户修改和未跟踪文件：
-
-- 前端页面与样式。
-- 后端 Agent、知识库和检索服务。
-- SQLite 数据库。
-- 大量知识库模板文本。
-- `agent-api-v2/` 和部署 zip。
-- 多个 dist zip。
-- 视频、图片、logo。
-
-绝对不要执行：
-
-```bash
-git reset --hard
-git checkout -- .
-git clean -fd
-```
-
-也不要删除不理解的模板、数据库或媒体文件。
-
-后续提交前必须按功能分组检查：
-
-```bash
-git status --short
-git diff --check
-git diff --stat
-```
-
-不要一次性 `git add .`，除非逐项确认所有大文件、数据库、密钥和部署包确实应该进入 Git。
-
-## 10. 密钥和安全注意事项
-
-### 10.1 不要提交 `.env.local`
-
-`agent-api-v2/.env.local` 是部署配置文件，当前包含真实服务配置，至少有一个真实第三方密钥。
-
-绝对不要：
-
-- 提交到 Git。
-- 上传到公开网盘。
-- 把内容粘贴到 issue、PR 或聊天。
-- 在日志中输出完整密钥。
-
-### 10.2 `agent-api-v2.zip` 需要审计
-
-当前 `agent-api-v2.zip` 很可能包含 `.env.local`。
-
-如果该压缩包只通过安全渠道上传到自己的服务器，可以使用；但不要公开分发。
-
-更稳妥的做法：
-
-1. 重新打一个不含 `.env.local` 的代码包。
-2. 在服务器上手工创建 `.env.local`。
-3. 如果密钥曾被公开暴露，立即轮换。
-
-### 10.3 不要开放 8790 公网端口
-
-Node 端口只监听或只允许本机访问，由 Nginx 反代。
-
-腾讯云安全组仅开放必要的：
-
-- 80
-- 443
-- 受限来源的 22
-
-## 11. 已踩过的坑：绝对不要再踩
-
-### 坑 1：正常报告和确认页分别生成风险
-
-禁止。
-
-必须只有一份 canonical findings。报告、确认页、Agent 3 全部引用同一 review session。
-
-### 坑 2：让模型输出行号作为定位
-
-禁止。
-
-模型只提供逐字 quote 和语义判断，定位由代码完成。
-
-### 坑 3：确认页重新分析合同
-
-禁止。
-
-确认页是展示和选择，不是第二次审核。
-
-### 坑 4：把无法定位的模型结论也做成可选批注
-
-禁止。
-
-无法唯一定位就不进入修订稿。可以日志记录或进入人工复核队列。
-
-### 坑 5：只看“生成数量”，不核对数据来源
-
-报告显示 38 条、确认页显示 26 条，不是简单的 UI 数字问题，而是事实源分叉。
-
-修复时必须从服务端数据流排查，不要只改前端计数。
-
-### 坑 6：只更新 dist，期待 Agent 链路变化
-
-不可能。
-
-Agent、提示词、知识库和 review session 都在 Node 后端，必须部署 `agent-api-v2` 并切换 Nginx `/api/`。
-
-### 坑 7：看到白屏就认定目录层级错
-
-这次已经证实目录和文件存在，线上文件哈希也一致。
-
-以后必须按顺序：
-
-1. 检查 HTML。
-2. 检查 JS/CSS 状态码和 MIME。
-3. 检查分包。
-4. 检查 Console。
-5. 再判断代码或部署。
-
-### 坑 8：用全新浏览器测试通过，就宣称用户环境已修复
-
-不可以。
-
-全新数据目录正常只能证明构建可运行，不能证明用户真实浏览器状态正常。
-
-### 坑 9：把 DeepSeek 官方充值入口直接给普通用户
-
-项目 Key 属于开发者账号，用户充值自己账号不会增加项目用量。
-
-必须移除官方充值链接，或建设自己的账户、订单、支付和用量系统。
-
-### 坑 10：泄露密钥
-
-不要在命令输出、文档、Git、截图或部署包公开真实 Key。
-
-### 坑 11：随意清理脏工作区
-
-当前大量未提交文件属于用户工作成果。不得 reset、clean 或批量删除。
-
-### 坑 12：缓存策略配置错误
-
-`index.html` 应禁止缓存；hash JS/CSS 可以缓存。
-
-不能让新 HTML 指向尚未上传的 JS，也不能只上传 JS 不上传新 HTML。
-
-## 12. 给新会话的第一句话建议
-
-新会话开始后，先做：
-
-```text
-阅读 HANDOFF.md。当前优先级不是继续改 Agent，而是抓取用户本地普通浏览器白屏时的第一条 Console 错误。构建和全新 Edge 已正常，localStorage 迁移也做过合成回归，但用户仍报告白屏，不能继续猜原因。
-```
+先跑 `git status --short` 确认第 6 节的未提交改动还在，然后按第 5 节第 1 步做真实合同端到端验证——这批改动（子句划线、add 锚点与合并、代码级去重）过了合成就绪验证，但还没见过真实合同。

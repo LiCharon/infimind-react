@@ -21,6 +21,7 @@ server/knowledge-base/evaluation-report.json
 *.zip
 agent-api-v2/
 .zcode/
+.codegraph/
 
 # Editor directories and files
 .vscode/*
