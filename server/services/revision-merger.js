@@ -7,7 +7,7 @@
  * - Agent 3 只负责"如何修订"：action(改/增/删)、rewrittenText、riskNote。
  * - 漏配或解析失败的 finding，用 advice/replacement 兜底，保证每条风险都有对应的修订块。
  */
-import { findQuoteRanges, isClauseHeadingLine, locationTokens } from './annotation-locator.js'
+import { findQuoteRanges, findQuoteSpansInRange, isClauseHeadingLine, locationTokens, normalizeForMatch } from './annotation-locator.js'
 
 const asText = (value) => (typeof value === 'string' ? value.trim() : '')
 
@@ -153,6 +153,143 @@ const resolveAddAnchor = ({ finding, matched, contractLines }) => {
   return { insertAfterLine: -1, anchorText: asText(finding?.originalText), anchorStatus: 'unresolved' }
 }
 
+const normalizeEditOperation = (value, fallbackAction = 'modify') => {
+  const text = String(value || '').trim().toLowerCase()
+  if (text === 'delete' || text === '删除') return 'delete'
+  if (text === 'insert-after' || text === 'insert' || text === 'add' || text === '新增' || text === '插入') return 'insert-after'
+  return fallbackAction === 'delete' ? 'delete' : 'replace'
+}
+
+const nearestQuoteMatch = ({ contractLines, quote, preferredLines = [], allowedStart = 0, allowedEnd = contractLines.length - 1 }) => {
+  const ranges = findQuoteRanges(contractLines, quote)
+    .filter((range) => range.start >= allowedStart && range.end <= allowedEnd)
+  if (!ranges.length) return null
+  const chosen = ranges.toSorted((left, right) => {
+    const distance = (range) => preferredLines.length
+      ? Math.min(...preferredLines.map((line) => Math.abs(range.start - line)))
+      : Math.abs(range.start - allowedStart)
+    return distance(left) - distance(right)
+  })[0]
+  const spanInfo = findQuoteSpansInRange(contractLines, chosen, quote)
+  if (spanInfo.quoteStatus !== 'exact' || !spanInfo.quoteSpans.length) return null
+  return {
+    lineStart: chosen.start,
+    lineEnd: chosen.end,
+    targetQuote: spanInfo.quoteText,
+    quoteSpans: spanInfo.quoteSpans
+  }
+}
+
+const compactNotes = (members, field) => {
+  const notes = [...new Set(members.map((member) => asText(member?.[field])).filter(Boolean))]
+  if (notes.length <= 1) return notes[0] || ''
+  return notes.map((note, index) => `${CIRCLED_NUMBERS[index] || `${index + 1}.`}${note}`).join(' ')
+}
+
+const buildFallbackLocalizedEdits = ({ finding, contractLines, usedIds, fallbackAction }) => {
+  const members = Array.isArray(finding.memberFindings) && finding.memberFindings.length
+    ? finding.memberFindings
+    : [finding]
+  const groups = new Map()
+  members.forEach((member) => {
+    if (!member?.id || usedIds.has(member.id)) return
+    const quote = asText(member.quoteText)
+    const spans = Array.isArray(member.quoteSpans) ? member.quoteSpans.filter((span) =>
+      span && Number.isInteger(span.line) && Number.isInteger(span.start) && Number.isInteger(span.end) && span.end > span.start
+    ) : []
+    if (!quote || !spans.length) return
+    const key = `${spans[0].line}:${spans.at(-1).line}:${normalizeForMatch(quote)}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(member)
+  })
+
+  const edits = []
+  groups.forEach((groupMembers) => {
+    const first = groupMembers[0]
+    const spans = first.quoteSpans
+    const replacement = asText(first.replacement)
+    const operation = fallbackAction === 'delete' ? 'delete' : 'replace'
+    const memberFindingIds = groupMembers.map((member) => member.id)
+    memberFindingIds.forEach((id) => usedIds.add(id))
+    edits.push({
+      editId: `${finding.id}-local-${edits.length + 1}`,
+      memberFindingIds,
+      operation,
+      targetQuote: asText(first.quoteText),
+      replacementText: operation === 'delete' ? '' : (replacement.length <= 900 ? replacement : ''),
+      riskNote: compactNotes(groupMembers, 'advice') || compactNotes(groupMembers, 'risk'),
+      lineStart: spans[0].line,
+      lineEnd: spans.at(-1).line,
+      quoteSpans: spans.map((span) => ({ ...span })),
+      localizationStatus: 'finding-fallback'
+    })
+  })
+  return edits
+}
+
+// 把 Agent 3 的完整条款改写拆成可就近展示的局部编辑。模型字段只在逐字锚点、成员覆盖和长度
+// 全部通过代码校验后采用；缺失或不合规成员回退到 Agent 2 已验证的 quoteSpans。
+const resolveLocalizedEdits = ({ finding, matched, contractLines, action }) => {
+  if (action === 'add') return []
+  const allowedIds = new Set(
+    Array.isArray(finding.memberFindingIds) && finding.memberFindingIds.length
+      ? finding.memberFindingIds
+      : [finding.id]
+  )
+  const members = Array.isArray(finding.memberFindings) && finding.memberFindings.length
+    ? finding.memberFindings
+    : [finding]
+  const membersById = new Map(members.map((member) => [member.id, member]))
+  const allowedStart = Number.isInteger(finding.lineStart) ? finding.lineStart : 0
+  // 局部编辑只能落在当前修订组已经确认的行范围内。clauseEnd 可能覆盖整个大条款，
+  // 若用它作上界，同名短句可能被错误匹配到组内问题之外，重新制造“大段标注”。
+  const allowedEnd = Number.isInteger(finding.lineEnd) && finding.lineEnd >= allowedStart
+    ? finding.lineEnd
+    : allowedStart
+  const usedIds = new Set()
+  const edits = []
+
+  const rawEdits = Array.isArray(matched?.localizedEdits) ? matched.localizedEdits : []
+  rawEdits.forEach((rawEdit) => {
+    const memberFindingIds = [...new Set(
+      (Array.isArray(rawEdit?.memberFindingIds) ? rawEdit.memberFindingIds : [])
+        .filter((id) => typeof id === 'string' && allowedIds.has(id) && !usedIds.has(id))
+    )]
+    if (!memberFindingIds.length) return
+    const targetQuote = asText(rawEdit?.targetQuote)
+    const replacementText = asText(rawEdit?.replacementText)
+    const operation = normalizeEditOperation(rawEdit?.operation, action)
+    if (!targetQuote || targetQuote.length > 600 || (operation !== 'delete' && !replacementText) || replacementText.length > 900) return
+    const preferredLines = memberFindingIds
+      .map((id) => membersById.get(id)?.lineStart)
+      .filter(Number.isInteger)
+    const located = nearestQuoteMatch({ contractLines, quote: targetQuote, preferredLines, allowedStart, allowedEnd })
+    if (!located) return
+    // replacementText 若等于完整 rewrittenText 且明显长于目标片段，说明模型没有执行局部化协议。
+    const fullRewrite = normalizeForMatch(matched?.rewrittenText || '')
+    if (fullRewrite && normalizeForMatch(replacementText) === fullRewrite && replacementText.length > located.targetQuote.length * 1.5) return
+    memberFindingIds.forEach((id) => usedIds.add(id))
+    const editMembers = memberFindingIds.map((id) => membersById.get(id)).filter(Boolean)
+    edits.push({
+      editId: `${finding.id}-local-${edits.length + 1}`,
+      memberFindingIds,
+      operation,
+      targetQuote: located.targetQuote,
+      replacementText: operation === 'delete' ? '' : replacementText,
+      riskNote: asText(rawEdit?.riskNote) || compactNotes(editMembers, 'advice') || compactNotes(editMembers, 'risk'),
+      lineStart: located.lineStart,
+      lineEnd: located.lineEnd,
+      quoteSpans: located.quoteSpans,
+      localizationStatus: 'agent-verified'
+    })
+  })
+
+  edits.push(...buildFallbackLocalizedEdits({ finding, contractLines, usedIds, fallbackAction: action }))
+  return edits
+    .sort((left, right) => left.lineStart - right.lineStart || left.quoteSpans[0].start - right.quoteSpans[0].start)
+    .map((edit, index) => ({ ...edit, editId: `${finding.id}-local-${index + 1}` }))
+}
+
 const sortLineForRevision = (revision) => {
   if (revision.action === 'add') return revision.insertAfterLine >= 0 ? revision.insertAfterLine : Number.MAX_SAFE_INTEGER
   return Number.isInteger(revision.lineStart) ? revision.lineStart : Number.MAX_SAFE_INTEGER
@@ -169,7 +306,7 @@ const sortRevisions = (revisions) => revisions.sort((left, right) => {
 /**
  * 把可信的 findings 与 Agent 3 的 revisions 按 findingId（或顺序）配对。
  *
- * @param {Array} findings - 来自 buildReviewResult 的 canonical findings（含可信 originalText/lineStart/lineEnd/quoteSpans）
+ * @param {Array} findings - canonical findings 或归并后的修订组（含可信 originalText/lineStart/lineEnd/quoteSpans）
  * @param {string} agentOutput - Agent 3 返回的完整 JSON 文本，形如 { revisions: [{ findingId, action, rewrittenText, riskNote, insertAfterQuote?, sequence? }] }
  * @param {string} contractText - 原合同全文，用于解析 add 的 insertAfterQuote 与条款末尾锚点
  * @returns {{ revisions: Array, stats: object, recovered: boolean, matchedIds: string[] }}
@@ -219,11 +356,21 @@ export function mergeRevisions(findings = [], agentOutput = '', contractText = '
     const addAnchor = action === 'add'
       ? resolveAddAnchor({ finding, matched, contractLines })
       : { insertAfterLine: -1, anchorText: '', anchorStatus: 'not-applicable' }
+    const localizedEdits = resolveLocalizedEdits({ finding, matched, contractLines, action })
 
     if (matched) matchedIds.push(finding.id)
     tally[action] += 1
     revisions.push({
       findingId: finding.id,
+      // 归并追踪字段：单条 finding 也统一保留为一成员组，便于统计和审计。
+      memberFindingIds: Array.isArray(finding.memberFindingIds) && finding.memberFindingIds.length
+        ? finding.memberFindingIds.slice()
+        : [finding.id],
+      issueCount: Number.isInteger(finding.issueCount) && finding.issueCount > 0
+        ? finding.issueCount
+        : (Array.isArray(finding.memberFindingIds) && finding.memberFindingIds.length ? finding.memberFindingIds.length : 1),
+      relation: asText(finding.relation) || 'independent',
+      memberFindings: Array.isArray(finding.memberFindings) ? finding.memberFindings.map((member) => ({ ...member })) : [],
       // 可信字段：来自服务端 finding，强制覆盖
       level: finding.level,
       title: finding.title,
@@ -243,6 +390,7 @@ export function mergeRevisions(findings = [], agentOutput = '', contractText = '
       action,
       rewrittenText,
       riskNote,
+      localizedEdits,
       sequence,
       insertAfterLine: addAnchor.insertAfterLine,
       anchorText: addAnchor.anchorText,
@@ -291,11 +439,17 @@ export function coalesceAdjacentAdds(revisions = []) {
     const first = sorted[0]
     const texts = sorted.map((rev) => asText(rev.rewrittenText)).filter(Boolean)
     const notes = sorted.map((rev) => asText(rev.riskNote)).filter(Boolean)
+    const memberFindingIds = [...new Set(sorted.flatMap((rev) =>
+      Array.isArray(rev.memberFindingIds) && rev.memberFindingIds.length ? rev.memberFindingIds : [rev.findingId]
+    ))]
+    const issueCount = sorted.reduce((sum, rev) => sum + (Number(rev.issueCount) || 1), 0)
     mergedByFindingId.set(first.findingId, {
       ...first,
       findingId: sorted.map((rev) => rev.findingId).join('+'),
-      mergedFindingIds: sorted.map((rev) => rev.findingId),
-      mergedCount: sorted.length,
+      memberFindingIds,
+      issueCount,
+      mergedFindingIds: memberFindingIds,
+      mergedCount: issueCount,
       level: sorted.reduce((top, rev) => (LEVEL_RANK[rev.level] || 0) > (LEVEL_RANK[top] || 0) ? rev.level : top, first.level),
       rewrittenText: texts.join('\n'),
       riskNote: notes.length > 1

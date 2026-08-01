@@ -142,9 +142,38 @@ const ACTION_META = {
 }
 const actionMeta = (action) => ACTION_META[action] || ACTION_META.modify
 
-// 修订稿文档：原合同按行渲染，每条修订块以「行内三明治视图」插在对应条款下方。
-// 原句、行号、风险等级均来自服务端 buildReviewResult（可信），Agent 3 只产出改写文本与批注说明。
-// 行内子句标记：把 quoteSpans（后端精确命中的问题子句区间）渲染为波浪线片段。
+const buildDisplayRevisions = (revisions = []) => {
+  let markerNumber = 0
+  return revisions.flatMap((revision) => {
+    const edits = Array.isArray(revision.localizedEdits) ? revision.localizedEdits : []
+    if (revision.action === 'add' || !edits.length) return [{ ...revision, isLocalized: false, markerNumber: null }]
+    return edits.map((edit, index) => {
+      markerNumber += 1
+      return {
+        ...revision,
+        findingId: edit.editId || `${revision.findingId}-local-${index + 1}`,
+        parentFindingId: revision.findingId,
+        memberFindingIds: Array.isArray(edit.memberFindingIds) ? edit.memberFindingIds : revision.memberFindingIds,
+        isLocalized: true,
+        markerNumber,
+        operation: edit.operation || 'replace',
+        lineStart: Number.isInteger(edit.lineStart) ? edit.lineStart : revision.lineStart,
+        lineEnd: Number.isInteger(edit.lineEnd) ? edit.lineEnd : revision.lineEnd,
+        originalText: edit.targetQuote || revision.quoteText || revision.originalText,
+        quoteText: edit.targetQuote || revision.quoteText,
+        quoteSpans: Array.isArray(edit.quoteSpans) ? edit.quoteSpans : [],
+        quoteStatus: Array.isArray(edit.quoteSpans) && edit.quoteSpans.length ? 'exact' : 'none',
+        rewrittenText: edit.replacementText || '',
+        riskNote: edit.riskNote || revision.riskNote,
+        fullRewrittenText: revision.rewrittenText || '',
+        localizationStatus: edit.localizationStatus || ''
+      }
+    })
+  })
+}
+
+// 修订稿文档：正文仅高亮真正发生变化的局部片段，并在对应行下方显示紧凑编号修订卡。
+// 原句、行号和 quoteSpans 均来自服务端校验，完整条款改写默认折叠，降低长文视觉负担。
 // spans 基于原始行偏移，渲染前先扣除 trim 掉的前导空白，避免错位。
 function MarkedLineText({ raw, spans }) {
   const trimOffset = raw.length - raw.trimStart().length
@@ -155,15 +184,19 @@ function MarkedLineText({ raw, spans }) {
     const end = Math.max(start, Math.min(span.end - trimOffset, text.length))
     if (end <= start) return
     const last = merged[merged.length - 1]
-    if (last && start <= last.end) last.end = Math.max(last.end, end)
-    else merged.push({ start, end })
+    if (last && start <= last.end) {
+      last.end = Math.max(last.end, end)
+      if (span.markerNumber && !last.markerNumbers.includes(span.markerNumber)) last.markerNumbers.push(span.markerNumber)
+    } else {
+      merged.push({ start, end, markerNumbers: span.markerNumber ? [span.markerNumber] : [] })
+    }
   })
   if (!merged.length) return inline(text)
   const parts = []
   let cursor = 0
   merged.forEach((span, index) => {
     if (span.start > cursor) parts.push(<React.Fragment key={`t-${index}`}>{text.slice(cursor, span.start)}</React.Fragment>)
-    parts.push(<span className="quote-mark" key={`m-${index}`}>{inline(text.slice(span.start, span.end))}</span>)
+    parts.push(<span className="quote-mark" key={`m-${index}`}>{inline(text.slice(span.start, span.end))}{span.markerNumbers.length ? <sup className="quote-marker">{span.markerNumbers.join('·')}</sup> : null}</span>)
     cursor = span.end
   })
   if (cursor < text.length) parts.push(<React.Fragment key="tail">{text.slice(cursor)}</React.Fragment>)
@@ -172,11 +205,11 @@ function MarkedLineText({ raw, spans }) {
 
 function RevisionDocument({ contractText, revisions }) {
   const lines = useMemo(() => stripLegacyFileMarkers(contractText || '').split('\n'), [contractText])
-  const { byLine, flaggedLines, quoteMarks } = useMemo(() => {
+  const displayRevisions = useMemo(() => buildDisplayRevisions(Array.isArray(revisions) ? revisions : []), [revisions])
+  const { byLine, quoteMarks } = useMemo(() => {
     const map = new Map()
-    const flagged = new Set()
     const marks = new Map()
-    ;(Array.isArray(revisions) ? revisions : []).forEach((rev) => {
+    displayRevisions.forEach((rev) => {
       const start = Number.isInteger(rev.lineStart) ? rev.lineStart : -1
       const end = Number.isInteger(rev.lineEnd) ? rev.lineEnd : start
       const isAdd = rev.action === 'add'
@@ -185,24 +218,20 @@ function RevisionDocument({ contractText, revisions }) {
         ? rev.insertAfterLine
         : end
       if (attachLine < 0 || attachLine >= lines.length) return
-      // add 只是插入新内容，锚点行本身没有问题，不做问题标注。
-      if (!isAdd && start >= 0 && end >= start && end < lines.length) {
-        for (let line = start; line <= end; line += 1) flagged.add(line)
-      }
       if (!map.has(attachLine)) map.set(attachLine, [])
       map.get(attachLine).push(rev)
-      // 子句级标记：quoteSpans 精确命中时只给问题子句加波浪线，不再整行标注。
-      if (!isAdd && rev.quoteStatus === 'exact' && Array.isArray(rev.quoteSpans)) {
+      // 只要存在服务端验证过的 spans 就逐片段标记；归并组不再因 quoteStatus=none 而回退整段。
+      if (!isAdd && Array.isArray(rev.quoteSpans) && rev.quoteSpans.length) {
         rev.quoteSpans.forEach((span) => {
           if (!span || !Number.isInteger(span.line) || span.line < 0 || span.line >= lines.length) return
           if (!Number.isInteger(span.start) || !Number.isInteger(span.end) || span.end <= span.start) return
           if (!marks.has(span.line)) marks.set(span.line, [])
-          marks.get(span.line).push({ start: span.start, end: span.end })
+          marks.get(span.line).push({ start: span.start, end: span.end, markerNumber: rev.markerNumber })
         })
       }
     })
-    return { byLine: map, flaggedLines: flagged, quoteMarks: marks }
-  }, [revisions, lines])
+    return { byLine: map, quoteMarks: marks }
+  }, [displayRevisions, lines])
   return (
     <article className="contract-document revision-document">
       <section className="contract-body">
@@ -210,19 +239,17 @@ function RevisionDocument({ contractText, revisions }) {
           const line = raw.trim()
           const revs = byLine.get(i) || []
           const spans = quoteMarks.get(i)
-          // 有精确子句区间时只标子句；否则回退整行波浪线。
-          const flagged = flaggedLines.has(i) && !spans
           if (!line) return revs.length ? <div className="revision-stack" key={`gap-${i}`}>{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div> : null
           const heading = line.match(/^(#{1,4})\s+(.+)$/)
           if (heading) {
             const Tag = `h${Math.min(heading[1].length + 1, 4)}`
             return <React.Fragment key={`l-${i}`}>
-              <Tag className={`clause-heading ${flagged ? 'clause-flagged' : ''}`}>{heading[2]}</Tag>
+              <Tag className="clause-heading">{heading[2]}</Tag>
               {revs.length > 0 && <div className="revision-stack">{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div>}
             </React.Fragment>
           }
           return <React.Fragment key={`l-${i}`}>
-            <p className={`clause-text ${flagged ? 'clause-flagged' : ''}`}>{spans ? <MarkedLineText raw={raw} spans={spans} /> : inline(line)}</p>
+            <p className="clause-text">{spans ? <MarkedLineText raw={raw} spans={spans} /> : inline(line)}</p>
             {revs.length > 0 && <div className="revision-stack">{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div>}
           </React.Fragment>
         })}
@@ -231,59 +258,43 @@ function RevisionDocument({ contractText, revisions }) {
   )
 }
 
-// 三明治视图：原文（问题子句删除线）→ 改写句（红色）→ 批注说明（浅红底），垂直堆叠。
-// 原文行展示整条条款作为上下文，仅把精确命中的问题子句划线；无法精确命中时回退整条删除线。
-// add 修订没有"被替换的原文"，改为展示服务端解析出的插入锚点行，不划线。
-function OriginalRow({ revision: rev }) {
-  if (rev.action === 'add') {
-    return (
-      <div className="revision-row revision-original">
-        <span className="revision-label">位置</span>
-        <span className="revision-text anchor-text">{rev.anchorText ? `插入于：${rev.anchorText} 之后` : (rev.originalText || '插入位置见下方新增条款')}</span>
-      </div>
-    )
-  }
-  const full = rev.originalText || ''
-  const quote = rev.quoteStatus === 'exact' ? (rev.quoteText || '') : ''
-  const hit = quote ? full.indexOf(quote) : -1
-  return (
-    <div className="revision-row revision-original">
-      <span className="revision-label">原文</span>
-      {hit >= 0
-        ? <span className="revision-text original-text">{full.slice(0, hit)}<s className="quote-strike">{full.slice(hit, hit + quote.length)}</s>{full.slice(hit + quote.length)}</span>
-        : <span className="revision-text original-text strike-all">{full}</span>}
-    </div>
-  )
-}
-
 function SandwichBlock({ revision: rev }) {
   const meta = levelMeta(rev.level)
   const act = actionMeta(rev.action)
-  return (
-    <div className={`revision-sandwich ${meta.cls} ${act.cls}`}>
-      <OriginalRow revision={rev} />
-      {rev.action !== 'delete' && rev.rewrittenText && (
-        <div className="revision-row revision-rewritten">
-          <span className="revision-label">{act.label}</span>
-          <span className="revision-text rewritten-text">{rev.rewrittenText}</span>
+  if (rev.isLocalized) {
+    const operationLabel = rev.operation === 'delete' ? '删除此处' : rev.operation === 'insert-after' ? '在此后补充' : '改为'
+    const suggestion = rev.operation === 'delete'
+      ? '删除该问题片段'
+      : (rev.rewrittenText || '请结合批注对该片段作局部调整')
+    const showFullRevision = rev.fullRewrittenText && rev.fullRewrittenText !== rev.rewrittenText
+    return (
+      <div className={`local-edit-card ${meta.cls}`}>
+        <span className="local-edit-badge">{rev.markerNumber}</span>
+        <div className="local-edit-content">
+          <div className="local-edit-suggestion"><span>{operationLabel}</span><strong>{suggestion}</strong></div>
+          <details className="local-edit-details">
+            <summary>查看批注{showFullRevision ? '与完整修订条款' : ''}</summary>
+            <p><b>原片段</b>{rev.originalText}</p>
+            {rev.riskNote && <p><b>说明</b>{rev.riskNote}</p>}
+            {showFullRevision && <p className="full-revision"><b>完整条款</b>{rev.fullRewrittenText}</p>}
+          </details>
         </div>
-      )}
-      {rev.action !== 'delete' && !rev.rewrittenText && (
-        <div className="revision-row revision-rewritten">
-          <span className="revision-label">{act.label}</span>
-          <span className="revision-text rewritten-text manual-hint">未能自动生成改写，请参考下方批注手动修订</span>
-        </div>
-      )}
-      {rev.action === 'delete' && (
-        <div className="revision-row revision-rewritten">
-          <span className="revision-label">{act.label}</span>
-          <span className="revision-text rewritten-text delete-hint">建议删除该条款</span>
-        </div>
-      )}
-      <div className="revision-row revision-note">
-        <span className="revision-label">批注</span>
-        <span className="revision-text note-text">{rev.riskNote}</span>
       </div>
+    )
+  }
+  const preview = rev.action === 'delete'
+    ? '建议删除该条款'
+    : (rev.rewrittenText || '请参考批注手动修订')
+  return (
+    <div className={`compact-revision-card ${meta.cls} ${act.cls}`}>
+      <div className="compact-revision-head"><span>{act.label}</span><strong>{rev.title || '条款调整建议'}</strong></div>
+      {rev.action === 'add' && rev.anchorText && <p className="compact-anchor">插入于“{rev.anchorText}”之后</p>}
+      <p className="compact-preview">{preview.length > 180 ? `${preview.slice(0, 180)}…` : preview}</p>
+      <details>
+        <summary>查看完整修订与批注</summary>
+        {preview.length > 180 && <p><b>完整修订</b>{preview}</p>}
+        {rev.riskNote && <p><b>批注</b>{rev.riskNote}</p>}
+      </details>
     </div>
   )
 }
@@ -635,15 +646,16 @@ function ContractRewritePage() {
   const deleteTask = (event, taskId) => { event.stopPropagation(); setTasks((items) => items.filter((task) => task.id !== taskId)) }
   const openDocument = (messageId) => { setDocumentMessageId(messageId); setDocumentOpen(true) }
 
-  // 导出 Word：基于「合同原文 + 结构化修订块」生成 HTML，三明治样式（原句删除线、改写红色、批注浅红底）。
+  // 导出 Word：沿用页面的局部编号批注，避免导出后重新退化成整段三明治卡片。
   const exportWord = () => {
     const name = activeThread?.title || '商业合同审查稿'
     const text = documentContractText || selectedDocument?.rewrite || ''
-    const revisions = Array.isArray(documentRevisions) ? documentRevisions : []
+    const revisions = buildDisplayRevisions(Array.isArray(documentRevisions) ? documentRevisions : [])
     const renderInline = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     // 按行号把修订块分组（与 RevisionDocument 的 byLine 逻辑一致：add 挂在 insertAfterLine 后）
     const lines = stripLegacyFileMarkers(text).split('\n')
     const revByEndLine = new Map()
+    const marksByLine = new Map()
     revisions.forEach((rev) => {
       const end = Number.isInteger(rev.lineEnd) ? rev.lineEnd : -1
       const attach = rev.action === 'add' && Number.isInteger(rev.insertAfterLine) && rev.insertAfterLine >= 0 && rev.insertAfterLine < lines.length
@@ -652,46 +664,63 @@ function ContractRewritePage() {
       if (attach < 0 || attach >= lines.length) return
       if (!revByEndLine.has(attach)) revByEndLine.set(attach, [])
       revByEndLine.get(attach).push(rev)
-    })
-    // 原文行：整条条款作上下文，仅问题子句划线；无法精确命中时回退整条划线；add 展示插入锚点。
-    const renderOriginalRow = (rev) => {
-      if (rev.action === 'add') {
-        const anchor = rev.anchorText ? `插入于：${renderInline(rev.anchorText)} 之后` : renderInline(rev.originalText || '插入位置见下方新增条款')
-        return `<p class="rev-row rev-original"><span class="rev-label">位置</span><span class="rev-text">${anchor}</span></p>`
+      if (rev.action !== 'add' && Array.isArray(rev.quoteSpans)) {
+        rev.quoteSpans.forEach((span) => {
+          if (!span || !Number.isInteger(span.line) || !Number.isInteger(span.start) || !Number.isInteger(span.end)) return
+          if (!marksByLine.has(span.line)) marksByLine.set(span.line, [])
+          marksByLine.get(span.line).push({ ...span, markerNumber: rev.markerNumber })
+        })
       }
-      const full = String(rev.originalText || '')
-      const quote = rev.quoteStatus === 'exact' ? String(rev.quoteText || '') : ''
-      const hit = quote ? full.indexOf(quote) : -1
-      const body = hit >= 0
-        ? `${renderInline(full.slice(0, hit))}<s>${renderInline(full.slice(hit, hit + quote.length))}</s>${renderInline(full.slice(hit + quote.length))}`
-        : `<s>${renderInline(full)}</s>`
-      return `<p class="rev-row rev-original"><span class="rev-label">原文</span><span class="rev-text">${body}</span></p>`
+    })
+    const renderMarkedLine = (raw, lineIndex) => {
+      const trimOffset = raw.length - raw.trimStart().length
+      const text = raw.trim()
+      const marks = (marksByLine.get(lineIndex) || []).map((span) => ({
+        start: Math.max(0, span.start - trimOffset),
+        end: Math.min(text.length, span.end - trimOffset),
+        markerNumber: span.markerNumber
+      })).filter((span) => span.end > span.start).sort((left, right) => left.start - right.start)
+      if (!marks.length) return renderInline(text)
+      let cursor = 0
+      let html = ''
+      marks.forEach((mark) => {
+        if (mark.start < cursor) return
+        html += renderInline(text.slice(cursor, mark.start))
+        html += `<span class="mark">${renderInline(text.slice(mark.start, mark.end))}${mark.markerNumber ? `<sup>${mark.markerNumber}</sup>` : ''}</span>`
+        cursor = mark.end
+      })
+      return html + renderInline(text.slice(cursor))
     }
     const renderRevBlock = (rev) => {
-      const original = renderOriginalRow(rev)
-      const rewritten = rev.action === 'delete'
-        ? `<p class="rev-row rev-rewritten"><span class="rev-label">删除</span><span class="rev-text">建议删除该条款</span></p>`
-        : (rev.rewrittenText ? `<p class="rev-row rev-rewritten"><span class="rev-label">${rev.action === 'add' ? '新增' : '修订'}</span><span class="rev-text">${renderInline(rev.rewrittenText)}</span></p>` : '')
-      const note = `<p class="rev-row rev-note"><span class="rev-label">批注</span><span class="rev-text">${renderInline(rev.riskNote)}</span></p>`
-      return `<div class="rev-sandwich">${original}${rewritten}${note}</div>`
+      if (rev.isLocalized) {
+        const label = rev.operation === 'delete' ? '删除此处' : rev.operation === 'insert-after' ? '在此后补充' : '改为'
+        const replacement = rev.operation === 'delete' ? '删除该问题片段' : (rev.rewrittenText || '请结合批注局部调整')
+        return `<div class="local-edit"><span class="badge">${rev.markerNumber}</span><div><p><b>${label}</b>${renderInline(replacement)}</p>${rev.riskNote ? `<p class="note"><b>批注</b>${renderInline(rev.riskNote)}</p>` : ''}</div></div>`
+      }
+      const label = rev.action === 'add' ? '新增' : rev.action === 'delete' ? '删除' : '修订'
+      const anchor = rev.action === 'add' && rev.anchorText ? `<p class="anchor">插入于“${renderInline(rev.anchorText)}”之后</p>` : ''
+      const body = rev.action === 'delete' ? '建议删除该条款' : renderInline(rev.rewrittenText || '请参考批注手动修订')
+      return `<div class="compact-rev"><p><b>${label}</b>${body}</p>${anchor}${rev.riskNote ? `<p class="note"><b>批注</b>${renderInline(rev.riskNote)}</p>` : ''}</div>`
     }
     const htmlBody = lines.map((raw, i) => {
       const line = raw.trim()
       const revs = revByEndLine.get(i) || []
       const revHtml = revs.map(renderRevBlock).join('')
       if (!line) return revHtml
+      // Markdown 前缀被剥离后，服务端基于原始行计算的字符偏移已不再适用；
+      // 标题与列表项仅输出正文，避免 Word 中出现错位标记。
       if (/^#\s+/.test(line)) return `<h1>${renderInline(line.replace(/^#\s+/, ''))}</h1>${revHtml}`
       if (/^##\s+/.test(line)) return `<h2>${renderInline(line.replace(/^##\s+/, ''))}</h2>${revHtml}`
       if (/^[-*+]\s+/.test(line)) return `<p class="li">${renderInline(line.replace(/^[-*+]\s+/, ''))}</p>${revHtml}`
-      return `<p>${renderInline(line)}</p>${revHtml}`
+      return `<p>${renderMarkedLine(raw, i)}</p>${revHtml}`
     }).join('')
-    const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:SimSun,serif;margin:48px;color:#111;line-height:1.85}h1{text-align:center;font-size:22pt}h2{margin-top:24px;font-size:15pt}p{font-size:12pt}p.li{margin-left:24px;text-indent:-12pt}.rev-sandwich{margin:8px 0 16px 24px;border-left:3px solid #c0392b;background:#fafafa;overflow:hidden}.rev-row{display:flex;gap:10px;padding:6px 14px;font-size:11pt;margin:0}.rev-label{flex-shrink:0;width:32px;color:#888}.rev-original .rev-text{color:#999}.rev-original s{text-decoration:line-through;text-decoration-color:#c0392b}.rev-rewritten{background:#fef5f5}.rev-rewritten .rev-text{color:#c0392b;font-weight:bold}.rev-note{background:#fdecea;border-top:1px dashed #f5c6cb}.rev-note .rev-text{color:#842029}</style></head><body>${htmlBody}</body></html>`
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:SimSun,serif;margin:48px;color:#111;line-height:1.85}h1{text-align:center;font-size:22pt}h2{margin-top:24px;font-size:15pt}p{font-size:12pt}p.li{margin-left:24px;text-indent:-12pt}.mark{background:#fff0e5;border-bottom:1px solid #e35f00}.mark sup,.badge{color:#fff;background:#e35f00;border-radius:9px;font-size:8pt;font-weight:bold}.mark sup{padding:1px 4px;margin-left:2px}.local-edit{display:flex;margin:5px 0 12px 22px;padding:7px 10px;background:#fffaf6;border:1px solid #f2ded0}.badge{display:inline-block;min-width:16px;height:16px;margin-right:8px;text-align:center}.local-edit p,.compact-rev p{margin:0;font-size:10.5pt}.local-edit b,.compact-rev b{margin-right:8px;color:#9e352d}.note{margin-top:4px!important;color:#765c50}.compact-rev{margin:7px 0 14px 22px;padding:8px 12px;border-left:3px solid #fd7002;background:#fafafa}.anchor{color:#777}</style></head><body>${htmlBody}</body></html>`
     const url = URL.createObjectURL(new Blob([html], { type: 'application/msword' }))
     const anchor = document.createElement('a')
     anchor.href = url; anchor.download = `${name}-审查批注稿.doc`; anchor.click(); URL.revokeObjectURL(url)
   }
 
-  const status = stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'rewrite' ? '正在生成批注稿…' : mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
+  const status = stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'consolidation' ? '正在归并重复和关联问题…' : stage === 'rewrite' ? '正在生成局部批注稿…' : mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
 
   return <main className={`contract-chat ${documentOpen ? 'document-expanded' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
     {!documentOpen && <aside className="chat-sidebar">
@@ -739,7 +768,7 @@ function ContractRewritePage() {
           {activeMessages.length === 0 && <div className="assistant-turn welcome-turn"><div><p>你好，我是法飞飞合同审查助手。上传合同后，我会结合对应合同类型的优质模板和风险案例，帮你梳理风险、生成修改建议，并输出一份可继续编辑的批注稿。</p></div></div>}
           {activeMessages.map((message) => message.role === 'user'
             ? <div className="user-turn" key={message.id}><p>{message.content}</p>{message.files?.map((file) => <div className="attached-file" key={`${message.id}-${file.name}`}><FileText size={18} /><span>{file.name}</span><small>{Math.ceil(file.size / 1024)} KB</small></div>)}</div>
-            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status"><Loader2 size={15} className="spinner" />{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>{(message.rewriteStats?.total || message.revisions?.length) ? `${message.rewriteStats?.total || message.revisions.length} 处修订 · ` : ''}点击展开文档</small></span></button>}</>}</div></div>)}
+            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status"><Loader2 size={15} className="spinner" />{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>{message.rewriteStats?.total ? `${message.rewriteStats.total} 个问题 · ${message.rewriteStats.blocks || message.revisions?.length || 0} 个就近标记 · ` : (message.revisions?.length ? `${message.revisions.length} 个修订标记 · ` : '')}点击展开文档</small></span></button>}</>}</div></div>)}
           {loading && <div className="assistant-turn loading-turn"><div><p>{status}</p></div></div>}
           {error && <p className="chat-error">{error}</p>}
           {!activeMessages.length && <div className="starter-prompts"><button onClick={() => setInstruction('请从甲方视角重点审查付款、验收和违约责任。')}>从甲方视角审查付款与违约责任 <span>→</span></button><button onClick={() => setInstruction('请检查合同是否缺少核心条款。')}>检查是否缺少核心条款 <span>→</span></button></div>}
@@ -761,8 +790,8 @@ function ContractRewritePage() {
           ? <RevisionDocument contractText={documentContractText} revisions={documentRevisions} />
           : <div className="document-empty"><FileText size={32} /><p>{selectedDocument?.status || '暂无修订内容'}</p></div>}
         {documentRevisions.length > 0 && <aside className="revision-summary">
-          <p><b>{selectedDocument?.rewriteStats?.total || documentRevisions.length}</b> 处修订{selectedDocument?.rewriteStats ? `（修订 ${selectedDocument.rewriteStats.modify || 0} · 新增 ${selectedDocument.rewriteStats.add || 0} · 删除 ${selectedDocument.rewriteStats.delete || 0}）` : ''}{selectedDocument?.rewriteStats?.blocks && selectedDocument.rewriteStats.blocks < (selectedDocument.rewriteStats.total || 0) ? '，同一位置的多条新增已合并展示' : ''}</p>
-          <p className="revision-summary-tip">红色块为修订建议：灰色条款中删除线为问题子句，红色为改写句，浅红底为批注说明；新增条款显示插入位置。</p>
+          <p><b>{selectedDocument?.rewriteStats?.total || documentRevisions.length}</b> 个问题，生成 <b>{selectedDocument?.rewriteStats?.blocks || documentRevisions.length}</b> 个就近修订标记{selectedDocument?.rewriteStats ? `（修订 ${selectedDocument.rewriteStats.modify || 0} · 新增 ${selectedDocument.rewriteStats.add || 0} · 删除 ${selectedDocument.rewriteStats.delete || 0}）` : ''}{selectedDocument?.rewriteStats?.groups && selectedDocument.rewriteStats.groups < (selectedDocument.rewriteStats.total || 0) ? '，同一条款的相关问题已统一处理' : ''}</p>
+          <p className="revision-summary-tip">正文中的浅橙色片段和编号对应下方局部修改；完整修订条款与批注默认收起，可按需展开查看。</p>
         </aside>}
       </div>
     </section>}
