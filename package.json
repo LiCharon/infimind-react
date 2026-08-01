@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "server": "node server/index.js",
     "import:templates": "node server/scripts/import-templates.js",
-    "evaluate:knowledge-base": "RAG_RERANKER_MODE=heuristic node server/scripts/evaluate-knowledge-base.js"
+    "evaluate:knowledge-base": "RAG_RERANKER_MODE=heuristic node server/scripts/evaluate-knowledge-base.js",
+    "test:consolidation": "node server/scripts/test-finding-consolidation.js"
   },
   "dependencies": {
     "@babel/types": "^7.29.0",

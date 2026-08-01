@@ -17,10 +17,9 @@
 .clause-list { margin: 0 0 14px; padding-left: 24px; }
 .clause-list li { margin: 4px 0; line-height: 1.85; }
 
-/* 被修订的条款：波浪线下划线，提示用户此处有修订块。 */
-.clause-flagged { text-decoration: underline wavy #fd7002; text-decoration-skip-ink: none; text-underline-offset: 4px; }
-/* 精确命中的问题子句：只给子句片段加波浪线，替代整行标注。 */
-.quote-mark { text-decoration: underline wavy #fd7002; text-decoration-skip-ink: none; text-underline-offset: 4px; }
+/* 精确问题片段：柔和底色 + 细下划线 + 编号，避免大面积波浪线造成视觉疲劳。 */
+.quote-mark { padding: 1px 1px 2px; background: linear-gradient(180deg, transparent 54%, rgb(253 112 2 / 15%) 54%); border-bottom: 1.5px solid #fd7002; border-radius: 2px; }
+.quote-marker { display: inline-grid; min-width: 16px; height: 16px; margin: 0 2px 0 3px; padding: 0 3px; place-items: center; color: #fff; background: #e35f00; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; vertical-align: super; }
 @media (max-width: 1100px) { .chat-sidebar { width: 230px; flex-basis: 230px; }.composer-wrap { left: 230px; }.document-expanded .chat-column { width: 42%; flex-basis: 42%; min-width: 360px; }.document-expanded .composer-wrap { width: 42%; min-width: 360px; }.document-scroll { padding-right: 50px; padding-left: 50px; } }
 @media (max-width: 760px) { .chat-sidebar { display: none; }.chat-header { height: 64px; flex-basis: 64px; padding: 0 13px; }.conversation-inner { width: calc(100% - 30px); padding-top: 28px; }.assistant-turn p, .user-turn > p { font-size: 15px; }.composer-wrap { left: 0; padding: 12px 14px 16px; }.composer { min-height: 102px; border-radius: 20px; padding: 13px 15px 10px; }.tool-text.mobile-hide { display: none; }.tool-text { font-size: 13px !important; }.document-expanded { display: block; overflow: auto; }.document-expanded .chat-column, .document-column { width: 100%; min-width: 0; height: 62vh; }.document-expanded .composer-wrap { position: fixed; left: 0; width: 100%; min-width: 0; }.document-column { height: 100vh; }.document-expanded .chat-column { display: none; }.document-header { height: 60px; flex-basis: 60px; padding: 0 12px; }.document-header > span, .document-header button:not(.close-document) { display: none; }.document-scroll { padding: 42px 22px 70px; }.contract-document h1 { margin-bottom: 32px; font-size: 28px; }.contract-document h2 { margin-top: 32px; font-size: 20px; }.contract-document p { font-size: 15px; line-height: 1.85; } }
 
@@ -89,41 +88,35 @@
 .balance-top-up:hover { color: #fff; background: #000; }
 .balance-popover footer { margin-top: 13px; color: #9b9ba0; font-size: 11px; }
 
-/* === 修订稿：行内三明治视图 === */
-/* 修订块容器：多条修订堆叠时垂直排列。 */
-.revision-stack { display: flex; flex-direction: column; gap: 12px; margin: 6px 0 20px; }
+/* === 修订稿：局部编号批注 === */
+.revision-stack { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 18px 22px; }
+.local-edit-card { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 10px 13px 10px 10px; color: #3a302a; background: #fffaf6; border: 1px solid #f2ded0; border-radius: 10px; box-shadow: 0 2px 8px rgb(77 42 20 / 4%); }
+.local-edit-card.level-high { background: #fff8f7; border-color: #efcec9; }
+.local-edit-card.level-low { background: #fffdf6; border-color: #eadfbd; }
+.local-edit-badge { display: grid; width: 22px; height: 22px; place-items: center; color: #fff; background: #e35f00; border-radius: 50%; font-size: 11px; font-weight: 700; }
+.local-edit-card.level-high .local-edit-badge { background: #b9362b; }
+.local-edit-card.level-low .local-edit-badge { background: #9a7311; }
+.local-edit-content { min-width: 0; }
+.local-edit-suggestion { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; align-items: baseline; font-size: 14px; line-height: 1.75; }
+.local-edit-suggestion > span { color: #a65a2a; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.local-edit-suggestion > strong { color: #9e352d; font-weight: 600; word-break: break-word; }
+.local-edit-details, .compact-revision-card details { margin-top: 5px; color: #6f6159; font-size: 12px; line-height: 1.65; }
+.local-edit-details summary, .compact-revision-card summary { width: fit-content; color: #9a7560; cursor: pointer; user-select: none; }
+.local-edit-details p, .compact-revision-card details p { margin: 7px 0 0; padding: 8px 10px; background: rgb(255 255 255 / 65%); border-radius: 7px; font-size: 12px; line-height: 1.7; }
+.local-edit-details p b, .compact-revision-card details p b { margin-right: 8px; color: #8d776a; }
+.local-edit-details .full-revision { color: #7d332d; }
 
-/* 三明治块：原句（删除线）→ 改写句（红色）→ 批注（浅红底），左侧红色竖条标识。
-   整体采用浅灰底卡片 + 左侧色条，与原文形成层级，保证视觉整洁。 */
-.revision-sandwich { margin: 0; padding: 0; background: #fafafa; border-left: 3px solid #c0392b; border-radius: 0 10px 10px 0; overflow: hidden; }
-.revision-sandwich.level-high { border-left-color: #c0392b; }
-.revision-sandwich.level-mid { border-left-color: #fd7002; }
-.revision-sandwich.level-low { border-left-color: #b8860b; }
-
-.revision-row { display: flex; gap: 12px; align-items: flex-start; padding: 9px 14px; font-size: 14px; line-height: 1.75; }
-.revision-label { flex: 0 0 auto; width: 34px; padding-top: 1px; color: #9a9a9e; font-size: 12px; font-weight: 500; }
-.revision-text { flex: 1; min-width: 0; word-break: break-word; }
-
-/* 原句：整条条款灰色显示作上下文；仅问题子句加删除线，无法精确命中时整条划线。 */
-.revision-original { background: #fff; }
-.revision-original .original-text { color: #999; }
-.revision-original .original-text.strike-all, .revision-original .quote-strike { text-decoration: line-through; text-decoration-color: #c0392b; text-decoration-thickness: 1.5px; }
-/* add 修订的插入锚点行：只提示插入位置，不划线。 */
-.revision-original .anchor-text { color: #666; }
-
-/* 改写句：红色加粗，是修订的核心内容。 */
-.revision-rewritten { background: #fef5f5; }
-.revision-rewritten .rewritten-text { color: #c0392b; font-weight: 600; }
-.revision-rewritten .delete-hint { color: #c0392b; font-weight: 600; font-style: italic; }
-.revision-rewritten .manual-hint { color: #b8860b; font-weight: 500; font-style: italic; }
-
-/* 批注说明：浅红底，解释为什么改、改了什么；与改写句用虚线分隔。 */
-.revision-note { background: #fdecea; border-top: 1px dashed #f5c6cb; font-size: 13px; }
-.revision-note .note-text { color: #842029; }
-
-/* 修订块的动作类型角标（修改/新增/删除），靠左色条颜色已区分，此处仅做轻量提示。 */
-.revision-sandwich.action-add { border-left-style: dashed; }
-.revision-sandwich.action-delete { border-left-style: double; border-left-width: 6px; }
+/* 无可靠局部锚点或新增条款时使用紧凑卡，正文默认只展示短预览，完整内容折叠。 */
+.compact-revision-card { padding: 11px 14px; background: #fafafa; border-left: 3px solid #c0392b; border-radius: 0 10px 10px 0; font-size: 13px; line-height: 1.7; }
+.compact-revision-card.level-mid { border-left-color: #fd7002; }
+.compact-revision-card.level-low { border-left-color: #b8860b; }
+.compact-revision-card.action-add { border-left-style: dashed; }
+.compact-revision-card.action-delete { border-left-style: double; border-left-width: 5px; }
+.compact-revision-head { display: flex; align-items: baseline; gap: 9px; }
+.compact-revision-head span { color: #a55b2c; font-size: 11px; font-weight: 650; }
+.compact-revision-head strong { color: #3b3633; font-size: 13px; }
+.compact-anchor { margin: 5px 0 0 !important; color: #8b817b; font-size: 12px !important; }
+.compact-preview { display: -webkit-box; margin: 6px 0 0 !important; overflow: hidden; color: #9e352d; font-size: 13px !important; font-weight: 550; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 
 /* 文档空状态：审核中或无修订时展示。 */
 .document-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-height: 320px; color: #b1b1b4; }
@@ -137,6 +130,12 @@
 .revision-summary-tip { margin-top: 6px !important; color: #9a9a9e; font-size: 12px; }
 
 @media (max-width: 1100px) { .composer-wrap { left: 0; }.document-expanded .composer-wrap { width: 100%; min-width: 0; } }
+
+@media (max-width: 760px) {
+  .revision-stack { margin-left: 8px; }
+  .local-edit-card { grid-template-columns: 22px minmax(0, 1fr); padding-right: 10px; }
+  .local-edit-suggestion { grid-template-columns: 1fr; gap: 2px; }
+}
 
 /* Markdown rendering for assistant messages. */
 .assistant-content { font-size: 16px; line-height: 1.82; word-break: break-word; }

@@ -4,10 +4,12 @@ import { extractText } from '../services/file-parser.js'
 import { getKnowledgeBaseStatus, listTemplates, searchEvidence } from '../services/knowledge-base.js'
 import { buildReviewPlan } from '../services/review-plan.js'
 import { buildReviewResult, renderReviewReport, extractReviewPayload, findingSimilarity } from '../services/annotation-locator.js'
+import { buildRevisionGroups } from '../services/finding-consolidator.js'
 import { mergeRevisions, coalesceAdjacentAdds } from '../services/revision-merger.js'
 import { createReviewSession, getReviewSession, publicReviewSession } from '../services/review-session-store.js'
 import { analyzeContract } from '../agents/contract-analyzer.js'
 import { reviewContract } from '../agents/contract-reviewer.js'
+import { consolidateContractFindings } from '../agents/contract-consolidator.js'
 import { rewriteContract } from '../agents/contract-rewriter.js'
 import { streamChat, getFlashModel, getProModel, getUserBalance } from '../services/llm-client.js'
 
@@ -475,15 +477,6 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
 
     void lastReviewOutput  // 保留变量便于日志排查
 
-    const reviewReport = renderReviewReport(reviewResult)
-    const reviewSession = createReviewSession({
-      contractText: reviewContractText,
-      analysisReport: reviewAnalysis,
-      reviewReport,
-      reviewResult
-    })
-    // 对话报告和确认页均由同一份 reviewResult 派生，不再把模型原始输出或原文标记当作补充来源。
-    writeSSE('review.delta', { content: reviewReport })
     if (reviewResult.stats.unresolved > 0) {
       console.warn(`[contract-rewrite] ${reviewResult.stats.unresolved} finding(s) require manual re-review; they were not made selectable`)
     }
@@ -493,7 +486,6 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
     writeSSE('stage.complete', {
       stage: 'review',
       summary: `三轮审查完成（实际执行 ${totalRoundsExecuted} 轮），${reviewResult.stats.confirmed} 条批注已定位到原文${reviewResult.stats.unresolved ? `，${reviewResult.stats.unresolved} 条待核查` : ''}${crossRoundDeduped ? `，跨轮去重 ${crossRoundDeduped} 条` : ''}`,
-      reportLength: reviewReport.length,
       annotationCount: reviewResult.stats.confirmed,
       reviewStats: { ...reviewResult.stats, rounds: totalRoundsExecuted, crossRoundDeduped },
       // 逐轮发现快照：前端据此在对话区展示"第X轮发现/新增了哪些问题"
@@ -503,13 +495,58 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
     console.log(`[contract-rewrite] Review stage completed (rounds=${totalRoundsExecuted}, confirmed=${reviewResult.stats.confirmed})`)
 
     // ==========================================
-    // Step 4: Agent 3 - 自动改写（直接基于全部已定位 findings，无需用户确认）
-    // 对每条 finding 产出"如何修订"的结构化指令，服务端用 revision-merger 把
-    // 可信 finding（原句/行号）与 Agent 3 输出（改写文本/批注）配对。
+    // Step 4: 归并 Agent - 按修改目标收敛审查结果
+    // 归并 Agent 只决定 findingId 分组；服务端严格校验全覆盖、唯一性和定位兼容性。
+    // Agent 异常或输出不合规时，回退到按重叠原文范围/同条款确定性分组。
     // ==========================================
-    let rewritePayload = { contractText: reviewContractText, revisions: [], stats: { rounds: totalRoundsExecuted, totalFindings: 0, modify: 0, add: 0, delete: 0 } }
+    let consolidationOutput = ''
+    if (reviewResult.findings.length > 1) {
+      writeSSE('stage.start', { stage: 'consolidation', label: '正在汇总重复及关联问题' })
+      try {
+        consolidationOutput = await consolidateContractFindings(reviewResult.findings, modelProfile.model)
+      } catch (error) {
+        console.warn('[contract-rewrite] Consolidation Agent failed, using deterministic grouping:', error.message)
+        writeSSE('stage.progress', { stage: 'consolidation', message: '智能归并暂时不可用，正在按原文位置进行确定性归并' })
+      }
+    }
 
-    if (reviewResult.findings.length > 0) {
+    const consolidationResult = buildRevisionGroups({
+      findings: reviewResult.findings,
+      agentOutput: consolidationOutput,
+      contractText: reviewContractText
+    })
+    const revisionGroups = consolidationResult.groups
+    if (consolidationResult.stats.fallbackUsed) {
+      console.warn(`[contract-rewrite] Consolidation fallback: ${consolidationResult.stats.fallbackReason}`)
+    }
+    if (reviewResult.findings.length > 1) {
+      writeSSE('stage.complete', {
+        stage: 'consolidation',
+        summary: `问题归并完成，${reviewResult.findings.length} 条候选问题收敛为 ${consolidationResult.stats.uniqueIssues} 个有效问题、${revisionGroups.length} 个互不冲突的修订组`,
+        consolidationStats: consolidationResult.stats
+      })
+    }
+    console.log(`[contract-rewrite] Consolidation completed: ${reviewResult.findings.length} findings -> ${consolidationResult.stats.uniqueIssues} unique issues in ${revisionGroups.length} revision groups${consolidationResult.stats.fallbackUsed ? ' (deterministic fallback)' : ''}`)
+
+    // 最终审查报告也使用归并后的修订组，避免对话报告与批注稿出现两套重复口径。
+    // ReviewSession 仍保存原始 canonical findings，保证每个问题的追踪 ID 和统计不丢失。
+    const consolidatedReviewResult = { ...reviewResult, findings: revisionGroups }
+    const reviewReport = renderReviewReport(consolidatedReviewResult)
+    const reviewSession = createReviewSession({
+      contractText: reviewContractText,
+      analysisReport: reviewAnalysis,
+      reviewReport,
+      reviewResult
+    })
+    writeSSE('review.delta', { content: reviewReport })
+
+    // ==========================================
+    // Step 5: Agent 3 - 自动改写（每个修订组只产出一份最终条款）
+    // 可信原句、行号和组内 findingId 由服务端强制注入，Agent 3 只负责统一改写。
+    // ==========================================
+    let rewritePayload = { contractText: reviewContractText, revisions: [], stats: { rounds: totalRoundsExecuted, total: 0, groups: 0, blocks: 0, modify: 0, add: 0, delete: 0 } }
+
+    if (revisionGroups.length > 0) {
       // 「最终校验」阶段：明确告知用户进入定稿环节，缓解长时间等待的焦虑
       writeSSE('stage.start', { stage: 'rewrite', label: '正在依据审查结果进行最终校验并生成修订稿' })
 
@@ -519,7 +556,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
         rewriteOutput = await rewriteContract({
           contractText: reviewContractText,
           analysisReport: reviewAnalysis,
-          findings: reviewResult.findings
+          findings: revisionGroups
         }, (chunk) => {
           // 改写阶段输出的是 JSON，无法逐字展示；保留回调接口用于未来扩展（如进度心跳）。
           void chunk
@@ -531,7 +568,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
         return res.end()
       }
 
-      let merged = mergeRevisions(reviewResult.findings, rewriteOutput, reviewContractText)
+      let merged = mergeRevisions(revisionGroups, rewriteOutput, reviewContractText)
       console.log(`[contract-rewrite] Rewrite pass 1: ${merged.stats.matched}/${merged.revisions.length} matched${merged.recovered ? ' (recovered from truncation)' : ''}`)
 
       // 分批降级补全：仍有 finding 未拿到改写（被截断或漏配）时，按 6 条一批重调。
@@ -539,15 +576,15 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
       const REWRITE_BATCH_SIZE = 6
       const REWRITE_MAX_BATCHES = 4
       let batchIndex = 0
-      let missingFindings = merged.revisions.filter((rev) => !rev.hasRewrite).map((rev) =>
-        reviewResult.findings.find((f) => f.id === rev.findingId)
+      let missingGroups = merged.revisions.filter((rev) => !rev.hasRewrite).map((rev) =>
+        revisionGroups.find((group) => group.id === rev.findingId)
       ).filter(Boolean)
 
-      while (missingFindings.length > 0 && batchIndex < REWRITE_MAX_BATCHES) {
+      while (missingGroups.length > 0 && batchIndex < REWRITE_MAX_BATCHES) {
         batchIndex += 1
-        const batch = missingFindings.slice(0, REWRITE_BATCH_SIZE)
-        const remaining = missingFindings.slice(REWRITE_BATCH_SIZE)
-        writeSSE('stage.progress', { stage: 'rewrite', message: `正在补全第 ${batchIndex} 批未生成的修订（剩余 ${missingFindings.length} 条）` })
+        const batch = missingGroups.slice(0, REWRITE_BATCH_SIZE)
+        const remaining = missingGroups.slice(REWRITE_BATCH_SIZE)
+        writeSSE('stage.progress', { stage: 'rewrite', message: `正在补全第 ${batchIndex} 批未生成的修订（剩余 ${missingGroups.length} 组）` })
         console.log(`[contract-rewrite] Rewrite batch ${batchIndex}: re-generating ${batch.length} missing revisions`)
 
         let batchOutput = ''
@@ -570,34 +607,52 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
 
         // 重新计算缺失项：本批未补全的 + 剩余未处理的
         const stillMissing = batchMerged.revisions.filter((r) => !r.hasRewrite).map((r) =>
-          reviewResult.findings.find((f) => f.id === r.findingId)
+          revisionGroups.find((group) => group.id === r.findingId)
         ).filter(Boolean)
-        missingFindings = [...remaining, ...stillMissing]
+        missingGroups = [...remaining, ...stillMissing]
       }
 
-      if (missingFindings.length > 0) {
-        console.warn(`[contract-rewrite] ${missingFindings.length} revision(s) still missing after batch recovery; falling back to advice`)
+      if (missingGroups.length > 0) {
+        console.warn(`[contract-rewrite] ${missingGroups.length} revision group(s) still missing after batch recovery; falling back to advice`)
       }
 
-      // 重新统计（补全后部分 action 可能从兜底 modify 变化）。统计口径保持 per-finding，与审查报告一致。
+      // 重新统计（补全后 action 可能变化）。对外按归并后的有效问题计，展示块按组计。
       const finalTally = { modify: 0, add: 0, delete: 0 }
-      merged.revisions.forEach((rev) => { finalTally[rev.action] = (finalTally[rev.action] || 0) + 1 })
+      merged.revisions.forEach((rev) => {
+        finalTally[rev.action] = (finalTally[rev.action] || 0) + (Number(rev.issueCount) || 1)
+      })
 
       // 展示层归并：同一插入位置的连续 add 合并为一个修订块（不改变上面的 per-finding 统计）。
       const displayRevisions = coalesceAdjacentAdds(merged.revisions)
       const mergedAddCount = merged.revisions.length - displayRevisions.length
+      const matchedIssueCount = merged.revisions.reduce((sum, rev) => sum + (rev.hasRewrite ? (Number(rev.issueCount) || 1) : 0), 0)
+      const localizedEditCount = displayRevisions.reduce((sum, rev) =>
+        sum + (rev.action !== 'add' && Array.isArray(rev.localizedEdits) && rev.localizedEdits.length ? rev.localizedEdits.length : 0), 0)
+      const displayBlockCount = displayRevisions.reduce((sum, rev) =>
+        sum + (rev.action !== 'add' && Array.isArray(rev.localizedEdits) && rev.localizedEdits.length ? rev.localizedEdits.length : 1), 0)
 
       rewritePayload = {
         contractText: reviewContractText,
         revisions: displayRevisions,
-        stats: { rounds: totalRoundsExecuted, total: merged.revisions.length, matched: merged.revisions.filter((r) => r.hasRewrite).length, blocks: displayRevisions.length, ...finalTally }
+        stats: {
+          rounds: totalRoundsExecuted,
+          total: consolidationResult.stats.uniqueIssues,
+          matched: matchedIssueCount,
+          groups: revisionGroups.length,
+          blocks: displayBlockCount,
+          localizedEdits: localizedEditCount,
+          consolidated: consolidationResult.stats.consolidated,
+          consolidationFallback: consolidationResult.stats.fallbackUsed,
+          ...finalTally
+        }
       }
-      console.log(`[contract-rewrite] Rewrite completed: ${merged.revisions.length} revisions, ${rewritePayload.stats.matched} with rewrite (modify=${finalTally.modify}, add=${finalTally.add}, delete=${finalTally.delete})${mergedAddCount ? `, ${mergedAddCount} add revision(s) coalesced for display` : ''}`)
+      console.log(`[contract-rewrite] Rewrite completed: ${consolidationResult.stats.uniqueIssues} unique issues in ${revisionGroups.length} groups, ${rewritePayload.stats.matched} issue(s) with rewrite (modify=${finalTally.modify}, add=${finalTally.add}, delete=${finalTally.delete})${mergedAddCount ? `, ${mergedAddCount} add group(s) coalesced for display` : ''}`)
 
       writeSSE('stage.complete', {
         stage: 'rewrite',
-        summary: `最终校验完成，共生成 ${merged.revisions.length} 处修订${mergedAddCount ? '（同一位置的多条新增已合并展示）' : ''}`,
-        revisionCount: merged.revisions.length
+        summary: `最终校验完成，${consolidationResult.stats.uniqueIssues} 个有效问题已生成 ${displayBlockCount} 个就近修订标记${consolidationResult.stats.consolidated ? '（重复或同一条款的相关问题已统一处理）' : ''}`,
+        revisionCount: consolidationResult.stats.uniqueIssues,
+        blockCount: displayBlockCount
       })
     } else {
       writeSSE('stage.start', { stage: 'rewrite', label: '未发现需修订条款' })
@@ -617,7 +672,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
       mode,
       model: modelProfile.model,
       reportLength: reviewReport.length,
-      stages: ['parsing', 'analysis', 'knowledge', 'review', 'rewrite']
+      stages: ['parsing', 'analysis', 'knowledge', 'review', 'consolidation', 'rewrite']
     })
 
     return res.end()
