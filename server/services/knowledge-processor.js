@@ -87,6 +87,35 @@ export function extractRiskRules(text, clauses) {
   return deduped
 }
 
+/** 将 Word 原生批注转为可检索的人工审核证据，不将批注文字混入模板正文。 */
+export function extractWordAnnotationRiskRules(annotations = [], clauses = [], revisions = {}) {
+  return annotations
+    .filter((annotation) => annotation?.text?.trim())
+    .map((annotation, index) => {
+      const anchor = String(annotation.anchor || '').trim()
+      const category = inferWordAnnotationCategory(`${anchor}\n${annotation.text}`) || inferRiskCategory(`${anchor}\n${annotation.text}`)
+      const revisionHint = revisions.insertions || revisions.deletions
+        ? `文档修订足迹：新增 ${revisions.insertions || 0} 处，删除 ${revisions.deletions || 0} 处`
+        : ''
+      const sourceClause = anchor ? findClauseByText(anchor, clauses) : null
+      return {
+        ruleKey: `word-comment-${index + 1}`,
+        sourceClauseKey: sourceClause?.clauseKey || '',
+        category,
+        severity: '中',
+        triggerText: (anchor || sourceClause?.content || '批注关联条款未保留').slice(0, 1000),
+        riskText: `人工批注：${annotation.text.trim()}`.slice(0, 1200),
+        recommendation: '请结合交易事实核对该条批注，必要时调整对应合同约定。',
+        sourceNote: [
+          '【Word 原生批注】',
+          annotation.author ? `批注人：${annotation.author}` : '',
+          annotation.date ? `日期：${annotation.date}` : '',
+          revisionHint
+        ].filter(Boolean).join('；')
+      }
+    })
+}
+
 export function inferRiskCategory(text) {
   const value = String(text || '')
   const categories = [
@@ -168,6 +197,21 @@ function inferSeverity(text) {
   if (/中危|中等/.test(text)) return '中'
   if (/低危|低风险/.test(text)) return '低'
   return '中'
+}
+
+function inferWordAnnotationCategory(text) {
+  return /劳动合同|试用期|工时|加班|工资|社保|劳动报酬|员工手册|规章制度|派驻|劳动仲裁|无固定期限|休息休假/.test(text) ? '劳动用工合规' : ''
+}
+
+function findClauseByText(anchor, clauses) {
+  const normalizedAnchor = normalizeInline(anchor)
+  if (!normalizedAnchor) return null
+  return clauses.find((clause) => normalizeInline(clause.content).includes(normalizedAnchor)) ||
+    clauses.find((clause) => normalizedAnchor.includes(normalizeInline(clause.content).slice(0, 80))) || null
+}
+
+function normalizeInline(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim()
 }
 
 function parseAnnotation(annotation) {

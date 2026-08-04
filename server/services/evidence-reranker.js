@@ -52,7 +52,7 @@ function heuristicRerank(reviewPlan, candidates) {
       const haystack = `${candidate.title}\n${candidate.parentTitle}\n${candidate.category}\n${candidate.text}`
       const termMatches = [...terms].filter((term) => term && haystack.includes(term)).length
       const focusMatches = focus ? [...new Set(focus.match(/[\u4e00-\u9fa5]{2,8}/g) || [])].filter((term) => haystack.includes(term)).length : 0
-      const roleBonus = candidate.kind === 'risk_rule' && candidate.referenceRole === 'annotated_case' ? 0.025 :
+      const roleBonus = candidate.kind === 'risk_rule' && (candidate.referenceRole === 'annotated_case' || candidate.sourceNote?.startsWith('【Word 原生批注】')) ? 0.025 :
         candidate.kind === 'clause' && candidate.referenceRole === 'excellent_template' ? 0.02 : 0
       const rerankScore = candidate.retrievalScore * 100 + termMatches * 0.8 + focusMatches * 0.35 + roleBonus
       return { ...candidate, rerankScore, rankingMethod: 'hybrid-heuristic' }
@@ -104,7 +104,7 @@ function buildRerankQuery(reviewPlan) {
 
 function formatRerankDocument(item) {
   return [
-    item.referenceRole === 'annotated_case' ? '风险反例证据' : '正向模板证据',
+    item.kind === 'risk_rule' && item.sourceNote?.startsWith('【Word 原生批注】') ? '人工批注风险证据' : item.referenceRole === 'annotated_case' ? '风险反例证据' : '正向模板证据',
     item.kind === 'risk_rule' ? '风险规则' : '合同条款',
     item.category ? `风险类别：${item.category}` : '',
     `${item.clauseNo || ''} ${item.title || ''}`.trim(),

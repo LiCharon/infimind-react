@@ -11,7 +11,9 @@
     "server": "node server/index.js",
     "import:templates": "node server/scripts/import-templates.js",
     "evaluate:knowledge-base": "RAG_RERANKER_MODE=heuristic node server/scripts/evaluate-knowledge-base.js",
-    "test:consolidation": "node server/scripts/test-finding-consolidation.js"
+    "test:consolidation": "node server/scripts/test-finding-consolidation.js",
+    "test:concurrency": "node server/scripts/test-concurrency-isolation.js",
+    "test:word-annotations": "node server/scripts/test-word-annotations.js"
   },
   "dependencies": {
     "@babel/types": "^7.29.0",
@@ -20,6 +22,7 @@
     "dotenv": "^17.3.1",
     "express": "^4.19.2",
     "framer-motion": "^12.23.26",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.460.0",
     "mammoth": "^1.12.0",
     "multer": "^2.1.1",
