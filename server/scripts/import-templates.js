@@ -11,8 +11,8 @@ import { join, extname, basename, dirname, relative } from 'path'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { initialize, addTemplate, listTemplates, resetKnowledgeBase, close } from '../services/knowledge-base.js'
-import { extractText } from '../services/file-parser.js'
-import { splitIntoClauses, extractRiskRules } from '../services/knowledge-processor.js'
+import { extractText, extractWordAnnotations, stripNativeCommentText } from '../services/file-parser.js'
+import { splitIntoClauses, extractRiskRules, extractWordAnnotationRiskRules } from '../services/knowledge-processor.js'
 import { syncVectorIndex } from '../services/vector-store.js'
 import { listIndexableEvidence } from '../services/knowledge-base.js'
 
@@ -55,7 +55,21 @@ async function main() {
           ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
           : 'application/msword'
       })
-      const text = normalizeText(result.text)
+      // 仅对本次新增的劳动合同类素材提取 Word 审阅批注。
+      // 批注单独写为风险规则，不当作正向模板正文。
+      const wordAnnotations = contractType === '劳动合同'
+        ? await extractWordAnnotations({
+          buffer,
+          originalname: basename(filePath),
+          mimetype: extension === '.docx'
+            ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            : 'application/msword'
+        })
+        : { comments: [], revisions: { insertions: 0, deletions: 0 } }
+      const rawText = extension === '.doc'
+        ? stripNativeCommentText(result.text, wordAnnotations.comments)
+        : result.text
+      const text = normalizeText(rawText, { trimLineEnd: contractType === '劳动合同' })
       if (!text) {
         errors.push(`${sourceFile}: 未提取到正文`)
         continue
@@ -65,7 +79,10 @@ async function main() {
       const textFile = `${fileId}-${safeFilename(rawName)}.txt`
       await writeFile(join(outputDir, textFile), text, 'utf8')
       const clauses = splitIntoClauses(text)
-      const riskRules = referenceRole === 'annotated_case' ? extractRiskRules(text, clauses) : []
+      const riskRules = [
+        ...(referenceRole === 'annotated_case' ? extractRiskRules(text, clauses) : []),
+        ...extractWordAnnotationRiskRules(wordAnnotations.comments, clauses, wordAnnotations.revisions)
+      ]
       entries.push({
         name: `${contractType}｜${rawName}`,
         source_file: sourceFile,
@@ -77,6 +94,8 @@ async function main() {
         reference_role: referenceRole,
         pair_key: pairKey,
         content_hash: createHash('sha256').update(text).digest('hex'),
+        annotation_count: wordAnnotations.comments.length,
+        revision_summary: wordAnnotations.revisions,
         clauses,
         risk_rules: riskRules,
         content: text
@@ -113,8 +132,14 @@ async function main() {
   await writeFile(indexPath, JSON.stringify(indexData, null, 2), 'utf8')
   console.log(`[import-templates] Imported ${listTemplates().length} templates`)
   console.log(`[import-templates] Index rebuilt: ${indexPath}`)
-  const vectorResult = await syncVectorIndex(listIndexableEvidence())
-  console.log(`[import-templates] Vector index: ${vectorResult.skipped ? 'not configured, lexical retrieval remains active' : `${vectorResult.synced} evidence items synced`}`)
+  try {
+    const vectorResult = await syncVectorIndex(listIndexableEvidence())
+    console.log(`[import-templates] Vector index: ${vectorResult.skipped ? 'not configured, lexical retrieval remains active' : `${vectorResult.synced} evidence items synced`}`)
+  } catch (error) {
+    // 远程向量服务是可选增强；本地 SQLite/FTS 已经完成重建时，
+    // 不应因短暂网络或供应商故障把整次模板导入标记为失败。
+    console.warn(`[import-templates] Vector sync failed; lexical retrieval remains active: ${error.message}`)
+  }
   if (errors.length) {
     console.warn(`[import-templates] ${errors.length} files failed:`)
     errors.forEach((error) => console.warn(`  - ${error}`))
@@ -142,6 +167,7 @@ async function walkDocuments(directory) {
 function guessContractType(sourceFile, name) {
   const source = `${sourceFile} ${name}`.replace(/\s/g, '')
   const types = [
+    ['劳动合同', /劳动合同|劳动关系|劳务派遣|派遣员工/],
     ['融资租赁合同', /融资租赁|售后回租/],
     ['建设工程合同', /建设工程|施工合同|工程承包/],
     ['知识产权合同', /专利|知识产权|许可使用|技术转让/],
@@ -163,6 +189,7 @@ function guessContractType(sourceFile, name) {
 
 function guessIndustry(sourceFile, name) {
   const source = `${sourceFile} ${name}`
+  if (/劳动合同|劳动关系|劳务派遣|派遣员工/.test(source)) return '人力资源与劳动用工'
   if (/建设工程|施工|工程/.test(source)) return '建筑工程'
   if (/冷链|运输|物流|仓储|保管/.test(source)) return '物流仓储'
   if (/软件|专利|技术|知识产权/.test(source)) return '信息技术与知识产权'
@@ -212,16 +239,22 @@ function enrichReferenceNotes(entries) {
     const peers = groups.get(`${entry.contract_type}::${entry.pair_key}`) || []
     const opposite = peers.filter((peer) => peer.reference_role !== entry.reference_role).map((peer) => peer.name).slice(0, 3)
     const pairHint = opposite.length ? `；关联对照资料：${opposite.join('、')}` : ''
+    const wordAnnotationHint = entry.annotation_count
+      ? `；已导入 ${entry.annotation_count} 条 Word 原生批注作为独立风险证据${entry.revision_summary?.insertions || entry.revision_summary?.deletions ? `（修订：新增 ${entry.revision_summary.insertions || 0} 处，删除 ${entry.revision_summary.deletions || 0} 处）` : ''}` : ''
     entry.review_notes = entry.reference_role === 'annotated_case'
       ? `${extractRiskNotes(entry.content)}${pairHint}`
       : entry.reference_role === 'excellent_template'
-        ? `正向对照模板：用于核对条款结构、履行闭环与清晰表达，不替代本合同的实际交易约定${pairHint}`
+        ? `正向对照模板：用于核对条款结构、履行闭环与清晰表达，不替代本合同的实际交易约定${wordAnnotationHint}${pairHint}`
         : `合同参考资料：仅在合同类型及交易背景相近时辅助核查${pairHint}`
   }
 }
 
-function normalizeText(text) {
-  return String(text || '').replace(/\u0000/g, '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+function normalizeText(text, { trimLineEnd = false } = {}) {
+  let normalized = String(text || '')
+    .replace(/\u0000/g, '')
+    .replace(/\r\n/g, '\n')
+  if (trimLineEnd) normalized = normalized.replace(/[\t ]+(?=\n|$)/g, '')
+  return normalized.replace(/\n{3,}/g, '\n\n').trim()
 }
 
 function safeFilename(name) {

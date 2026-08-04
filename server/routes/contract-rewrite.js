@@ -6,7 +6,7 @@ import { buildReviewPlan } from '../services/review-plan.js'
 import { buildReviewResult, renderReviewReport, extractReviewPayload, findingSimilarity } from '../services/annotation-locator.js'
 import { buildRevisionGroups } from '../services/finding-consolidator.js'
 import { mergeRevisions, coalesceAdjacentAdds } from '../services/revision-merger.js'
-import { createReviewSession, getReviewSession, publicReviewSession } from '../services/review-session-store.js'
+import { createReviewSession, getReviewSession, normalizeClientId, publicReviewSession } from '../services/review-session-store.js'
 import { analyzeContract } from '../agents/contract-analyzer.js'
 import { reviewContract } from '../agents/contract-reviewer.js'
 import { consolidateContractFindings } from '../agents/contract-consolidator.js'
@@ -14,6 +14,8 @@ import { rewriteContract } from '../agents/contract-rewriter.js'
 import { streamChat, getFlashModel, getProModel, getUserBalance } from '../services/llm-client.js'
 
 const router = Router()
+
+const requestClientId = (req) => normalizeClientId(req.get('X-Client-ID'))
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -88,7 +90,7 @@ const resolveModel = (mode) => (MODELS[mode] || MODELS.thinking)()
 router.post('/contract-finalize', async (req, res) => {
   try {
     const mode = req.body?.mode === 'fast' ? 'fast' : 'thinking'
-    const reviewSession = getReviewSession(req.body?.reviewSessionId)
+    const reviewSession = getReviewSession(req.body?.reviewSessionId, requestClientId(req))
     const selectedFindingIds = Array.isArray(req.body?.selectedFindingIds)
       ? req.body.selectedFindingIds.filter((id) => typeof id === 'string')
       : []
@@ -533,6 +535,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
     const consolidatedReviewResult = { ...reviewResult, findings: revisionGroups }
     const reviewReport = renderReviewReport(consolidatedReviewResult)
     const reviewSession = createReviewSession({
+      clientId: requestClientId(req),
       contractText: reviewContractText,
       analysisReport: reviewAnalysis,
       reviewReport,

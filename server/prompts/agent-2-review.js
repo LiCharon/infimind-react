@@ -38,7 +38,9 @@ JSON 形状示例（仅示例字段形状，内容必须来自本合同）：
 
 export function buildReviewUserMessage({ contractText, analysisReport, evidence, reviewPlan, userInstruction, round = 1, previousFindings = [] }) {
   const evidenceSection = (evidence || []).slice(0, 12).map((item, index) => {
-    const roleLabel = item.referenceRole === 'excellent_template' ? '正向模板条款' : item.kind === 'risk_rule' ? '风险反例规则' : '参考条款'
+    const roleLabel = item.kind === 'risk_rule'
+      ? item.sourceNote?.startsWith('【Word 原生批注】') ? '人工批注风险规则' : '风险反例规则'
+      : item.referenceRole === 'excellent_template' ? '正向模板条款' : '参考条款'
     const heading = [item.clauseNo, item.title, item.category].filter(Boolean).join('｜')
     return `[E${index + 1}] ID=${item.evidenceId}｜${roleLabel}\n来源：${item.sourceName}｜${heading || '未编号条款'}｜${item.sourcePath || item.sourceFile || '本地素材'}\n主题：${(item.topicLabels || []).join('、') || '通用'}\n证据正文：${(item.text || '').slice(0, 1200)}`
   }).join('\n\n') || '无匹配证据。'

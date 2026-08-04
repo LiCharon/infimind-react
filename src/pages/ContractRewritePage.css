@@ -28,6 +28,10 @@
 .sidebar-search input::placeholder { color: #9a9a9e; }
 .sidebar-search kbd { flex: 0 0 auto; }
 .history-list button > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.history-list button > .history-thread-icon { display: grid; flex: 0 0 auto; width: 16px; place-items: center; overflow: visible; color: inherit; }
+.history-list button.thread-running > .history-thread-icon { color: #fd7002; }
+.history-list button.thread-running:not(.selected) { background: #fff8f2; }
+.history-list button.thread-running .history-delete { cursor: not-allowed; }
 .history-delete { display: grid; flex: 0 0 auto; width: 22px; height: 22px; place-items: center; color: #aaa; opacity: 0; border-radius: 5px; font-style: normal; }
 .history-delete:hover { color: #b42318; background: #fff1f0; }
 .history-list button:hover .history-delete, .history-list button.selected .history-delete { opacity: 1; }

@@ -27,6 +27,7 @@ import {
   Zap
 } from 'lucide-react'
 import './ContractRewritePage.css'
+import { getThreadRequestState, isThreadRequestRunning, patchThreadRequestState } from '../utils/thread-request-state.js'
 
 const REVIEW_ENDPOINT = '/api/contract-rewrite'
 const CHAT_ENDPOINT = '/api/contract-chat'
@@ -35,6 +36,7 @@ const ACCEPTED = '.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp'
 const MAX_FILE_SIZE = 80 * 1024 * 1024
 const THREAD_STORAGE_KEY = 'fafee-contract-threads-v1'
 const TASK_STORAGE_KEY = 'fafee-contract-tasks-v1'
+const CLIENT_STORAGE_KEY = 'fafee-contract-client-id-v1'
 
 const getExtension = (name = '') => name.toLowerCase().match(/\.[^.]+$/)?.[0] || ''
 const isSupported = (file) => ACCEPTED.includes(getExtension(file.name)) && file.size <= MAX_FILE_SIZE
@@ -125,6 +127,17 @@ const readStorage = (key, fallback, normalize) => {
 }
 const writeStorage = (key, value) => {
   try { window.localStorage.setItem(key, JSON.stringify(value)) } catch { /* 浏览器禁用或存储空间不足时不阻断页面 */ }
+}
+const readOrCreateClientId = () => {
+  try {
+    const saved = window.localStorage.getItem(CLIENT_STORAGE_KEY)
+    if (saved && /^[a-zA-Z0-9_-]{12,128}$/.test(saved)) return saved
+    const next = window.crypto?.randomUUID?.() || createId('client')
+    window.localStorage.setItem(CLIENT_STORAGE_KEY, next)
+    return next
+  } catch {
+    return createId('client')
+  }
 }
 const displayTitle = (content, fallback = '新对话') => content.trim().replace(/\s+/g, ' ').slice(0, 22) || fallback
 
@@ -352,6 +365,8 @@ function ContractRewritePage() {
   const searchRef = useRef(null)
   const threadEndRef = useRef(null)
   const conversationRef = useRef(null)
+  const activeThreadIdRef = useRef('')
+  const inFlightThreadsRef = useRef(new Set())
   // 用户是否贴近底部：用于流式输出时决定是否自动跟随滚动
   const stickToBottomRef = useRef(true)
   const [threads, setThreads] = useState(() => {
@@ -363,9 +378,8 @@ function ContractRewritePage() {
   const [files, setFiles] = useState([])
   const [instruction, setInstruction] = useState('')
   const [mode, setMode] = useState('thinking')
-  const [loading, setLoading] = useState(false)
-  const [stage, setStage] = useState('')
-  const [error, setError] = useState('')
+  const [clientId] = useState(readOrCreateClientId)
+  const [threadRequests, setThreadRequests] = useState({})
   const [documentOpen, setDocumentOpen] = useState(false)
   const [documentMessageId, setDocumentMessageId] = useState('')
   const [historyQuery, setHistoryQuery] = useState('')
@@ -380,6 +394,10 @@ function ContractRewritePage() {
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) || threads[0]
   const activeMessages = activeThread?.messages || []
+  const activeRequest = getThreadRequestState(threadRequests, activeThread?.id)
+  const loading = activeRequest.loading
+  const stage = activeRequest.stage
+  const error = activeRequest.error
   const selectedDocument = activeMessages.find((message) => message.id === documentMessageId)
   // 修订稿文档数据：合同原文 + 结构化修订块（三明治视图）。两者均来自后端 rewrite.result 事件。
   const documentContractText = selectedDocument?.contractText || selectedDocument?.originalText || ''
@@ -392,6 +410,8 @@ function ContractRewritePage() {
   useEffect(() => {
     if (threads.length && !threads.some((thread) => thread.id === activeThreadId)) setActiveThreadId(threads[0].id)
   }, [activeThreadId, threads])
+
+  useEffect(() => { activeThreadIdRef.current = activeThread?.id || '' }, [activeThread?.id])
 
   useEffect(() => { writeStorage(THREAD_STORAGE_KEY, threads) }, [threads])
   useEffect(() => { writeStorage(TASK_STORAGE_KEY, tasks) }, [tasks])
@@ -429,8 +449,9 @@ function ContractRewritePage() {
   const updateThread = (threadId, updater) => setThreads((items) => items.map((thread) => thread.id === threadId ? { ...updater(thread), updatedAt: Date.now() } : thread))
   const appendMessage = (threadId, message) => updateThread(threadId, (thread) => ({ ...thread, title: thread.messages.length === 0 && message.role === 'user' ? displayTitle(message.content, thread.title) : thread.title, messages: [...thread.messages, message] }))
   const updateMessage = (threadId, messageId, patch) => updateThread(threadId, (thread) => ({ ...thread, messages: thread.messages.map((message) => message.id === messageId ? { ...message, ...patch } : message) }))
+  const updateThreadRequest = (threadId, patch) => setThreadRequests((items) => patchThreadRequestState(items, threadId, patch))
 
-  const resetComposer = () => { setFiles([]); setInstruction(''); setError(''); setStage('') }
+  const resetComposer = () => { setFiles([]); setInstruction('') }
   const createConversation = (title = '新对话', taskId = null) => {
     const next = createThread(title, taskId)
     setThreads((items) => [next, ...items])
@@ -441,12 +462,18 @@ function ContractRewritePage() {
   }
   const deleteConversation = (event, threadId) => {
     event.stopPropagation()
-    if (loading && threadId === activeThreadId) return
+    if (inFlightThreadsRef.current.has(threadId)) return
     setThreads((items) => {
       const remaining = items.filter((thread) => thread.id !== threadId)
       return remaining.length ? remaining : [createThread('新对话')]
     })
     setTasks((items) => items.filter((task) => task.threadId !== threadId))
+    setThreadRequests((items) => {
+      if (!Object.prototype.hasOwnProperty.call(items, threadId)) return items
+      const next = { ...items }
+      delete next[threadId]
+      return next
+    })
     setDocumentOpen(false)
   }
   const selectConversation = (threadId) => {
@@ -476,8 +503,9 @@ function ContractRewritePage() {
   }
   const uploadFiles = (incoming) => {
     const next = incoming.filter(isSupported).slice(0, 6)
-    if (next.length !== incoming.length) setError('仅支持 PDF、Word、PNG、JPG、WebP，且单个文件不超过 80MB。')
-    else setError('')
+    if (activeThread?.id) updateThreadRequest(activeThread.id, {
+      error: next.length !== incoming.length ? '仅支持 PDF、Word、PNG、JPG、WebP，且单个文件不超过 80MB。' : ''
+    })
     setFiles(next)
   }
 
@@ -503,19 +531,20 @@ function ContractRewritePage() {
   }
 
   const sendMessage = async () => {
-    if (loading || (!files.length && !instruction.trim()) || !activeThread) return
+    if ((!files.length && !instruction.trim()) || !activeThread) return
     const threadId = activeThread.id
+    if (inFlightThreadsRef.current.has(threadId)) return
+    inFlightThreadsRef.current.add(threadId)
+    const requestMode = mode
     const content = instruction.trim() || '请根据合同类型匹配知识库中的优秀模板和已批注风险案例，完成合规审查并生成带修改说明的合同稿。'
     const uploadedFiles = files.map((file) => ({ name: file.name, size: file.size }))
     const userMessage = { id: createId('message'), role: 'user', content, files: uploadedFiles, createdAt: Date.now() }
     const assistantId = createId('message')
     appendMessage(threadId, userMessage)
-    appendMessage(threadId, { id: assistantId, role: 'assistant', content: '', mode, createdAt: Date.now(), status: files.length ? '正在读取合同文件…' : '正在思考…' })
+    appendMessage(threadId, { id: assistantId, role: 'assistant', content: '', mode: requestMode, createdAt: Date.now(), status: files.length ? '正在读取合同文件…' : '正在思考…' })
     setInstruction('')
     setFiles([])
-    setLoading(true)
-    setError('')
-    setStage(files.length ? 'parsing' : 'chat')
+    updateThreadRequest(threadId, { loading: true, error: '', stage: files.length ? 'parsing' : 'chat', mode: requestMode })
     let analysis = ''
     let review = ''
     let originalText = ''
@@ -526,13 +555,14 @@ function ContractRewritePage() {
       if (uploadedFiles.length) {
         const form = new FormData()
         form.append('message', content)
-        form.append('mode', mode)
+        form.append('mode', requestMode)
+        form.append('threadId', threadId)
         files.forEach((file) => form.append('files', file))
-        const response = await fetch(REVIEW_ENDPOINT, { method: 'POST', headers: { Accept: 'text/event-stream' }, body: form })
+        const response = await fetch(REVIEW_ENDPOINT, { method: 'POST', headers: { Accept: 'text/event-stream', 'X-Client-ID': clientId }, body: form })
         if (!response.ok || !response.body) throw new Error(await response.text() || '审查服务暂不可用。')
         await readSSE(response, (event, data) => {
           if (event === 'stage.start') {
-            setStage(data.stage || '')
+            updateThreadRequest(threadId, { stage: data.stage || '' })
             updateMessage(threadId, assistantId, { status: data.label || '正在处理…' })
           }
           if (event === 'stage.progress') {
@@ -540,7 +570,7 @@ function ContractRewritePage() {
           }
           if (event === 'review.round') {
             // 三轮审核进度：start 显示当前轮次状态，end 追加本轮新增问题清单
-            setStage('review')
+            updateThreadRequest(threadId, { stage: 'review' })
             if (data.phase === 'end') {
               // 本轮结束：记录新增问题快照，供对话区实时罗列
               const snapshot = {
@@ -575,7 +605,7 @@ function ContractRewritePage() {
           }
           if (event === 'rewrite.result') {
             // 结构化修订结果：合同原文 + 修订块数组。前端据此渲染「行内三明治视图」。
-            setStage('rewrite')
+            updateThreadRequest(threadId, { stage: 'rewrite' })
             rewriteRevisions = Array.isArray(data.revisions) ? data.revisions : []
             rewriteStats = data.stats || null
             originalText = data.contractText || originalText
@@ -607,16 +637,18 @@ function ContractRewritePage() {
         })
         // 审核改写一体完成后，自动展开修订稿文档供用户查看
         if (rewriteRevisions.length || originalText) {
-          setDocumentMessageId(assistantId)
-          setDocumentOpen(true)
+          if (activeThreadIdRef.current === threadId) {
+            setDocumentMessageId(assistantId)
+            setDocumentOpen(true)
+          }
         }
       } else {
         const history = activeMessages.slice(-10).map((message) => ({ role: message.role, content: message.content })).filter((message) => message.content)
-        const response = await fetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify({ message: content, mode, history }) })
+        const response = await fetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Client-ID': clientId }, body: JSON.stringify({ message: content, mode: requestMode, threadId, history }) })
         if (!response.ok || !response.body) throw new Error(await response.text() || '对话服务暂不可用。')
         let answer = ''
         await readSSE(response, (event, data) => {
-          if (event === 'chat.start') updateMessage(threadId, assistantId, { model: data.model, status: mode === 'thinking' ? '正在深度思考…' : '正在快速回复…' })
+          if (event === 'chat.start') updateMessage(threadId, assistantId, { model: data.model, status: requestMode === 'thinking' ? '正在深度思考…' : '正在快速回复…' })
           if (event === 'chat.delta') { answer += data.content || ''; updateMessage(threadId, assistantId, { content: answer, status: '' }) }
           if (event === 'error') throw new Error(data.message || '对话未完成，请稍后重试。')
         })
@@ -624,10 +656,10 @@ function ContractRewritePage() {
       }
     } catch (requestError) {
       updateMessage(threadId, assistantId, { content: '本次处理未完成。', status: '', failed: true })
-      setError(requestError.message || '请求未完成，请稍后重试。')
+      updateThreadRequest(threadId, { error: requestError.message || '请求未完成，请稍后重试。' })
     } finally {
-      setLoading(false)
-      setStage('')
+      inFlightThreadsRef.current.delete(threadId)
+      updateThreadRequest(threadId, { loading: false, stage: '' })
     }
   }
 
@@ -720,7 +752,7 @@ function ContractRewritePage() {
     anchor.href = url; anchor.download = `${name}-审查批注稿.doc`; anchor.click(); URL.revokeObjectURL(url)
   }
 
-  const status = stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'consolidation' ? '正在归并重复和关联问题…' : stage === 'rewrite' ? '正在生成局部批注稿…' : mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
+  const status = stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'consolidation' ? '正在归并重复和关联问题…' : stage === 'rewrite' ? '正在生成局部批注稿…' : activeRequest.mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
 
   return <main className={`contract-chat ${documentOpen ? 'document-expanded' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
     {!documentOpen && <aside className="chat-sidebar">
@@ -729,7 +761,10 @@ function ContractRewritePage() {
       <button className="sidebar-action" onClick={() => createConversation()}><PenLine size={20} />新对话</button>
       <button className="sidebar-action" onClick={() => setTaskModalOpen(true)}><FolderOpen size={20} />新审查任务</button>
       <p className="history-label">历史对话</p>
-      <nav className="history-list">{matchingThreads.map((thread) => <button className={thread.id === activeThread?.id ? 'selected' : ''} key={thread.id} onClick={() => selectConversation(thread.id)}><MessageCircle size={16} /><span>{thread.title}</span><i className="history-delete" title="删除对话" onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>)}</nav>
+      <nav className="history-list">{matchingThreads.map((thread) => {
+        const running = isThreadRequestRunning(threadRequests, thread.id)
+        return <button className={`${thread.id === activeThread?.id ? 'selected' : ''}${running ? ' thread-running' : ''}`} key={thread.id} onClick={() => selectConversation(thread.id)}><span className="history-thread-icon" title={running ? '该会话正在后台处理中' : ''}>{running ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span>{thread.title}</span><i className="history-delete" title={running ? '处理中，暂不能删除' : '删除对话'} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>
+      })}</nav>
       {tasks.length > 0 && <><p className="history-label task-label">审查任务</p><nav className="history-list task-list">{tasks.map((task) => <button key={task.id} className={task.threadId === activeThread?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title="删除任务" onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
       <div className="sidebar-footer-wrap">
         {balanceOpen && <section className="balance-popover" role="dialog" aria-label="剩余用量">

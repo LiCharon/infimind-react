@@ -285,7 +285,7 @@ export function extractSearchKeywords(analysisReport = '') {
 }
 
 export function extractContractType(text = '') {
-  const knownTypes = ['融资租赁合同', '建设工程合同', '知识产权合同', '物业服务合同', '仓储合同', '保管合同', '运输合同', '承揽合同', '保证合同', '借款合同', '委托合同', '中介合同', '赠与合同', '租赁合同', '买卖合同']
+  const knownTypes = ['劳动合同', '融资租赁合同', '建设工程合同', '知识产权合同', '物业服务合同', '仓储合同', '保管合同', '运输合同', '承揽合同', '保证合同', '借款合同', '委托合同', '中介合同', '赠与合同', '租赁合同', '买卖合同']
   return knownTypes.find((type) => text.includes(type)) || ''
 }
 
@@ -377,7 +377,7 @@ function riskRowToEvidence(row) {
     evidenceId: `risk:${row.id}`, kind: 'risk_rule', templateId: row.template_id, contractType: row.contract_type,
     referenceRole: row.reference_role, sourceName: row.name, sourceFile: row.source_file, sourcePath: row.source_path,
     pairKey: row.pair_key, clauseNo: row.clause_no || '', title: row.title || row.category || '', parentTitle: row.parent_title || '',
-    text: `触发条款：${row.trigger_text || '未提取'}\n风险说明：${row.risk_text || row.source_note || '未提取'}\n修订方向：${row.recommendation || '请结合交易事实明确约定。'}`,
+    sourceNote: row.source_note || '', text: `触发条款：${row.trigger_text || '未提取'}\n风险说明：${row.risk_text || row.source_note || '未提取'}\n修订方向：${row.recommendation || '请结合交易事实明确约定。'}`,
     startOffset: row.start_offset, endOffset: row.end_offset, category: row.category || '', severity: row.severity || '中', retrievalScore: 0, topicLabels: []
   }
 }
