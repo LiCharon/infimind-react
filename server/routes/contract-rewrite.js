@@ -11,7 +11,9 @@ import { analyzeContract } from '../agents/contract-analyzer.js'
 import { reviewContract } from '../agents/contract-reviewer.js'
 import { consolidateContractFindings } from '../agents/contract-consolidator.js'
 import { rewriteContract } from '../agents/contract-rewriter.js'
-import { streamChat, getFlashModel, getProModel, getUserBalance } from '../services/llm-client.js'
+import { chat, streamChat, getFlashModel, getProModel, getUserBalance } from '../services/llm-client.js'
+import { buildContractDraftSystemPrompt, buildContractDraftUserMessage } from '../prompts/contract-draft.js'
+import { CONTRACT_TYPE_CLASSIFIER_SYSTEM_PROMPT, buildContractTypeClassifierMessage, guessContractType, parseContractTypeClassification } from '../prompts/contract-draft-types.js'
 
 const router = Router()
 
@@ -26,6 +28,7 @@ const upload = multer({
 
 // 两个阶段共享同一份合同原文，避免因不同截断长度造成审查、确认和改写结果错位。
 const MAX_CONTRACT_TEXT = 60000
+const MAX_DRAFT_REFERENCE_TEXT = 40000
 
 // 三轮审核：每轮在上一轮基础上补充遗漏问题，减少单轮遗漏；最终合并去重后再统一改写。
 const REVIEW_ROUNDS = 3
@@ -41,9 +44,27 @@ const ACCEPTED_TYPES = [
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/rtf',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.presentation',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'text/tab-separated-values',
+  'text/html',
+  'application/json',
+  'application/xml',
   'image/png',
   'image/jpeg',
-  'image/webp'
+  'image/webp',
+  'image/bmp',
+  'image/tiff',
+  'image/gif'
 ]
 
 // 用量只通过本地服务端读取，避免将密钥发送到浏览器。
@@ -81,6 +102,163 @@ const MODELS = {
 }
 
 const resolveModel = (mode) => (MODELS[mode] || MODELS.thinking)()
+
+const extractDraftMeta = (markdown = '') => {
+  const title = markdown.match(/^#\s+([^\n#]+)\s*$/m)?.[1]?.trim() || '合同草稿'
+  const pendingHeading = markdown.match(/^##\s+待确认信息\s*$/m)
+  const pendingSection = pendingHeading?.index === undefined
+    ? ''
+    : markdown.slice(pendingHeading.index + pendingHeading[0].length).split(/^##\s+/m)[0]
+  const pendingItems = pendingSection
+    ? [...pendingSection.matchAll(/^\s*[-*]\s*(?:\[[ xX]\]\s*)?(.+?)\s*$/gm)].map((item) => item[1].trim()).filter(Boolean).slice(0, 8)
+    : []
+  return { title, pendingItems }
+}
+
+const DRAFT_ACTION_CLASSIFIER_SYSTEM_PROMPT = `你是合同起草对话的意图路由器。用户已经拥有一份合同草稿。判断他本轮是否要求生成一份新的、重写后的或根据新增信息修订后的完整合同文档。\n\n仅返回 JSON：{"action":"draft"} 或 {"action":"chat"}。\n\n选择 draft：明确要求起草、生成、重写、重新生成、出一版新稿、把补充信息写入合同并更新全文，或上传了新的参考材料。\n选择 chat：询问条款含义、法律风险、需要补充什么、让你解释或给建议，且没有要求输出新的完整合同。`
+
+const DRAFT_CHAT_SYSTEM_PROMPT = `你是法飞飞合同起草助手。根据对话中的当前合同草稿，回答用户的追问、解释条款、指出需要补充的交易信息，或给出审慎的起草建议。除非用户明确要求重新生成完整合同，否则不要输出完整合同正文。回复简洁、专业，避免编造事实或给出绝对法律结论。`
+
+const draftActionFromResult = (result) => {
+  try {
+    const parsed = JSON.parse(String(result || '').match(/\{[\s\S]*\}/)?.[0] || '{}')
+    return parsed.action === 'draft' || parsed.action === 'chat' ? parsed.action : null
+  } catch {
+    return null
+  }
+}
+
+const hasExplicitDraftIntent = (message = '') => /(?:重新|再次|重新生成|再生成|重新起草|重写|改写|更新|修订|完善|补充).{0,16}(?:合同|协议|文档|草稿|全文|一版|版本)|(?:生成|起草|出).{0,12}(?:合同|协议|文档|草稿|全文|一版|版本)/.test(message)
+
+const resolveDraftAction = async ({ message, hasExistingDraft, attachments, model }) => {
+  if (!hasExistingDraft || attachments.length) return 'draft'
+  try {
+    const result = await chat(DRAFT_ACTION_CLASSIFIER_SYSTEM_PROMPT, `用户本轮消息：${message}`, {
+      model,
+      temperature: 0,
+      maxTokens: 40,
+      thinking: { type: 'disabled' }
+    })
+    return draftActionFromResult(result) || (hasExplicitDraftIntent(message) ? 'draft' : 'chat')
+  } catch (error) {
+    console.warn('[contract-draft] Intent classification failed; using keyword fallback:', error.message)
+    return hasExplicitDraftIntent(message) ? 'draft' : 'chat'
+  }
+}
+
+// 分类失败不影响主流程：关键词和通用模板仍能让未知合同类型正常起草。
+const classifyContractDraft = async ({ instruction, referenceMaterials, model }) => {
+  const fallbackInput = `${instruction}\n${referenceMaterials.map((item) => `${item.name}\n${item.text}`).join('\n')}`
+  const fallback = guessContractType(fallbackInput)
+  try {
+    const result = await chat(CONTRACT_TYPE_CLASSIFIER_SYSTEM_PROMPT, buildContractTypeClassifierMessage({ instruction, referenceMaterials }), {
+      model,
+      temperature: 0,
+      maxTokens: 180,
+      thinking: { type: 'enabled' },
+      reasoningEffort: 'low'
+    })
+    return parseContractTypeClassification(result, fallbackInput)
+  } catch (error) {
+    console.warn('[contract-draft] Type classification failed; using fallback:', error.message)
+    return fallback
+  }
+}
+
+/**
+ * POST /api/contract-draft
+ * 单模型合同起草：固定使用 DeepSeek Flash，并开启 thinking。
+ * Body: { message, history?: Array<{role, content}> }
+ */
+router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim() : ''
+  let history = []
+  try {
+    history = typeof req.body?.history === 'string'
+      ? JSON.parse(req.body.history || '[]')
+      : (Array.isArray(req.body?.history) ? req.body.history : [])
+  } catch {
+    history = []
+  }
+  if (!Array.isArray(history)) history = []
+  const attachments = req.files || []
+  if (!message) return res.status(400).json({ error: '请描述需要起草的合同类型、交易背景和关键要求' })
+  if (message.length > 16000) return res.status(400).json({ error: '起草需求超过 16,000 个字符，请精简后重试' })
+  if (attachments.length > 6) return res.status(400).json({ error: '一次最多上传 6 个参考文件' })
+
+  for (const file of attachments) {
+    const isValid = ACCEPTED_TYPES.includes(file.mimetype) || /\.(pdf|doc|docx|rtf|odt|xls|xlsx|ods|ppt|pptx|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|png|jpg|jpeg|webp|bmp|tif|tiff|gif)$/i.test(file.originalname || '')
+    if (!isValid) return res.status(400).json({ error: `${file.originalname} 文件类型暂不支持` })
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive'
+  })
+  const writeSSE = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+
+  try {
+    const model = getFlashModel()
+    let draftText = ''
+    const referenceMaterials = []
+    for (const file of attachments) {
+      writeSSE('draft.progress', { label: `正在读取参考文件：${file.originalname}` })
+      const parsed = await extractText(file)
+      const text = String(parsed?.text || '').trim()
+      if (!text) throw new Error(`${file.originalname} 未提取到可用文字`)
+      referenceMaterials.push({ name: file.originalname, text })
+    }
+    const referenceLength = referenceMaterials.reduce((sum, item) => sum + item.text.length, 0)
+    if (referenceLength > MAX_DRAFT_REFERENCE_TEXT) {
+      throw new Error(`参考材料正文超过 ${MAX_DRAFT_REFERENCE_TEXT} 字符，请减少附件或拆分后重试`)
+    }
+    const hasExistingDraft = history.some((item) => item?.role === 'assistant' && String(item?.content || '').includes('【当前合同草稿'))
+    const action = await resolveDraftAction({ message, hasExistingDraft, attachments, model })
+    if (action === 'chat') {
+      writeSSE('chat.start', { model, label: '正在结合当前草稿回复…' })
+      for await (const chunk of streamChat(DRAFT_CHAT_SYSTEM_PROMPT, message, {
+        model,
+        temperature: 0.3,
+        maxTokens: 2048,
+        history,
+        thinking: { type: 'enabled' },
+        reasoningEffort: 'medium'
+      })) {
+        if (chunk.content) writeSSE('chat.delta', { content: chunk.content })
+      }
+      writeSSE('chat.complete', {})
+      writeSSE('done', {})
+      return
+    }
+    writeSSE('draft.progress', { label: '正在识别合同类型并加载专项条款框架…' })
+    const classification = await classifyContractDraft({ instruction: message, referenceMaterials, model })
+    const typeProfile = classification.profile
+    writeSSE('draft.type', { typeId: typeProfile.id, label: `已识别为：${typeProfile.label}${typeProfile.risk === 'high' ? '（需专项复核）' : ''}`, risk: typeProfile.risk, confidence: classification.confidence })
+    writeSSE('draft.start', { model, label: attachments.length ? `正在依据${typeProfile.label}专项框架结合参考文件起草…` : `正在依据${typeProfile.label}专项框架起草…`, attachments: referenceMaterials.map((item) => item.name) })
+    for await (const chunk of streamChat(buildContractDraftSystemPrompt(typeProfile), buildContractDraftUserMessage({ instruction: message, referenceMaterials }), {
+      model,
+      temperature: 0.2,
+      maxTokens: 12288,
+      history,
+      thinking: { type: 'enabled' },
+      reasoningEffort: 'medium'
+    })) {
+      if (!chunk.content) continue
+      draftText += chunk.content
+      writeSSE('draft.delta', { content: chunk.content })
+    }
+    if (!draftText.trim()) throw new Error('模型未返回合同草稿')
+    writeSSE('draft.complete', { ...extractDraftMeta(draftText), draftText, model, contractType: { id: typeProfile.id, label: typeProfile.label, risk: typeProfile.risk } })
+    writeSSE('done', {})
+  } catch (error) {
+    console.error('[contract-draft] Draft generation failed:', error.message)
+    writeSSE('error', { message: error.message || '合同起草失败，请稍后重试' })
+    writeSSE('done', {})
+  } finally {
+    res.end()
+  }
+})
 
 /**
  * POST /api/contract-finalize
@@ -203,7 +381,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
     // 验证文件类型
     for (const file of attachments) {
       const isValid = ACCEPTED_TYPES.includes(file.mimetype) ||
-        /\.(pdf|doc|docx|png|jpg|jpeg|webp)$/i.test(file.originalname || '')
+        /\.(pdf|doc|docx|rtf|odt|xls|xlsx|ods|ppt|pptx|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|png|jpg|jpeg|webp|bmp|tif|tiff|gif)$/i.test(file.originalname || '')
       if (!isValid) {
         return res.status(400).json({ error: `${file.originalname} 文件类型暂不支持` })
       }

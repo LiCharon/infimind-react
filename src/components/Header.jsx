@@ -8,7 +8,8 @@ import {
   Calculator, 
   Building2, 
   User,
-  FileEdit
+  FileEdit,
+  FilePenLine
 } from 'lucide-react'
 import './Header.css'
 
@@ -216,7 +217,8 @@ const Header = () => {
   ]
 
   const contractRewriteItems = [
-    { icon: FileEdit, text: '商业合同审查与批注', to: '/contract-rewrite' }
+    { icon: FileEdit, text: '商业合同审查与批注', to: '/contract-rewrite' },
+    { icon: FilePenLine, text: '商业合同智能起草', to: '/contract-draft' }
   ]
 
   return (
@@ -273,7 +275,7 @@ const Header = () => {
                     </div>
                   </div>
                   <div className="dropdown-section">
-                    <h4>商业合同审查</h4>
+                    <h4>商业合同工具</h4>
                     <div className="product-list">
                       {contractRewriteItems.map((item, index) => {
                         const IconComponent = item.icon

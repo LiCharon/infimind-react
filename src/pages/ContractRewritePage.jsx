@@ -32,7 +32,7 @@ import { getThreadRequestState, isThreadRequestRunning, patchThreadRequestState 
 const REVIEW_ENDPOINT = '/api/contract-rewrite'
 const CHAT_ENDPOINT = '/api/contract-chat'
 const BALANCE_ENDPOINT = '/api/account/balance'
-const ACCEPTED = '.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp'
+const ACCEPTED = '.pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.ods,.ppt,.pptx,.odp,.txt,.md,.csv,.tsv,.json,.xml,.html,.htm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif'
 const MAX_FILE_SIZE = 80 * 1024 * 1024
 const THREAD_STORAGE_KEY = 'fafee-contract-threads-v1'
 const TASK_STORAGE_KEY = 'fafee-contract-tasks-v1'
@@ -811,7 +811,7 @@ function ContractRewritePage() {
       </div>
 
       <div className="composer-wrap"><div className="composer">
-        <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); sendMessage() } }} placeholder="上传合同或输入你特别关注的审查重点…" disabled={loading} />
+        <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage() } }} placeholder="上传合同或输入你特别关注的审查重点…" disabled={loading} />
         {files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button aria-label={`移除 ${file.name}`} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}
         <div className="composer-bottom"><div className="composer-tools"><button onClick={() => inputRef.current?.click()} title="上传合同"><Plus size={24} /></button><i /><div className="mode-switch" aria-label="模型模式"><button className={mode === 'fast' ? 'active' : ''} onClick={() => setMode('fast')} title="使用 DeepSeek-v4-flash"><Zap size={16} />快速</button><button className={mode === 'thinking' ? 'active' : ''} onClick={() => setMode('thinking')} title="使用 DeepSeek-v4-pro"><Brain size={16} />深度思考</button></div><button className="tool-text mobile-hide" onClick={() => setTaskModalOpen(true)}><Menu size={18} />更多</button></div><button className="voice-send" onClick={sendMessage} disabled={loading || (!files.length && !instruction.trim())} aria-label="发送消息">{loading ? <Loader2 size={20} className="spinner" /> : <Send size={19} />}</button></div>
         <input ref={inputRef} hidden type="file" multiple accept={ACCEPTED} onChange={(event) => { uploadFiles([...event.target.files]); event.target.value = '' }} />

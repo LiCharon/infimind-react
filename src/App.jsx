@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import HomePage from './pages/HomePage'
 import AboutPage from './pages/AboutPage'
 import ContractRewritePage from './pages/ContractRewritePage'
+import ContractDraftPage from './pages/ContractDraftPage'
 import QRCodeModal from './components/QRCodeModal'
 
 export const QRCodeContext = createContext()
@@ -34,6 +35,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/aboutus" element={<AboutPage />} />
           <Route path="/contract-rewrite" element={<ContractRewritePage />} />
+          <Route path="/contract-draft" element={<ContractDraftPage />} />
         </Routes>
         <QRCodeModal isOpen={isQRModalOpen} onClose={closeQRModal} />
       </BrowserRouter>
@@ -42,4 +44,3 @@ function App() {
 }
 
 export default App
-

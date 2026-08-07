@@ -6,6 +6,9 @@ import { promisify } from 'util'
 import JSZip from 'jszip'
 
 const execFileAsync = promisify(execFile)
+const PLAIN_TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm'])
+const OFFICE_TEXT_EXTENSIONS = new Set(['.rtf', '.odt', '.xls', '.xlsx', '.ods', '.ppt', '.pptx', '.odp'])
+const MACOS_TEXTUTIL_EXTENSIONS = new Set(['.rtf', '.odt'])
 
 /**
  * 主入口：从上传文件 Buffer 中提取文本
@@ -39,6 +42,14 @@ export async function extractText(file) {
 
   if (extension === '.doc' || mimeType === 'application/msword' || isLegacyWord(file.buffer)) {
     return extractLegacyDocText(file)
+  }
+
+  if (PLAIN_TEXT_EXTENSIONS.has(extension) || mimeType.startsWith('text/')) {
+    return extractPlainText(file, extension)
+  }
+
+  if (OFFICE_TEXT_EXTENSIONS.has(extension)) {
+    return extractOfficeDocumentText(file, extension)
   }
 
   if (isImage(extension, mimeType)) {
@@ -136,6 +147,68 @@ async function extractLegacyDocText(file) {
   return extractDocxText({ buffer: docxBuffer, originalname: `${safeBaseName}.docx`, mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
 }
 
+/**
+ * RTF、OpenDocument、Excel 与 PowerPoint 使用系统可用的文档转换器提取文本。
+ * LibreOffice 能保持跨平台一致；macOS 上 RTF/ODT 还能直接由 textutil 处理。
+ */
+async function extractOfficeDocumentText(file, extension) {
+  let text
+  try {
+    text = await convertDocumentToText(file, extension)
+  } catch (error) {
+    // RTF 是文本容器，转换器对历史编码文件可能返回空内容；可安全回退到控制字解析。
+    if (extension !== '.rtf') throw error
+    text = extractRtfText(file.buffer)
+    if (!text) throw error
+    console.warn(`[file-parser] RTF converter fallback used for ${file.originalname}`)
+  }
+  return {
+    text,
+    pageCount: null,
+    metadata: { format: extension.slice(1), converted: true }
+  }
+}
+
+function extractRtfText(buffer) {
+  return decodeTextBuffer(buffer)
+    .replace(/\\par[d]?\b/gi, '\n')
+    .replace(/\\line\b/gi, '\n')
+    .replace(/\\tab\b/gi, '\t')
+    .replace(/\\u(-?\d+)[^\\{}]?/g, (_, value) => String.fromCharCode((Number(value) + 65536) % 65536))
+    .replace(/\\'([0-9a-f]{2})/gi, (_, value) => String.fromCharCode(parseInt(value, 16)))
+    .replace(/\\[a-z]+-?\d* ?/gi, '')
+    .replace(/\\[^a-z]/gi, '')
+    .replace(/[{}]/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+async function convertDocumentToText(file, extension) {
+  const tempDir = await mkdtemp(join(tmpdir(), 'office-text-'))
+  const originalName = file.originalname || `document${extension}`
+  const safeBaseName = sanitizeFilename(basename(originalName, extname(originalName)) || 'document')
+  const normalizedExtension = OFFICE_TEXT_EXTENSIONS.has(extension) ? extension : '.doc'
+  const inputPath = join(tempDir, `${safeBaseName}${normalizedExtension}`)
+  const outputPath = join(tempDir, `${safeBaseName}.txt`)
+
+  try {
+    await writeFile(inputPath, file.buffer)
+    if (process.platform === 'darwin' && MACOS_TEXTUTIL_EXTENSIONS.has(normalizedExtension)) {
+      await execFileAsync('textutil', ['-convert', 'txt', '-encoding', 'UTF-8', inputPath, '-output', outputPath], { timeout: 60000 })
+    } else {
+      await runLibreOfficeConversion(inputPath, tempDir, 'txt:Text')
+    }
+    const text = decodeTextBuffer(await readFile(outputPath))
+    if (!text.trim()) throw new Error('转换后未提取到文字')
+    return text
+  } catch (error) {
+    throw new Error(`${extension.slice(1).toUpperCase()} 解析失败: ${error.message}`)
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
 async function convertLegacyDocToDocx(file, { preserveAnnotations = false } = {}) {
   const tempDir = await mkdtemp(join(tmpdir(), 'doc-parse-'))
   const originalName = file.originalname || 'document.doc'
@@ -149,7 +222,13 @@ async function convertLegacyDocToDocx(file, { preserveAnnotations = false } = {}
     if (preserveAnnotations) {
       await runLibreOfficeConversion(inputPath, tempDir)
     } else if (process.platform === 'darwin') {
-      await execFileAsync('textutil', ['-convert', 'docx', inputPath, '-output', outputPath], { timeout: 60000 })
+      try {
+        await execFileAsync('textutil', ['-convert', 'docx', inputPath, '-output', outputPath], { timeout: 60000 })
+      } catch (textutilError) {
+        // 部分旧版编码/复合文档不被 textutil 接受，回退到 LibreOffice。
+        console.warn(`[file-parser] textutil 转换失败，尝试 LibreOffice: ${textutilError.message}`)
+        await runLibreOfficeConversion(inputPath, tempDir)
+      }
     } else {
       await runLibreOfficeConversion(inputPath, tempDir)
     }
@@ -261,16 +340,82 @@ function normalizeInlineText(value) {
 /**
  * 图片 OCR 文本提取
  */
+async function extractPlainText(file, extension) {
+  const source = decodeTextBuffer(file.buffer)
+  const text = ['.html', '.htm', '.xml'].includes(extension) ? stripMarkup(source) : source
+  return {
+    text,
+    pageCount: null,
+    metadata: { format: extension.slice(1) || 'text' }
+  }
+}
+
+function decodeTextBuffer(buffer) {
+  const source = Buffer.from(buffer || [])
+  // UTF-8 BOM 与 UTF-16 文本在合同附件中较常见；其他编码保持 UTF-8 容错解码。
+  if (source[0] === 0xff && source[1] === 0xfe) return source.subarray(2).toString('utf16le')
+  if (source[0] === 0xfe && source[1] === 0xff) {
+    const swapped = Buffer.allocUnsafe(Math.max(0, source.length - 2))
+    for (let index = 2; index + 1 < source.length; index += 2) {
+      swapped[index - 2] = source[index + 1]
+      swapped[index - 1] = source[index]
+    }
+    return swapped.toString('utf16le')
+  }
+  return source.toString('utf8').replace(/^\uFEFF/, '')
+}
+
+function stripMarkup(source) {
+  return decodeXmlEntities(String(source || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<(?:br|\/p|\/div|\/li|\/tr|\/h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ''))
+    .replace(/\n[ \t]*\n[ \t]*\n+/g, '\n\n')
+    .trim()
+}
+
+/**
+ * 图片 OCR：先放大、灰度化、增强对比度，再以中英双语识别；低置信度时补跑稀疏文本模式。
+ * Jimp 为纯 JavaScript 依赖，避免部署时编译原生图像库。
+ */
 async function extractImageText(file) {
   try {
     const { createWorker } = await import('tesseract.js')
+    const { Jimp, JimpMime } = await import('jimp')
     console.log(`[file-parser] Starting OCR for: ${file.originalname}`)
 
-    const worker = await createWorker('chi_sim')
-    const { data } = await worker.recognize(file.buffer)
-    await worker.terminate()
+    let imageBuffer = file.buffer
+    let preprocessed = false
+    try {
+      const image = await Jimp.read(file.buffer)
+      const shortestSide = Math.min(image.width, image.height)
+      const scale = shortestSide > 0 ? Math.min(3, Math.max(1, 1800 / shortestSide)) : 1
+      if (scale > 1) image.resize({ w: Math.round(image.width * scale), h: Math.round(image.height * scale) })
+      image.greyscale().contrast(0.25)
+      imageBuffer = await image.getBuffer(JimpMime.png)
+      preprocessed = true
+    } catch (error) {
+      // 解码失败时仍交给 Tesseract 处理原始格式，避免预处理阻断可识别图片。
+      console.warn(`[file-parser] Image preprocessing skipped for ${file.originalname}: ${error.message}`)
+    }
 
-    const text = data?.text || ''
+    const worker = await createWorker(['chi_sim', 'eng'])
+    let data
+    try {
+      await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1', user_defined_dpi: '300' })
+      const primary = (await worker.recognize(imageBuffer)).data
+      data = primary
+      if (Number(primary?.confidence || 0) < 82) {
+        await worker.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1', user_defined_dpi: '300' })
+        const alternate = (await worker.recognize(imageBuffer)).data
+        if (ocrScore(alternate) > ocrScore(primary)) data = alternate
+      }
+    } finally {
+      await worker.terminate()
+    }
+
+    const text = normalizeOcrText(data?.text || '')
     console.log(`[file-parser] OCR completed, text length: ${text.length}`)
 
     return {
@@ -278,7 +423,9 @@ async function extractImageText(file) {
       pageCount: null,
       metadata: {
         format: 'image',
-        confidence: data?.confidence ?? null
+        confidence: data?.confidence ?? null,
+        languages: 'chi_sim+eng',
+        preprocessed
       }
     }
   } catch (error) {
@@ -286,10 +433,24 @@ async function extractImageText(file) {
   }
 }
 
+function ocrScore(data) {
+  const confidence = Number(data?.confidence || 0)
+  const characters = normalizeOcrText(data?.text || '').replace(/\s/g, '').length
+  return confidence + Math.min(12, characters / 100)
+}
+
+function normalizeOcrText(text) {
+  return String(text || '')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 // --- Helpers ---
 
 function isImage(extension, mimeType) {
-  const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif']
+  const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif', '.gif']
   return imageExts.includes(extension) || mimeType.startsWith('image/')
 }
 
@@ -308,8 +469,8 @@ function isLegacyWord(buffer) {
   )
 }
 
-async function runLibreOfficeConversion(inputPath, outputDir) {
-  const args = ['--headless', '--convert-to', 'docx', '--outdir', outputDir, inputPath]
+async function runLibreOfficeConversion(inputPath, outputDir, outputFormat = 'docx') {
+  const args = ['--headless', '--convert-to', outputFormat, '--outdir', outputDir, inputPath]
 
   try {
     await execFileAsync('libreoffice', args, { timeout: 60000 })

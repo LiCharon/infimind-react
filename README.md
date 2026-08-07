@@ -44,6 +44,7 @@
 | 编号就近批注 | 正文浅橙标记、编号和对应修订卡一一关联，完整说明和整条修订默认收起 |
 | 确定性安全回退 | Agent 输出缺失、越界或不合规时，回退到已验证的 finding 与 quote span，不让错误锚点进入页面 |
 | Word 导出 | 导出的 `.doc` 延续页面编号、局部高亮和就近批注结构 |
+| 多会话并行 | 每个对话独立维护请求状态；审查可在后台继续，用户可切换或新建会话同时发起其他请求 |
 | 本地历史记录 | 对话、审查任务和结构化修订结果保存在浏览器本地存储中 |
 
 ## 审查工作流
@@ -109,6 +110,7 @@ infimind-react/
 │   │   ├── HomePage.jsx            # 品牌首页
 │   │   ├── AboutPage.jsx           # 关于页面
 │   │   └── ContractRewritePage.jsx # 合同审查对话、批注稿、Word 导出
+│   ├── utils/                       # 会话请求状态等前端纯函数
 │   ├── App.jsx                     # 路由与全局弹窗
 │   └── main.jsx                    # React 入口
 ├── server/
@@ -276,6 +278,11 @@ npm run evaluate:knowledge-base
 | `POST` | `/api/contract-rewrite` | SSE | 上传合同并执行完整审查与修订流水线 |
 | `POST` | `/api/contract-finalize` | SSE | 根据服务端会话中选中的 finding 生成修订稿；当前前端主流程未调用 |
 
+工作台会为每个浏览器生成稳定的 `X-Client-ID` 请求头，并在请求体中携带
+`threadId`。前端按 `threadId` 隔离加载、阶段和错误状态，因此不同会话可以并行；
+服务端将 ReviewSession 绑定到 `X-Client-ID`，避免不同浏览器意外读取彼此的会话。
+该标识用于运行状态隔离，不替代登录鉴权。
+
 ### `POST /api/contract-rewrite`
 
 请求为 `multipart/form-data`：
@@ -285,6 +292,7 @@ npm run evaluate:knowledge-base
 | `files` | File[] | 1～6 个文件，单文件不超过 80 MB |
 | `message` | string | 用户特别关注的审查重点，可为空 |
 | `mode` | `fast` \| `thinking` | 快速或深度思考模式 |
+| `threadId` | string | 浏览器当前对话 ID，用于请求追踪与前端并发隔离 |
 
 服务端会拒绝超过 60,000 字符的合并合同正文。常用 SSE 事件：
 
@@ -308,6 +316,7 @@ npm run evaluate:knowledge-base
 | `npm run build` | 生成生产前端到 `dist/` |
 | `npm run preview` | 本地预览生产构建 |
 | `npm run test:consolidation` | 运行问题归并、局部编辑和安全回退回归测试 |
+| `npm run test:concurrency` | 验证不同对话请求状态和不同客户端 ReviewSession 相互隔离 |
 | `npm run import:templates -- <dir>` | 重建本地知识库，可选同步向量索引 |
 | `npm run evaluate:knowledge-base` | 运行知识库离线检索评测 |
 | `npm run lint` | ESLint 检查；当前仓库尚缺 ESLint 9 flat config，暂不可用 |
@@ -378,7 +387,7 @@ curl https://your-domain.example/api/health
 - API Key 只保存在服务端 `.env.local`，浏览器不会读取模型密钥；
 - `.env.local`、构建目录、压缩包、SQLite WAL/SHM 和评测报告均已加入 `.gitignore`；
 - 上传文件由 Multer 保存在内存中，不写入项目目录；
-- ReviewSession 仅保存在当前 Node 进程内存中，默认 2 小时过期，最多保留 100 个；
+- ReviewSession 仅保存在当前 Node 进程内存中，默认 2 小时过期；全局最多保留 500 个、每个浏览器客户端最多保留 30 个，并按 `X-Client-ID` 校验归属；
 - 知识库模板接口只返回元数据，不向浏览器暴露模板正文；
 - 生产环境不应直接暴露 Node 端口，应通过 HTTPS 反向代理访问；
 - 当前前端历史记录使用浏览器 `localStorage`，在共享设备上使用后应清理浏览器数据；
@@ -386,7 +395,9 @@ curl https://your-domain.example/api/health
 
 ## 已知边界
 
-- 当前是单进程原型：ReviewSession 不跨进程共享，尚未接入任务队列、登录鉴权、持久化任务中心和并发限流；
+- 同一浏览器标签页支持不同会话并行请求，同一会话仍保持单请求顺序，避免上下文和回复次序互相穿插；
+- 当前是单进程原型：ReviewSession 不跨进程共享；`X-Client-ID` 只能防止意外串会话，不能替代登录鉴权，尚未接入任务队列、持久化任务中心和生产级并发限流；
+- 多用户同时请求不会共享审查链路中的局部状态，但仍共用模型账户余额、上游 API 速率额度、服务器 CPU 和内存；高并发生产环境应增加用户鉴权、配额、队列或限流；
 - 审查依赖外部模型 API 的可用性、上下文限制和输出稳定性；服务端已提供解析恢复、分批补全与确定性回退，但不能替代人工复核；
 - 图片 OCR 依赖 `chi_sim` 语言数据，首次运行可能需要下载模型；
 - 浏览器本地历史没有云端同步；
@@ -403,6 +414,7 @@ curl https://your-domain.example/api/health
 - [x] 混合 RAG、风险规则索引与离线检索评测
 - [x] 第四归并 Agent 与确定性分组回退
 - [x] 局部编号批注、折叠完整条款和 Word 导出
+- [x] 单页多会话并行请求与浏览器级 ReviewSession 隔离
 - [ ] 登录、邀请码与企业权限体系
 - [ ] 异步任务队列、失败重试、限流与可观测性
 - [ ] 持久化任务中心和合同版本管理
