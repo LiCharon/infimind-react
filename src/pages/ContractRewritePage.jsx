@@ -275,11 +275,13 @@ function SandwichBlock({ revision: rev }) {
   const meta = levelMeta(rev.level)
   const act = actionMeta(rev.action)
   if (rev.isLocalized) {
-    const operationLabel = rev.operation === 'delete' ? '删除此处' : rev.operation === 'insert-after' ? '在此后补充' : '改为'
+    const operationLabel = rev.operation === 'delete' ? '删除此处' : rev.operation === 'insert-after' ? '在此后补充' : rev.operation === 'notice' ? '提示' : '改为'
     const suggestion = rev.operation === 'delete'
       ? '删除该问题片段'
+      : rev.operation === 'notice'
+        ? (rev.riskNote || '请结合实际业务确认并补全该项')
       : (rev.rewrittenText || '请结合批注对该片段作局部调整')
-    const showFullRevision = rev.fullRewrittenText && rev.fullRewrittenText !== rev.rewrittenText
+    const showFullRevision = rev.operation !== 'notice' && rev.fullRewrittenText && rev.fullRewrittenText !== rev.rewrittenText
     return (
       <div className={`local-edit-card ${meta.cls}`}>
         <span className="local-edit-badge">{rev.markerNumber}</span>
@@ -725,8 +727,12 @@ function ContractRewritePage() {
     }
     const renderRevBlock = (rev) => {
       if (rev.isLocalized) {
-        const label = rev.operation === 'delete' ? '删除此处' : rev.operation === 'insert-after' ? '在此后补充' : '改为'
-        const replacement = rev.operation === 'delete' ? '删除该问题片段' : (rev.rewrittenText || '请结合批注局部调整')
+        const label = rev.operation === 'delete' ? '删除此处' : rev.operation === 'insert-after' ? '在此后补充' : rev.operation === 'notice' ? '提示' : '改为'
+        const replacement = rev.operation === 'delete'
+          ? '删除该问题片段'
+          : rev.operation === 'notice'
+            ? (rev.riskNote || '请结合实际业务确认并补全该项')
+            : (rev.rewrittenText || '请结合批注局部调整')
         return `<div class="local-edit"><span class="badge">${rev.markerNumber}</span><div><p><b>${label}</b>${renderInline(replacement)}</p>${rev.riskNote ? `<p class="note"><b>批注</b>${renderInline(rev.riskNote)}</p>` : ''}</div></div>`
       }
       const label = rev.action === 'add' ? '新增' : rev.action === 'delete' ? '删除' : '修订'

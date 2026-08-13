@@ -156,6 +156,7 @@ const resolveAddAnchor = ({ finding, matched, contractLines }) => {
 const normalizeEditOperation = (value, fallbackAction = 'modify') => {
   const text = String(value || '').trim().toLowerCase()
   if (text === 'delete' || text === '删除') return 'delete'
+  if (text === 'notice' || text === '提示' || text === '提醒') return 'notice'
   if (text === 'insert-after' || text === 'insert' || text === 'add' || text === '新增' || text === '插入') return 'insert-after'
   return fallbackAction === 'delete' ? 'delete' : 'replace'
 }
@@ -258,13 +259,18 @@ const resolveLocalizedEdits = ({ finding, matched, contractLines, action }) => {
     if (!memberFindingIds.length) return
     const targetQuote = asText(rawEdit?.targetQuote)
     const replacementText = asText(rawEdit?.replacementText)
-    const operation = normalizeEditOperation(rawEdit?.operation, action)
-    if (!targetQuote || targetQuote.length > 600 || (operation !== 'delete' && !replacementText) || replacementText.length > 900) return
+    let operation = normalizeEditOperation(rawEdit?.operation, action)
+    if (!targetQuote || targetQuote.length > 600 || (operation !== 'delete' && operation !== 'notice' && !replacementText) || replacementText.length > 900) return
     const preferredLines = memberFindingIds
       .map((id) => membersById.get(id)?.lineStart)
       .filter(Number.isInteger)
     const located = nearestQuoteMatch({ contractLines, quote: targetQuote, preferredLines, allowedStart, allowedEnd })
     if (!located) return
+    // 兼容模型未使用 notice 的旧输出：若“替换文字”与原片段没有实质区别，
+    // 这不是改写而是提醒，避免前端把原句照抄渲染成“改为”。
+    if (operation === 'replace' && replacementText && normalizeForMatch(replacementText) === normalizeForMatch(targetQuote)) {
+      operation = 'notice'
+    }
     // replacementText 若等于完整 rewrittenText 且明显长于目标片段，说明模型没有执行局部化协议。
     const fullRewrite = normalizeForMatch(matched?.rewrittenText || '')
     if (fullRewrite && normalizeForMatch(replacementText) === fullRewrite && replacementText.length > located.targetQuote.length * 1.5) return
@@ -275,7 +281,7 @@ const resolveLocalizedEdits = ({ finding, matched, contractLines, action }) => {
       memberFindingIds,
       operation,
       targetQuote: located.targetQuote,
-      replacementText: operation === 'delete' ? '' : replacementText,
+      replacementText: operation === 'delete' || operation === 'notice' ? '' : replacementText,
       riskNote: asText(rawEdit?.riskNote) || compactNotes(editMembers, 'advice') || compactNotes(editMembers, 'risk'),
       lineStart: located.lineStart,
       lineEnd: located.lineEnd,

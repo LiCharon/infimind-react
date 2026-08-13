@@ -1,9 +1,62 @@
 # 法飞飞 AI 合同工作台交接说明
 
-> 更新时间：2026-08-07（Asia/Shanghai）
-> 工作区：`/Users/ypc/Desktop/桌面 - ypc的MacBook Air/项目开发/讯飞法飞飞AI/infimind-react`
+> 更新时间：2026-08-13（Asia/Shanghai）
+> 工作区：`/Users/ypc/Desktop/infimind-react`
 > Git 基线：`main` / `214ee60 feat: import annotated labor contract templates`
 > 状态：工作区包含本轮产品页、起草链路、文件解析与文档更新等**未提交改动**；请先检查 `git status --short`，不要用重置或清理命令覆盖它们。
+
+---
+
+## 0. 最近一轮任务交接（优先阅读）
+
+### 正在做什么
+
+修复合同审查修订稿中的一类展示误导：有些 finding 只要求用户确认或填写业务事实，原合同文字本身不需要改动。例如“本协议有效期：自____年__月__日至____年__月__日。”已经预留日期空位，批注只需提醒“请明确协议起止日期”。此前模型常把原片段原样放入 `replacementText`，页面于是显示“改为：本协议有效期……”，用户容易以为系统错误地把原条款照抄了一遍。
+
+### 已完成
+
+1. 已用 CodeGraph 初始化并索引当前项目（`.codegraph/` 为本地索引元数据），并结合本文件定位审查链路：
+   `Agent 3 提示词 → revision-merger 校验/归并 → ContractRewritePage 行内卡片及 Word 导出`。
+2. 在 `server/prompts/agent-3-rewrite.js` 增加局部操作 `notice`：
+   - 用于“仅提示确认/补全，原文无需改写”；
+   - 要求 `replacementText` 为空；
+   - 明确禁止把 `targetQuote` 原样复制成替换文本。
+3. 在 `server/services/revision-merger.js` 支持 `notice`，并兼容模型仍输出旧格式的情况：当 `operation: "replace"` 且 `replacementText` 与模型给出的 `targetQuote` 规范化后相同时，自动降级为 `notice`，且清空 `replacementText`。
+4. 在 `src/pages/ContractRewritePage.jsx` 的页面卡片与 `exportWord` 中支持 `notice`：显示“提示 + 批注说明”，不显示“改为”，也不展开重复的完整修订条款。
+5. 在 `server/scripts/test-finding-consolidation.js` 加入“原文不改、仅提醒”的回归断言。
+
+### 当前状态／卡点
+
+代码、回归和构建均已完成，**当前没有技术卡点**。尚未用真实合同端到端调用模型并在浏览器中人工确认视觉效果；这属于下一步验收，而不是代码阻塞。
+
+本轮已通过：
+
+```bash
+npm run test:consolidation
+npm run test:word-annotations
+npm run test:concurrency
+npm run build
+node --check server/prompts/agent-3-rewrite.js
+node --check server/services/revision-merger.js
+```
+
+`test:word-annotations` 会输出 mammoth 对 `v:line`、`w:cr` 的既有非致命警告，最终测试通过。`node --check` 不支持 `.jsx` 扩展名；前端语法由 `npm run build` 验证。
+
+### 下一步建议
+
+1. 启动前端和后端，上传一份含“有效期日期空位”条款的真实或脱敏 DOCX/PDF，检查页面第 N 条批注是否显示为“提示：请明确协议起止日期”，且不含“改为：原条款”。
+2. 从该结果导出 Word，确认 Word 中同样是“提示”而非“改为”。
+3. 观察真实模型是否稳定输出 `notice`；即使未稳定，`revision-merger` 的“原样替换→notice”兼容逻辑仍会覆盖完全照抄的常见情形。
+4. 若继续迭代，考虑把 `notice` 在视觉上与真实文本修改进一步区分（例如不使用修改色高亮）；本轮按最小改动保留原有定位高亮，方便用户看到提醒对应的条款。
+
+### 绝对不要再踩的坑
+
+- 不要把“需要填写/确认”一律实现成 `replace`：原文不变时必须使用 `notice`，`replacementText` 为空。
+- 不要只在前端用字符串相等判断掩盖问题；模型输出必须先在服务端 `revision-merger` 规范化，才能同时覆盖页面、历史数据和 Word 导出。
+- `nearestQuoteMatch` 的返回 `targetQuote` 可能因定位器上下文与模型入参不同；识别“原样照抄”时应比较模型传入的 `rawEdit.targetQuote` 与 `replacementText`，不能只和定位后的文本比较。
+- `annotation-locator` 对可精确定位的 quote 有至少 6 个规范化字符的安全阈值。测试片段太短会触发既有 fallback，不代表 `notice` 逻辑失效。
+- 仓库当前目录不是 Git 仓库；不要假定 `git status`、提交或回滚可用。更不要使用破坏性清理命令覆盖现有用户改动。
+- 不要删除 `.codegraph/`，除非明确不再需要本地代码图谱；有源文件修改后执行 `codegraph sync .` 保持索引最新。
 
 ---
 
