@@ -152,6 +152,28 @@ assert.ok(merged.revisions[0].localizedEdits.every((edit) => edit.localizationSt
 assert.deepEqual(merged.revisions[0].localizedEdits.flatMap((edit) => edit.memberFindingIds), ['finding-1', 'finding-3', 'finding-2'])
 assert.ok(merged.revisions[0].localizedEdits.every((edit) => edit.quoteSpans.length > 0))
 
+const reminderFinding = makeFinding({
+  quoteText: '借期八个月，月利率1%',
+  advice: '请结合实际业务填写借款起止日期。',
+  replacement: ''
+})
+const reminderResult = mergeRevisions([reminderFinding], JSON.stringify({
+  revisions: [{
+    findingId: reminderFinding.id,
+    action: 'modify',
+    rewrittenText: loanClause,
+    localizedEdits: [{
+      memberFindingIds: [reminderFinding.id],
+      operation: 'replace',
+      targetQuote: '借期八个月，月利率1%',
+      replacementText: '借期八个月，月利率1%',
+      riskNote: '请结合实际业务填写借款起止日期。'
+    }]
+  }]
+}), contractText)
+assert.equal(reminderResult.revisions[0].localizedEdits[0].operation, 'notice', '原文无需改动的提醒不得渲染为替换')
+assert.equal(reminderResult.revisions[0].localizedEdits[0].replacementText, '')
+
 const invalidLocalization = mergeRevisions([revisionGroup], JSON.stringify({
   revisions: [{
     findingId: revisionGroup.id,
@@ -191,6 +213,7 @@ assert.match(rewritePrompt, /每组只生成一条 revision/)
 assert.match(rewritePrompt, /memberFindingId：finding-1/)
 assert.match(rewritePrompt, /memberFindingId：finding-3/)
 assert.match(rewritePrompt, /localizedEdits/)
+assert.match(rewritePrompt, /operation: "notice"/)
 
 const combinedAdds = coalesceAdjacentAdds([
   { ...merged.revisions[0], findingId: 'revision-group-1', memberFindingIds: ['finding-1', 'finding-2'], issueCount: 2, action: 'add', insertAfterLine: 1, sequence: 1, rewrittenText: '新增一', riskNote: '说明一' },
