@@ -1,12 +1,23 @@
 import React, { useState, useEffect, createContext } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Navigate, Routes, Route, useLocation } from 'react-router-dom'
 import HomePage from './pages/HomePage'
 import AboutPage from './pages/AboutPage'
 import ContractRewritePage from './pages/ContractRewritePage'
 import ContractDraftPage from './pages/ContractDraftPage'
+import ToolHubPage from './pages/ToolHubPage'
+import AuthPage from './pages/AuthPage'
+import ToolConversationPage from './pages/ToolConversationPage'
+import { getPrototypeUser } from './utils/prototype-auth'
 import QRCodeModal from './components/QRCodeModal'
 
 export const QRCodeContext = createContext()
+
+function PrototypeProtectedPage({ children }) {
+  const location = useLocation()
+  if (getPrototypeUser()) return children
+  const redirect = `${location.pathname}${location.search}`
+  return <Navigate to={`/auth?mode=login&redirect=${encodeURIComponent(redirect)}`} replace />
+}
 
 function App() {
   const [isQRModalOpen, setIsQRModalOpen] = useState(false)
@@ -34,8 +45,13 @@ function App() {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/aboutus" element={<AboutPage />} />
-          <Route path="/contract-rewrite" element={<ContractRewritePage />} />
-          <Route path="/contract-draft" element={<ContractDraftPage />} />
+          <Route path="/contract-rewrite" element={<PrototypeProtectedPage><ContractRewritePage /></PrototypeProtectedPage>} />
+          <Route path="/contract-draft" element={<PrototypeProtectedPage><ContractDraftPage /></PrototypeProtectedPage>} />
+          <Route path="/tools" element={<PrototypeProtectedPage><ToolHubPage /></PrototypeProtectedPage>} />
+          <Route path="/tools/contract-review" element={<PrototypeProtectedPage><ContractRewritePage /></PrototypeProtectedPage>} />
+          <Route path="/tools/contract-draft" element={<PrototypeProtectedPage><ContractDraftPage /></PrototypeProtectedPage>} />
+          <Route path="/tools/:toolId" element={<PrototypeProtectedPage><ToolConversationPage /></PrototypeProtectedPage>} />
+          <Route path="/auth" element={<AuthPage />} />
         </Routes>
         <QRCodeModal isOpen={isQRModalOpen} onClose={closeQRModal} />
       </BrowserRouter>

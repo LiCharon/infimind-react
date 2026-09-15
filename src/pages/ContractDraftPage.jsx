@@ -28,6 +28,7 @@ import {
 } from 'lucide-react'
 import './ContractRewritePage.css'
 import './ContractDraftPage.css'
+import ToolOverviewLink from '../components/ToolOverviewLink'
 
 const DRAFT_ENDPOINT = '/api/contract-draft'
 const BALANCE_ENDPOINT = '/api/account/balance'
@@ -290,7 +291,7 @@ function ContractDraftPage() {
 
       <section className="chat-column">
         <header className="chat-header">
-          <div className="header-left">{documentOpen ? <button type="button" className="icon-button" aria-label="返回对话" onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button> : <><button type="button" className="icon-button sidebar-toggle" aria-label={sidebarCollapsed ? '展开历史对话栏' : '折叠历史对话栏'} onClick={() => setSidebarCollapsed((value) => !value)}><PanelLeft size={21} /></button><Link className="icon-button" to="/" aria-label="返回首页"><ArrowLeft size={20} /></Link></>}</div>
+          <div className="header-left">{documentOpen ? <button type="button" className="icon-button" aria-label="返回对话" onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button> : <><button type="button" className="icon-button sidebar-toggle" aria-label={sidebarCollapsed ? '展开历史对话栏' : '折叠历史对话栏'} onClick={() => setSidebarCollapsed((value) => !value)}><PanelLeft size={21} /></button><ToolOverviewLink /></>}</div>
           <div className="chat-title"><strong>{activeConversation?.title || '合同智能起草助手'}</strong><small>AI 生成内容仅供参考，请结合实际情况判断</small></div><div className="header-tools" />
         </header>
         <div className="conversation"><div className="conversation-inner">
