@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, Navigate, useParams } from 'react-router-dom'
-import { ArrowRight, Brain, ChevronDown, History, Menu, MessageCircle, PanelLeftClose, PanelLeftOpen, PenLine, Plus, Send, Trash2, Zap } from 'lucide-react'
-import { getPrototypeUser } from '../utils/prototype-auth'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
+import { ArrowRight, Brain, History, LogOut, Menu, MessageCircle, PanelLeftClose, PanelLeftOpen, PenLine, Plus, Send, Trash2, Zap } from 'lucide-react'
+import { useAuth } from '../components/AuthProvider'
 import './ToolConversationPage.css'
 import ToolOverviewLink from '../components/ToolOverviewLink'
 
@@ -28,15 +28,15 @@ function readThreads(key, tool) {
 }
 
 function ToolConversationWorkspace({ toolId, tool }) {
-  const storageKey = `fafee-prototype-${toolId}-threads-v1`
+  const navigate = useNavigate()
+  const { user, logout } = useAuth()
+  const storageKey = `fafee-history-v2:${user.id}:${toolId}:threads`
   const [threads, setThreads] = useState(() => readThreads(storageKey, tool))
   const [activeId, setActiveId] = useState(() => threads[0].id)
   const [input, setInput] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const endRef = useRef(null)
   const activeThread = threads.find((thread) => thread.id === activeId) || threads[0]
-  const user = getPrototypeUser()
-
   useEffect(() => { window.localStorage.setItem(storageKey, JSON.stringify(threads)) }, [storageKey, threads])
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [activeThread?.messages.length])
 
@@ -79,7 +79,7 @@ function ToolConversationWorkspace({ toolId, tool }) {
         <nav className="prototype-thread-list">
           {threads.map((thread) => <div className={`prototype-thread ${thread.id === activeId ? 'selected' : ''}`} key={thread.id}><button type="button" onClick={() => setActiveId(thread.id)}><MessageCircle size={15} /><span>{thread.title}</span></button><button className="prototype-thread-delete" type="button" aria-label={`删除对话：${thread.title}`} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={13} /></button></div>)}
         </nav>
-        <div className="prototype-account"><span>{user?.name?.slice(0, 1) || '法'}</span><div><strong>{user?.name || '体验用户'}</strong><small>原型账户</small></div><ChevronDown size={16} /></div>
+        <div className="prototype-account"><span>{user.username.slice(0, 1)}</span><div><strong>{user.username}</strong><small>{user.email}</small></div><button type="button" className="prototype-account-logout" onClick={async () => { if (await logout()) navigate('/auth?mode=login') }} aria-label="退出登录" title="退出登录"><LogOut size={16} /></button></div>
       </aside>
 
       <section className="prototype-chat-main">
@@ -92,7 +92,7 @@ function ToolConversationWorkspace({ toolId, tool }) {
           </div>
         </div>
         <div className="prototype-composer-wrap">
-          <div className="prototype-composer"><textarea name="tool-input" autoComplete="off" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder={tool.placeholder} /><div className="prototype-composer-bottom"><div className="prototype-composer-tools" aria-label="输入能力展示"><span className="prototype-add-file" title="文件上传将在正式版开放"><Plus size={24} /></span><i /><span className="prototype-mode active"><Zap size={16} />快速</span><span className="prototype-mode"><Brain size={16} />深度思考</span><span className="prototype-more"><Menu size={18} />更多</span></div><button className="prototype-send" type="button" onClick={() => send()} disabled={!input.trim()} aria-label="发送消息"><Send size={19} /></button></div></div>
+          <div className="prototype-composer"><textarea name="tool-input" autoComplete="off" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder={tool.placeholder} /><div className="prototype-composer-bottom"><div className="prototype-composer-tools" aria-label="输入能力展示"><span className="prototype-add-file" title="文件上传将在正式版开放"><Plus size={24} /></span><i /><span className="prototype-mode-switch"><span className="prototype-mode active"><Zap size={16} />快速</span><span className="prototype-mode"><Brain size={16} />深度思考</span></span><span className="prototype-more"><Menu size={18} />更多</span></div><button className="prototype-send" type="button" onClick={() => send()} disabled={!input.trim()} aria-label="发送消息"><Send size={19} /></button></div></div>
         </div>
       </section>
     </main>

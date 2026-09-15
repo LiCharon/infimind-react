@@ -12,7 +12,7 @@ import {
   FilePenLine
 } from 'lucide-react'
 import './Header.css'
-import { getPrototypeUser } from '../utils/prototype-auth'
+import { useAuth } from './AuthProvider'
 
 const Header = () => {
   const location = useLocation()
@@ -21,17 +21,7 @@ const Header = () => {
   const [activeDropdown, setActiveDropdown] = useState(null)
   const [pendingScrollTarget, setPendingScrollTarget] = useState(null)
   const [shouldScrollToTop, setShouldScrollToTop] = useState(false)
-  const [prototypeUser, setPrototypeUser] = useState(() => getPrototypeUser())
-
-  useEffect(() => {
-    const syncUser = () => setPrototypeUser(getPrototypeUser())
-    window.addEventListener('storage', syncUser)
-    window.addEventListener('fafee-auth-change', syncUser)
-    return () => {
-      window.removeEventListener('storage', syncUser)
-      window.removeEventListener('fafee-auth-change', syncUser)
-    }
-  }, [])
+  const { user } = useAuth()
 
   const toggleMobileMenu = () => {
     setIsMobileMenuOpen(!isMobileMenuOpen)
@@ -325,7 +315,7 @@ const Header = () => {
               <li className="nav-item">
                 <a className="nav-link" href="#clients" onClick={(e) => handleNavClick(e, 'clients')}>客户案例</a>
               </li>
-              {prototypeUser && <li className="nav-item">
+              {user && <li className="nav-item">
                 <Link className="nav-link workspace-entry-link" to="/tools" onClick={() => setIsMobileMenuOpen(false)}>进入工具台</Link>
               </li>}
             </ul>

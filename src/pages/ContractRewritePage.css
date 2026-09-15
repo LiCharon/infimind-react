@@ -65,6 +65,11 @@
 .sidebar-footer.account-trigger { width: 100%; min-height: 66px; margin: 0; padding: 0 16px; box-sizing: border-box; border: 0; border-radius: 16px; background: #f0f1f2; cursor: pointer; text-align: left; }
 .sidebar-footer.account-trigger:hover { background: #e9eaec; }
 .account-trigger > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-label { display: grid; gap: 2px; }
+.account-label strong { overflow: hidden; color: #2e2e31; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.account-label small { overflow: hidden; color: #8b8b90; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.account-logout-button { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; color: #777; border: 0; border-radius: 7px; background: transparent; font: 12px inherit; cursor: pointer; }
+.account-logout-button:hover { color: #b42318; background: #fff1f0; }
 .balance-chevron { color: #8c8c90; transition: transform .18s ease; }
 .balance-chevron.open { transform: rotate(180deg); }
 .balance-popover { position: absolute; z-index: 12; right: 0; bottom: calc(100% + 12px); width: 100%; max-width: calc(100vw - 32px); box-sizing: border-box; padding: 18px; color: #202024; background: rgb(255 255 255 / 98%); border: 1px solid #dcdcdf; border-radius: 20px; box-shadow: 0 16px 40px rgb(0 0 0 / 15%); backdrop-filter: blur(12px); }

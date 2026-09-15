@@ -7,14 +7,16 @@ import ContractDraftPage from './pages/ContractDraftPage'
 import ToolHubPage from './pages/ToolHubPage'
 import AuthPage from './pages/AuthPage'
 import ToolConversationPage from './pages/ToolConversationPage'
-import { getPrototypeUser } from './utils/prototype-auth'
 import QRCodeModal from './components/QRCodeModal'
+import { AuthProvider, useAuth } from './components/AuthProvider'
 
 export const QRCodeContext = createContext()
 
-function PrototypeProtectedPage({ children }) {
+function ProtectedPage({ children }) {
   const location = useLocation()
-  if (getPrototypeUser()) return children
+  const { user, status } = useAuth()
+  if (status === 'loading') return <div className="auth-loading">正在验证登录状态…</div>
+  if (user) return React.cloneElement(children, { key: user.id })
   const redirect = `${location.pathname}${location.search}`
   return <Navigate to={`/auth?mode=login&redirect=${encodeURIComponent(redirect)}`} replace />
 }
@@ -40,22 +42,24 @@ function App() {
   }
 
   return (
-    <QRCodeContext.Provider value={{ openQRModal }}>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/aboutus" element={<AboutPage />} />
-          <Route path="/contract-rewrite" element={<PrototypeProtectedPage><ContractRewritePage /></PrototypeProtectedPage>} />
-          <Route path="/contract-draft" element={<PrototypeProtectedPage><ContractDraftPage /></PrototypeProtectedPage>} />
-          <Route path="/tools" element={<PrototypeProtectedPage><ToolHubPage /></PrototypeProtectedPage>} />
-          <Route path="/tools/contract-review" element={<PrototypeProtectedPage><ContractRewritePage /></PrototypeProtectedPage>} />
-          <Route path="/tools/contract-draft" element={<PrototypeProtectedPage><ContractDraftPage /></PrototypeProtectedPage>} />
-          <Route path="/tools/:toolId" element={<PrototypeProtectedPage><ToolConversationPage /></PrototypeProtectedPage>} />
-          <Route path="/auth" element={<AuthPage />} />
-        </Routes>
-        <QRCodeModal isOpen={isQRModalOpen} onClose={closeQRModal} />
-      </BrowserRouter>
-    </QRCodeContext.Provider>
+    <AuthProvider>
+      <QRCodeContext.Provider value={{ openQRModal }}>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/aboutus" element={<AboutPage />} />
+            <Route path="/contract-rewrite" element={<ProtectedPage><ContractRewritePage /></ProtectedPage>} />
+            <Route path="/contract-draft" element={<ProtectedPage><ContractDraftPage /></ProtectedPage>} />
+            <Route path="/tools" element={<ProtectedPage><ToolHubPage /></ProtectedPage>} />
+            <Route path="/tools/contract-review" element={<ProtectedPage><ContractRewritePage /></ProtectedPage>} />
+            <Route path="/tools/contract-draft" element={<ProtectedPage><ContractDraftPage /></ProtectedPage>} />
+            <Route path="/tools/:toolId" element={<ProtectedPage><ToolConversationPage /></ProtectedPage>} />
+            <Route path="/auth" element={<AuthPage />} />
+          </Routes>
+          <QRCodeModal isOpen={isQRModalOpen} onClose={closeQRModal} />
+        </BrowserRouter>
+      </QRCodeContext.Provider>
+    </AuthProvider>
   )
 }
 

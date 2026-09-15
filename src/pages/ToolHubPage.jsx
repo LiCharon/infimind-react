@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ArrowRight, BookOpen, Brain, Building2, Calculator, FileEdit,
   FilePenLine, FileText, Home, LayoutGrid, LogOut, Scale, User
 } from 'lucide-react'
-import { clearPrototypeUser, getPrototypeUser, toolEntryPath } from '../utils/prototype-auth'
+import { useAuth } from '../components/AuthProvider'
 import './ToolHubPage.css'
 
 const featuredTools = [
@@ -33,8 +33,8 @@ const toolGroups = [
 export default function ToolHubPage() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
+  const { user, logout: logoutUser } = useAuth()
   const highlighted = params.get('tool')
-  const [user, setUser] = useState(() => getPrototypeUser())
   const highlightedTitle = useMemo(() => {
     const allTools = [...featuredTools, ...toolGroups.flatMap((group) => group.tools)]
     return allTools.find((tool) => tool.id === highlighted)?.title
@@ -42,10 +42,8 @@ export default function ToolHubPage() {
 
   useEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }) }, [])
 
-  const logout = () => {
-    clearPrototypeUser()
-    setUser(null)
-    navigate('/auth?mode=login')
+  const logout = async () => {
+    if (await logoutUser()) navigate('/auth?mode=login')
   }
 
   return (
@@ -58,7 +56,7 @@ export default function ToolHubPage() {
         </nav>
         <div className="workspace-account">
           {user ? (
-            <><span className="workspace-avatar">{user.name.slice(0, 1)}</span><div><strong>{user.name}</strong><small>体验账户</small></div><button type="button" onClick={logout} aria-label="退出登录"><LogOut size={17} /></button></>
+            <><span className="workspace-avatar">{user.username.slice(0, 1)}</span><div><strong>{user.username}</strong><small>{user.email}</small></div><button type="button" onClick={logout} aria-label="退出登录"><LogOut size={17} /></button></>
           ) : (
             <Link to="/auth?mode=login"><span className="workspace-avatar">访</span><div><strong>登录 / 注册</strong><small>使用邀请码开通</small></div><ArrowRight size={17} /></Link>
           )}
@@ -81,7 +79,7 @@ export default function ToolHubPage() {
                 <article className={`featured-tool ${highlighted === tool.id ? 'highlighted' : ''}`} key={tool.id}>
                   <span className="featured-icon"><Icon size={30} /></span>
                   <div><h3>{tool.title}</h3><p>{tool.desc}</p></div>
-                  <Link to={toolEntryPath(tool.path)}>开始使用 <ArrowRight size={18} /></Link>
+                  <Link to={tool.path}>开始使用 <ArrowRight size={18} /></Link>
                 </article>
               )
             })}
