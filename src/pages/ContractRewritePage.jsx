@@ -27,7 +27,7 @@ import { useAuth } from '../components/AuthProvider'
 import { authFetch } from '../utils/auth-api'
 import { getThreadRequestState, isThreadRequestRunning, patchThreadRequestState } from '../utils/thread-request-state.js'
 
-const REVIEW_ENDPOINT = '/api/contract-rewrite'
+const TASK_ENDPOINT = '/api/tasks/contract-review'
 const CHAT_ENDPOINT = '/api/contract-chat'
 const ACCEPTED = '.pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.ods,.ppt,.pptx,.odp,.txt,.md,.csv,.tsv,.json,.xml,.html,.htm,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif'
 const MAX_FILE_SIZE = 80 * 1024 * 1024
@@ -376,6 +376,7 @@ function ContractRewritePage() {
     return saved.length ? saved : [createThread('商业合同审查与批注')]
   })
   const [tasks, setTasks] = useState(() => readStorage(taskStorageKey, [], normalizeStoredTasks))
+  const [serverTasks, setServerTasks] = useState([])
   const [activeThreadId, setActiveThreadId] = useState('')
   const [files, setFiles] = useState([])
   const [instruction, setInstruction] = useState('')
@@ -412,6 +413,18 @@ function ContractRewritePage() {
 
   useEffect(() => { writeStorage(threadStorageKey, threads) }, [threadStorageKey, threads])
   useEffect(() => { writeStorage(taskStorageKey, tasks) }, [taskStorageKey, tasks])
+  useEffect(() => {
+    let active = true
+    authFetch('/api/tasks', { headers: { Accept: 'application/json' } })
+      .then(async (response) => {
+        if (!response.ok) return null
+        const payload = await response.json()
+        return Array.isArray(payload.tasks) ? payload.tasks : []
+      })
+      .then((items) => { if (active && items) setServerTasks(items) })
+      .catch(() => {})
+    return () => { active = false }
+  }, [user.id])
 
   // 仅在用户已贴近底部时跟随滚动；流式增量更新时用 instant 避免动画抢夺滚动控制
   useEffect(() => {
@@ -535,10 +548,18 @@ function ContractRewritePage() {
         form.append('message', content)
         form.append('mode', requestMode)
         form.append('threadId', threadId)
+        form.append('title', activeThread.title || '商业合同审查')
         files.forEach((file) => form.append('files', file))
-        const response = await authFetch(REVIEW_ENDPOINT, { method: 'POST', headers: { Accept: 'text/event-stream', 'X-Client-ID': clientId }, body: form })
-        if (!response.ok || !response.body) throw new Error(await response.text() || '审查服务暂不可用。')
-        await readSSE(response, (event, data) => {
+        const response = await authFetch(TASK_ENDPOINT, { method: 'POST', headers: { Accept: 'application/json', 'X-Client-ID': clientId }, body: form })
+        const createdPayload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(createdPayload.error || '审查任务暂不可用。')
+        const taskId = createdPayload.taskId
+        if (!taskId) throw new Error('任务服务未返回任务 ID。')
+        updateThread(threadId, (thread) => ({ ...thread, taskId }))
+        setServerTasks((items) => [createdPayload.task || { id: taskId, title: activeThread.title, status: 'queued', createdAt: new Date().toISOString() }, ...items.filter((item) => item.id !== taskId)])
+        let lastEventSeq = 0
+        const applyTaskEvent = (event, data) => {
+          lastEventSeq = Math.max(lastEventSeq, Number(data?._seq) || 0)
           if (event === 'stage.start') {
             updateThreadRequest(threadId, { stage: data.stage || '' })
             updateMessage(threadId, assistantId, { status: data.label || '正在处理…' })
@@ -598,7 +619,29 @@ function ContractRewritePage() {
             })
           }
           if (event === 'error') throw new Error(data.message || '审查未完成，请稍后重试。')
-        })
+        }
+        let latestTask = null
+        for (let reconnect = 0; reconnect < 20; reconnect += 1) {
+          const eventResponse = await authFetch(`/api/tasks/${taskId}/events?after=${lastEventSeq}`, { headers: { Accept: 'text/event-stream' } })
+          if (!eventResponse.ok || !eventResponse.body) throw new Error(await eventResponse.text() || '任务进度订阅失败。')
+          await readSSE(eventResponse, applyTaskEvent)
+          const detailResponse = await authFetch(`/api/tasks/${taskId}`, { headers: { Accept: 'application/json' } })
+          if (detailResponse.ok) {
+            const detailPayload = await detailResponse.json()
+            latestTask = detailPayload.task || latestTask
+            if (latestTask) setServerTasks((items) => [latestTask, ...items.filter((item) => item.id !== taskId)])
+            if (latestTask && ['succeeded', 'failed', 'cancelled'].includes(latestTask.status)) break
+          }
+          await new Promise((resolve) => setTimeout(resolve, 300))
+        }
+        if (!latestTask || !['succeeded', 'failed', 'cancelled'].includes(latestTask.status)) throw new Error('任务进度连接中断，请稍后从任务列表恢复。')
+        const persistedResult = latestTask.result || {}
+        if (!analysis && persistedResult.analysis) analysis = persistedResult.analysis
+        if (!review && persistedResult.review) review = persistedResult.review
+        if (!originalText && persistedResult.contractText) originalText = persistedResult.contractText
+        if (!rewriteRevisions.length && Array.isArray(persistedResult.revisions)) rewriteRevisions = persistedResult.revisions
+        if (!rewriteStats && persistedResult.stats) rewriteStats = persistedResult.stats
+        if (latestTask.status !== 'succeeded') throw new Error(latestTask.errorSummary || '任务未完成，请稍后重试。')
         const finalContent = analysis ? (review ? `${analysis}\n\n---\n\n${review}` : analysis) : (review || '合同审查已完成。')
         updateMessage(threadId, assistantId, {
           content: finalContent,
@@ -654,6 +697,37 @@ function ContractRewritePage() {
   }
   const openTask = (task) => { selectConversation(task.threadId); setInstruction(task.prompt || ''); setMode(task.mode || 'thinking') }
   const deleteTask = (event, taskId) => { event.stopPropagation(); setTasks((items) => items.filter((task) => task.id !== taskId)) }
+  const openServerTask = async (task) => {
+    if (!task?.id) return
+    const response = await authFetch(`/api/tasks/${task.id}`, { headers: { Accept: 'application/json' } })
+    if (!response.ok) return
+    const payload = await response.json()
+    const detail = payload.task || task
+    setServerTasks((items) => [detail, ...items.filter((item) => item.id !== detail.id)])
+    const existing = threads.find((thread) => thread.taskId === detail.id)
+    if (existing) {
+      selectConversation(existing.id)
+      return
+    }
+    const result = detail.result || {}
+    const next = createThread(detail.title || '商业合同审查', detail.id)
+    const content = [result.analysis, result.review].filter(Boolean).join('\n\n---\n\n') || (detail.errorSummary || (detail.status === 'queued' ? '任务已排队，等待 Worker 执行。' : '任务尚未产生结果。'))
+    next.messages = [{ id: createId('message'), role: 'assistant', content, analysis: result.analysis || '', review: result.review || '', contractText: result.contractText || '', originalText: result.contractText || '', revisions: Array.isArray(result.revisions) ? result.revisions : [], rewriteStats: result.stats || null, reviewRounds: Array.isArray(result.reviewRounds) ? result.reviewRounds : [], phase: result.contractText ? 'rewrite' : '', status: detail.status === 'succeeded' ? '' : detail.status, completed: detail.status === 'succeeded', createdAt: Date.now() }]
+    setThreads((items) => [next, ...items])
+    setActiveThreadId(next.id)
+    setDocumentOpen(false)
+    if (next.messages[0].revisions.length || next.messages[0].contractText) {
+      setDocumentMessageId(next.messages[0].id)
+      setDocumentOpen(true)
+    }
+  }
+  const cancelServerTask = async (event, taskId) => {
+    event.stopPropagation()
+    const response = await authFetch(`/api/tasks/${taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
+    if (!response.ok) return
+    const payload = await response.json()
+    if (payload.task) setServerTasks((items) => [payload.task, ...items.filter((item) => item.id !== taskId)])
+  }
   const openDocument = (messageId) => { setDocumentMessageId(messageId); setDocumentOpen(true) }
 
   // 导出 Word：沿用页面的局部编号批注，避免导出后重新退化成整段三明治卡片。
@@ -748,6 +822,7 @@ function ContractRewritePage() {
         return <button className={`${thread.id === activeThread?.id ? 'selected' : ''}${running ? ' thread-running' : ''}`} key={thread.id} onClick={() => selectConversation(thread.id)}><span className="history-thread-icon" title={running ? '该会话正在后台处理中' : ''}>{running ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span>{thread.title}</span><i className="history-delete" title={running ? '处理中，暂不能删除' : '删除对话'} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>
       })}</nav>
       {tasks.length > 0 && <><p className="history-label task-label">审查任务</p><nav className="history-list task-list">{tasks.map((task) => <button key={task.id} className={task.threadId === activeThread?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title="删除任务" onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
+      {serverTasks.length > 0 && <><p className="history-label task-label">后台任务</p><nav className="history-list task-list">{serverTasks.map((task) => <button key={task.id} onClick={() => openServerTask(task)}><FolderOpen size={16} /><span>{task.title || '商业合同审查'}</span><small>{task.status === 'succeeded' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'retry_waiting' ? '等待重试' : task.status === 'running' || task.status === 'cancel_requested' ? '处理中' : '排队中'}</small>{['queued', 'running', 'retry_waiting'].includes(task.status) && <i className="history-delete" title="取消任务" onClick={(event) => cancelServerTask(event, task.id)}><X size={14} /></i>}</button>)}</nav></>}
       <div className="sidebar-footer-wrap">
         <div className="sidebar-footer account-trigger">
           <span className="footer-avatar">{user.username.slice(0, 1)}</span><span className="account-label"><strong>{user.username}</strong><small>{user.email}</small></span>

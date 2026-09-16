@@ -166,6 +166,12 @@ cp .env.example .env.local
 
 ```dotenv
 LOCAL_SERVER_PORT=8789
+# 本地无 Redis 时自动使用 SQLite 持久化队列；配置 REDIS_URL 后使用 BullMQ
+TASK_QUEUE_MODE=auto
+REDIS_URL=
+TASK_RUN_WORKER=true
+TASK_WORKER_CONCURRENCY=1
+TASK_FAKE_LLM=true
 DEEPSEEK_API_KEY=your_api_key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-pro
@@ -174,6 +180,7 @@ JWT_SECRET=replace_with_a_random_32_byte_or_longer_secret
 ```
 
 `.env.local` 已被 Git 忽略，禁止提交真实密钥。
+本地只验证任务平台而没有模型 Key 时，可把 `TASK_FAKE_LLM=true`；该模式不调用真实模型，仅返回确定性示例结果。
 
 ### 3. 启动前后端
 
@@ -210,6 +217,15 @@ Vite 会把 `/api` 代理到 `LOCAL_SERVER_PORT`，前后端端口必须保持�
 | `JWT_ISSUER` | 否 | `fafee-api` | JWT 签发方校验值 |
 | `JWT_AUDIENCE` | 否 | `fafee-web` | JWT 受众校验值 |
 | `AUTH_ALLOWED_ORIGINS` | 否 | 空 | 生产环境可写刷新 Cookie 的额外浏览器 Origin，逗号分隔 |
+| `TASK_QUEUE_MODE` | 否 | `auto` | `auto` / `local` / `bullmq`；自动模式在有 `REDIS_URL` 时启用 BullMQ |
+| `REDIS_URL` | 否 | 空 | Redis 连接地址，例如 `redis://127.0.0.1:6379`；未配置时使用 SQLite 队列 |
+| `TASK_RUN_WORKER` | 否 | `true` | API 进程是否同时启动 Worker；生产可在 API 进程设为 `false`，单独运行 `npm run worker` |
+| `TASK_WORKER_CONCURRENCY` | 否 | `1` | Worker 并发任务数，需结合模型额度与机器资源提升 |
+| `TASK_MAX_ATTEMPTS` | 否 | `3` | 暂时性上游异常的最大尝试次数 |
+| `TASK_RESULT_RETENTION_DAYS` | 否 | `30` | 结构化任务结果保留天数 |
+| `TASK_FILE_RETENTION_HOURS` | 否 | `24` | 私有临时合同文件的清理时间 |
+| `TASK_UPLOAD_ROOT` | 否 | `server/data/task-files` | 任务文件私有临时目录 |
+| `TASK_FAKE_LLM` | 否 | `false` | 本地任务平台验收时启用确定性 Fake LLM，不调用真实模型 |
 
 ### 可选混合 RAG
 
@@ -286,6 +302,11 @@ npm run evaluate:knowledge-base
 | `GET` | `/api/knowledge-base/status` | JSON | 返回文档、条款、风险规则、向量与重排器状态 |
 | `POST` | `/api/contract-chat` | SSE | 无附件的合同相关追问对话 |
 | `POST` | `/api/contract-rewrite` | SSE | 上传合同并执行完整审查与修订流水线 |
+| `POST` | `/api/tasks/contract-review` | `202` JSON | 创建商业合同审查异步任务，返回 `taskId` |
+| `GET` | `/api/tasks` | JSON | 获取当前用户最近任务 |
+| `GET` | `/api/tasks/:taskId` | JSON | 获取任务状态、阶段摘要、结果或失败原因 |
+| `GET` | `/api/tasks/:taskId/events?after=<seq>` | SSE | 回放并持续订阅任务事件；断线后用递增序号补拉 |
+| `POST` | `/api/tasks/:taskId/cancel` | JSON | 取消当前用户的排队或运行中任务 |
 | `POST` | `/api/contract-finalize` | SSE | 根据服务端会话中选中的 finding 生成修订稿；当前前端主流程未调用 |
 
 除健康检查和 `/api/auth/*` 外，所有 `/api` 接口都要求有效的 `Authorization: Bearer <JWT>`；未登录返回 `401`。
@@ -319,17 +340,27 @@ npm run evaluate:knowledge-base
 | `rewrite.result` | 结构化 revisions、localized edits 与统计信息 |
 | `error` / `done` | 失败和流程结束 |
 
+### 商业合同审查任务平台
+
+前端上传合同后使用 `POST /api/tasks/contract-review`，接口只负责鉴权、接收文件并返回任务 ID；合同文件保存到非公开临时目录，Worker 负责执行解析、结构分析、证据检索、多轮审查、归并和修订。任务状态为 `queued`、`running`、`retry_waiting`、`succeeded`、`failed`、`cancel_requested` 或 `cancelled`。
+
+任务事件写入 SQLite 并带递增 `seq`。浏览器可通过 `GET /api/tasks/:taskId/events?after=<seq>` 回放历史事件；刷新或断线后从上次序号继续，不依赖页面内存。阶段成功结果写入检查点，Worker 重启会把未完成任务恢复为可执行状态。
+
+默认 `TASK_QUEUE_MODE=auto`：配置 `REDIS_URL` 时使用 Redis + BullMQ；没有 Redis 时使用同一 SQLite 数据库中的持久化本地队列，便于开发和 Fake LLM 测试。生产部署建议配置 Redis，并根据模型额度和机器资源调整 Worker 并发。需要拆分 API 与 Worker 时，在 API 进程设置 `TASK_RUN_WORKER=false`，再运行 `npm run worker`。
+
 ## 开发命令
 
 | 命令 | 说明 |
 | --- | --- |
 | `npm run dev` | 启动 Vite 开发服务器 |
 | `npm run server` | 启动 Express API |
+| `npm run worker` | 启动独立任务 Worker；生产需与 API 共享 SQLite/PostgreSQL 和 Redis 配置 |
 | `npm run build` | 生成生产前端到 `dist/` |
 | `npm run preview` | 本地预览生产构建 |
 | `npm run test:consolidation` | 运行问题归并、局部编辑和安全回退回归测试 |
 | `npm run test:concurrency` | 验证不同对话请求状态和不同客户端 ReviewSession 相互隔离 |
 | `npm run test:auth` | 验证邀请码核销、并发注册、密码/刷新令牌保密、JWT、登录恢复和退出 |
+| `npm run test:tasks` | 验证异步任务创建、事件回放、检查点、Fake LLM、越权、取消和重试 |
 | `npm run invite:create -- --count 5` | 生成 5 个一次性邀请码；明文只在本次命令输出 |
 | `npm run import:templates -- <dir>` | 重建本地知识库，可选同步向量索引 |
 | `npm run evaluate:knowledge-base` | 运行知识库离线检索评测 |

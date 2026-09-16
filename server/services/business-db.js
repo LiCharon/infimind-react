@@ -47,6 +47,72 @@ CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_user_id ON auth_refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_expires_at ON auth_refresh_tokens(expires_at);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT 'thinking',
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  workflow_version TEXT NOT NULL DEFAULT 'contract-review-v1',
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  next_run_at TEXT,
+  cancel_requested_at TEXT,
+  error_code TEXT,
+  error_summary TEXT,
+  result_json TEXT,
+  result_expires_at TEXT,
+  current_stage TEXT,
+  stage_summary TEXT,
+  last_event_seq INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_user_created_at ON tasks(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status, next_run_at, created_at);
+
+CREATE TABLE IF NOT EXISTS task_events (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  stage TEXT,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE(task_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_events_task_seq ON task_events(task_id, seq);
+
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE(task_id, stage)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_task_stage ON task_checkpoints(task_id, stage);
+
+CREATE TABLE IF NOT EXISTS task_files (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  original_name TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  storage_path TEXT NOT NULL,
+  parse_status TEXT NOT NULL DEFAULT 'pending',
+  cleanup_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_files_cleanup_at ON task_files(cleanup_at);
 `
 
 export function createBusinessDatabase(filename = process.env.BUSINESS_DB_PATH || DEFAULT_DATABASE_PATH) {
@@ -56,6 +122,10 @@ export function createBusinessDatabase(filename = process.env.BUSINESS_DB_PATH |
   database.pragma('busy_timeout = 5000')
   database.pragma('journal_mode = WAL')
   database.exec(schema)
+  // 任务表在已有本地数据库上也要向前兼容；新字段只用于阶段摘要，不改变旧认证数据。
+  const taskColumns = new Set(database.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name))
+  if (!taskColumns.has('current_stage')) database.exec('ALTER TABLE tasks ADD COLUMN current_stage TEXT')
+  if (!taskColumns.has('stage_summary')) database.exec('ALTER TABLE tasks ADD COLUMN stage_summary TEXT')
   return database
 }
 
