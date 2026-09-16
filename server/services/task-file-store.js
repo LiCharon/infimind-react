@@ -1,10 +1,13 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, extname, relative, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const DEFAULT_ROOT = resolve(__dirname, '../data/task-files')
+// 合同原文默认放在操作系统临时目录，避免把敏感材料写入仓库或知识库目录；
+// 部署时可通过 TASK_UPLOAD_ROOT 指定受控的私有挂载点。
+const DEFAULT_ROOT = resolve(tmpdir(), 'fafee-task-files')
 
 const safeExtension = (name = '') => {
   const extension = extname(name).toLowerCase()

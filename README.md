@@ -224,7 +224,7 @@ Vite 会把 `/api` 代理到 `LOCAL_SERVER_PORT`，前后端端口必须保持�
 | `TASK_MAX_ATTEMPTS` | 否 | `3` | 暂时性上游异常的最大尝试次数 |
 | `TASK_RESULT_RETENTION_DAYS` | 否 | `30` | 结构化任务结果保留天数 |
 | `TASK_FILE_RETENTION_HOURS` | 否 | `24` | 私有临时合同文件的清理时间 |
-| `TASK_UPLOAD_ROOT` | 否 | `server/data/task-files` | 任务文件私有临时目录 |
+| `TASK_UPLOAD_ROOT` | 否 | `系统临时目录/fafee-task-files` | 任务文件私有临时目录；生产建议配置独立私有挂载点 |
 | `TASK_FAKE_LLM` | 否 | `false` | 本地任务平台验收时启用确定性 Fake LLM，不调用真实模型 |
 
 ### 可选混合 RAG
