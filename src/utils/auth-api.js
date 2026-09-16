@@ -58,7 +58,9 @@ export class AuthNetworkError extends Error {
 async function refreshAccessToken() {
   if (pendingLogout()) return null
   if (refreshInFlight) return refreshInFlight
-  const generation = authGeneration
+  // A logout can happen in this tab or another tab while this request waits on
+  // the network. Only the generation that started this refresh may write a token.
+  const refreshGeneration = authGeneration
   refreshInFlight = (async () => {
     let response
     try {
@@ -72,12 +74,14 @@ async function refreshAccessToken() {
       throw new AuthNetworkError('暂时无法恢复登录状态，请检查网络后重试')
     }
     if (response.status === 401) {
-      if (generation === authGeneration) setAccessToken()
+      if (refreshGeneration === authGeneration) setAccessToken()
       return null
     }
     if (!response.ok) throw await apiError(response, '暂时无法恢复登录状态')
     const payload = await parseJson(response)
-    if (!payload.accessToken || generation !== authGeneration || pendingLogout()) return null
+    // Check again immediately before the write: a late response must never
+    // restore access after logout has invalidated this generation.
+    if (!payload.accessToken || refreshGeneration !== authGeneration || pendingLogout()) return null
     setAccessToken(payload.accessToken, payload.accessTokenExpiresAt)
     return payload
   })().finally(() => { refreshInFlight = null })

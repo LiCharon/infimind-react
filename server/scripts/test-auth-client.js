@@ -18,7 +18,7 @@ const response = (status, payload = {}) => new Response(JSON.stringify(payload),
   status,
   headers: { 'Content-Type': 'application/json' }
 })
-const { authFetch, clearInMemoryAccessToken, loginUser, logoutUser } = await import('../../src/utils/auth-api.js')
+const { authFetch, clearInMemoryAccessToken, getAccessTokenExpiry, loginUser, logoutUser } = await import('../../src/utils/auth-api.js')
 
 let fetchImpl = async () => response(500)
 global.fetch = (...args) => fetchImpl(...args)
@@ -79,5 +79,6 @@ releaseRefresh(response(200, { user: { id: 'client-test-user' }, accessToken: 'l
 const raceResult = await inFlightRequest
 assert.equal(raceResult.status, 401, '退出期间迟到的刷新结果不得恢复登录')
 assert.equal(raceCalls.filter((call) => call.input === '/api/protected').length, 0, '退出期间不得继续发送旧业务请求')
+assert.equal(getAccessTokenExpiry(), '', '迟到的刷新响应不得写回已退出账号的访问令牌')
 
 console.log('Client authentication regression passed: network no-retry, upload-body retry and logout/refresh race are covered.')
