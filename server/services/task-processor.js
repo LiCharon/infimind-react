@@ -19,10 +19,17 @@ const isTransient = (error) => Boolean(error?.retryable || transientPatterns.som
 export function createTaskProcessor({ taskService, fileStore, fakeLlm = String(process.env.TASK_FAKE_LLM || '').toLowerCase() === 'true' } = {}) {
   if (!taskService || !fileStore) throw new Error('task processor requires taskService and fileStore')
 
-  const processTask = async (taskId) => {
+  const processTask = async (taskId, { assumedClaimed = false } = {}) => {
     let task = taskService.getTaskInternal(taskId, false)
     if (!task || taskService.isTerminal(task.status)) return task
-    if (task.status === 'queued' || task.status === 'retry_waiting') task = taskService.claimTask(taskId)
+    let claimedNow = false
+    if (task.status === 'queued' || task.status === 'retry_waiting') {
+      task = taskService.claimTask(taskId)
+      claimedNow = Boolean(task)
+    }
+    // BullMQ 可能在恢复期间重新投递同一个任务。只有成功原子领取的
+    // 执行流程才能继续；否则第二个 Job 只能安全结束，不能重复调用模型。
+    if (task?.status === 'running' && !assumedClaimed && !claimedNow) return task
     if (!task) return taskService.getTaskInternal(taskId, false)
     if (task.status === 'cancel_requested' || task.status === 'cancelled') return taskService.markCancelled(taskId)
 

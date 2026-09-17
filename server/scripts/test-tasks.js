@@ -25,6 +25,13 @@ for (const [inviteId, hash, userId, email] of inviteRows) {
 
 const processor = createTaskProcessor({ taskService, fileStore, fakeLlm: true })
 const queue = createTaskQueue({ taskService, processTask: processor.processTask, pollIntervalMs: 30 })
+let apiOnlyRecoveryCalls = 0
+const apiOnlyQueue = createTaskQueue({
+  taskService: { recoverInFlight: () => { apiOnlyRecoveryCalls += 1 } },
+  processTask: async () => {},
+  mode: 'local',
+  workerEnabled: false
+})
 const app = express()
 app.use(express.json())
 app.use((req, res, next) => {
@@ -50,6 +57,9 @@ const waitFor = async (check, timeoutMs = 5000) => {
 }
 
 try {
+  await apiOnlyQueue.start()
+  assert.equal(apiOnlyRecoveryCalls, 0, 'API-only 进程不能恢复 Worker 任务')
+  await apiOnlyQueue.close()
   await queue.start()
   const body = new FormData()
   body.append('message', '请重点检查付款和违约责任')
@@ -110,6 +120,15 @@ try {
   const storedPath = database.prepare('SELECT storage_path FROM task_files WHERE task_id = ?').get(created.taskId)?.storage_path
   assert.ok(storedPath)
   assert.equal(readFileSync(storedPath, 'utf8'), '第一条 付款方式：合同签署后支付首笔款。')
+
+  const duplicate = taskService.createTask({
+    userId: 'user-a',
+    title: '重复领取保护测试',
+    files: [{ originalName: '合同.txt', size: 1, mimeType: 'text/plain', storagePath: storedPath }]
+  })
+  taskService.claimTask(duplicate.id)
+  const duplicateResult = await processor.processTask(duplicate.id)
+  assert.equal(duplicateResult.status, 'running', '重复 Job 不得再次执行 running 任务')
   console.log('Task platform regression passed: creation, durable events, checkpoints, Fake LLM workflow, ownership isolation, cancellation and retry state.')
 } finally {
   await queue.close()

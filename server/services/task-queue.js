@@ -40,7 +40,9 @@ export function createTaskQueue({
 
   const processLocalTask = (taskId) => {
     active.add(taskId)
-    Promise.resolve(processTask(taskId))
+    // 本地轮询在取任务时已经完成原子领取；把这一事实传给处理器，
+    // 避免处理器把已领取任务误判为重复 Job。
+    Promise.resolve(processTask(taskId, { assumedClaimed: true }))
       .catch((error) => console.error(`[task-queue] local worker failed for ${taskId}:`, error.message))
       .finally(() => {
         active.delete(taskId)
@@ -81,7 +83,9 @@ export function createTaskQueue({
   const start = async () => {
     if (started) return { mode: useBull ? 'bullmq' : 'local', concurrency: workerConcurrency }
     started = true
-    taskService.recoverInFlight()
+    // API-only 进程不拥有任务执行权，不能在启动时重置 Worker 正在处理的任务。
+    // 只有真正启用 Worker 的进程负责恢复崩溃后遗留的 running 任务。
+    if (workerEnabled) taskService.recoverInFlight()
     if (useBull) {
       const connection = parseRedisConnection(redisUrl)
       queue = new Queue(queueName, { connection })
