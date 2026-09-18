@@ -1,4 +1,5 @@
 import { TaskCancelledError, runContractReview } from '../workflows/contract-review.js'
+import { runContractDraft } from '../workflows/contract-draft.js'
 
 const transientPatterns = [
   /timeout/i,
@@ -9,14 +10,26 @@ const transientPatterns = [
   /network/i,
   /econnreset/i,
   /eai_again/i,
+  /fetch failed/i,
+  /\b429\b/,
+  /\b5\d{2}\b/,
   /503/,
   /502/,
   /504/
 ]
 
-const isTransient = (error) => Boolean(error?.retryable || transientPatterns.some((pattern) => pattern.test(String(error?.message || error))))
+const isTransient = (error) => {
+  const errorText = `${error?.code || ''} ${error?.message || error || ''}`
+  return Boolean(error?.retryable || transientPatterns.some((pattern) => pattern.test(errorText)))
+}
 
-export function createTaskProcessor({ taskService, fileStore, fakeLlm = String(process.env.TASK_FAKE_LLM || '').toLowerCase() === 'true' } = {}) {
+export function createTaskProcessor({
+  taskService,
+  fileStore,
+  fakeLlm = String(process.env.TASK_FAKE_LLM || '').toLowerCase() === 'true',
+  reviewWorkflow = runContractReview,
+  draftWorkflow = runContractDraft
+} = {}) {
   if (!taskService || !fileStore) throw new Error('task processor requires taskService and fileStore')
 
   const processTask = async (taskId, { assumedClaimed = false } = {}) => {
@@ -40,8 +53,11 @@ export function createTaskProcessor({ taskService, fileStore, fakeLlm = String(p
 
     try {
       const files = await fileStore.readFiles(taskService.getFiles(taskId))
-      const result = await runContractReview({
+      const input = taskService.getTaskInput?.(taskId) || {}
+      const workflow = task.productId === 'contract-draft' ? draftWorkflow : reviewWorkflow
+      const result = await workflow({
         task,
+        input,
         files,
         emit,
         checkpoint,
@@ -51,7 +67,14 @@ export function createTaskProcessor({ taskService, fileStore, fakeLlm = String(p
         fakeLlm
       })
       if (isCancellationRequested()) return taskService.markCancelled(taskId)
-      return taskService.completeTask(taskId, result)
+      const completed = taskService.completeTask(taskId, result)
+      if (task.productId === 'contract-draft') {
+        if (completed?.status === 'cancel_requested') return taskService.markCancelled(taskId, 'user_requested')
+        if (completed?.status === 'succeeded') {
+          taskService.appendEvent(taskId, 'done', { status: 'succeeded', resultAvailable: true, productId: task.productId })
+        }
+      }
+      return completed
     } catch (error) {
       if (error instanceof TaskCancelledError || error?.code === 'TASK_CANCELLED' || isCancellationRequested()) {
         return taskService.markCancelled(taskId, 'user_requested')

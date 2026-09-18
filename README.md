@@ -303,6 +303,7 @@ npm run evaluate:knowledge-base
 | `POST` | `/api/contract-chat` | SSE | 无附件的合同相关追问对话 |
 | `POST` | `/api/contract-rewrite` | SSE | 上传合同并执行完整审查与修订流水线 |
 | `POST` | `/api/tasks/contract-review` | `202` JSON | 创建商业合同审查异步任务，返回 `taskId` |
+| `POST` | `/api/tasks/contract-draft` | `202` JSON | 创建完整合同起草异步任务，返回 `taskId`；咨询类请求不入队 |
 | `GET` | `/api/tasks` | JSON | 获取当前用户最近任务 |
 | `GET` | `/api/tasks/:taskId` | JSON | 获取任务状态、阶段摘要、结果或失败原因 |
 | `GET` | `/api/tasks/:taskId/events?after=<seq>` | SSE | 回放并持续订阅任务事件；断线后用递增序号补拉 |
@@ -348,6 +349,24 @@ npm run evaluate:knowledge-base
 
 默认 `TASK_QUEUE_MODE=auto`：配置 `REDIS_URL` 时使用 Redis + BullMQ；没有 Redis 时使用同一 SQLite 数据库中的持久化本地队列，便于开发和 Fake LLM 测试。生产部署建议配置 Redis，并根据模型额度和机器资源调整 Worker 并发。需要拆分 API 与 Worker 时，在 API 进程设置 `TASK_RUN_WORKER=false`，再运行 `npm run worker`。
 
+### 合同起草任务适配
+
+完整合同起草使用 `POST /api/tasks/contract-draft` 接入同一任务、文件、事件、检查点、重试、取消和结果查询底座。请求支持 `multipart/form-data` 或 JSON，主要字段如下：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `threadId` | string | 必填；同一用户同一对话同时只允许一个活动完整起草任务 |
+| `message` | string | 本轮起草或全文更新要求，最多 16,000 字符 |
+| `operation` | `create` \| `regenerate` \| `update` \| `attachment_update` | 可选；缺省时按确定性规则、已有意图分类和澄清顺序判断 |
+| `parentTaskId` | string | 可选；必须是当前用户同一 `threadId` 下已成功保存的合同起草任务 |
+| `currentDraft` | object | 可选；前端缓存的基础草稿快照，成功任务结果才会成为正式草稿 |
+| `history` | JSON array | 可选；必要的对话快照，Worker 不依赖浏览器 `localStorage` |
+| `files` | File[] | 可选；只有明确说明用于起草/全文更新时才进入队列 |
+
+任务输入会持久化到 `tasks.input_json`，包括 `operation`、`threadId`、`parentTaskId`、对话/草稿快照和实际 `fileRefs`。Worker 复用“附件解析 → 合同类型识别 → 合同生成 → 结果整理”链路，阶段检查点为 `parsing`、`contract_type`、`generation` 和 `persistence`。只有完整 Markdown 通过结构校验并由任务事务保存到 SQLite 后，结果才是正式草稿；失败或取消不会替换父任务的成功结果。
+
+`POST /api/contract-draft` 继续保留为兼容 SSE 接口：完整起草仍返回原有流式事件，条款解释、风险咨询、普通追问和未明确附件用途的请求不创建异步任务。前端任务订阅与页面改造另行排期。
+
 ## 开发命令
 
 | 命令 | 说明 |
@@ -361,6 +380,7 @@ npm run evaluate:knowledge-base
 | `npm run test:concurrency` | 验证不同对话请求状态和不同客户端 ReviewSession 相互隔离 |
 | `npm run test:auth` | 验证邀请码核销、并发注册、密码/刷新令牌保密、JWT、登录恢复和退出 |
 | `npm run test:tasks` | 验证异步任务创建、事件回放、检查点、Fake LLM、越权、取消和重试 |
+| `npm run test:contract-draft` | 验证合同起草任务适配、意图分流、草稿快照、恢复、重试、取消和兼容 SSE |
 | `npm run invite:create -- --count 5` | 生成 5 个一次性邀请码；明文只在本次命令输出 |
 | `npm run import:templates -- <dir>` | 重建本地知识库，可选同步向量索引 |
 | `npm run evaluate:knowledge-base` | 运行知识库离线检索评测 |

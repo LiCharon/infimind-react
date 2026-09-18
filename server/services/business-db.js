@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   product_id TEXT NOT NULL,
+  thread_id TEXT,
   title TEXT NOT NULL DEFAULT '',
   prompt TEXT NOT NULL DEFAULT '',
   mode TEXT NOT NULL DEFAULT 'thinking',
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   cancel_requested_at TEXT,
   error_code TEXT,
   error_summary TEXT,
+  input_json TEXT NOT NULL DEFAULT '{}',
   result_json TEXT,
   result_expires_at TEXT,
   current_stage TEXT,
@@ -122,10 +124,22 @@ export function createBusinessDatabase(filename = process.env.BUSINESS_DB_PATH |
   database.pragma('busy_timeout = 5000')
   database.pragma('journal_mode = WAL')
   database.exec(schema)
-  // 任务表在已有本地数据库上也要向前兼容；新字段只用于阶段摘要，不改变旧认证数据。
+  // 任务表在已有本地数据库上也要向前兼容；新增字段只承载任务输入快照、对话串行键和阶段摘要，不改变旧认证数据。
   const taskColumns = new Set(database.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name))
+  if (!taskColumns.has('thread_id')) database.exec('ALTER TABLE tasks ADD COLUMN thread_id TEXT')
+  if (!taskColumns.has('input_json')) database.exec("ALTER TABLE tasks ADD COLUMN input_json TEXT NOT NULL DEFAULT '{}'")
   if (!taskColumns.has('current_stage')) database.exec('ALTER TABLE tasks ADD COLUMN current_stage TEXT')
   if (!taskColumns.has('stage_summary')) database.exec('ALTER TABLE tasks ADD COLUMN stage_summary TEXT')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(user_id, product_id, thread_id, status)')
+  // 同一用户同一对话同时只允许一个完整起草任务；终态任务不再占用该槽位。
+  // 这是部分唯一索引，既不影响已有审查任务，也能在并发 INSERT 时提供原子保护。
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_contract_draft_thread
+    ON tasks(user_id, thread_id)
+    WHERE product_id = 'contract-draft'
+      AND thread_id IS NOT NULL
+      AND status IN ('queued', 'running', 'retry_waiting', 'cancel_requested')
+  `)
   return database
 }
 

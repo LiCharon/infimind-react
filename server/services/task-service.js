@@ -34,6 +34,7 @@ const summarizeTask = (row, includeResult = true) => {
     id: row.id,
     userId: row.user_id,
     productId: row.product_id,
+    threadId: row.thread_id,
     title: row.title,
     prompt: row.prompt,
     mode: row.mode,
@@ -79,10 +80,10 @@ export function createTaskService(database, {
 } = {}) {
   const insertTask = database.prepare(`
     INSERT INTO tasks (
-      id, user_id, product_id, title, prompt, mode, status, attempt_count,
-      max_attempts, workflow_version, created_at, result_expires_at
-    ) VALUES (@id, @userId, @productId, @title, @prompt, @mode, @status, 0,
-      @maxAttempts, @workflowVersion, @createdAt, NULL)
+      id, user_id, product_id, thread_id, title, prompt, mode, status, attempt_count,
+      max_attempts, workflow_version, created_at, input_json, result_expires_at
+    ) VALUES (@id, @userId, @productId, @threadId, @title, @prompt, @mode, @status, 0,
+      @maxAttempts, @workflowVersion, @createdAt, @inputJson, NULL)
   `)
   const insertFile = database.prepare(`
     INSERT INTO task_files (
@@ -99,6 +100,16 @@ export function createTaskService(database, {
     INSERT INTO task_events (id, task_id, seq, stage, event_type, payload_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
+  const upsertCheckpoint = database.prepare(`
+    INSERT INTO task_checkpoints (id, task_id, stage, result_json, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(task_id, stage) DO UPDATE SET result_json = excluded.result_json, created_at = excluded.created_at
+  `)
+
+  const saveCheckpointTx = (taskId, stage, result = {}, timestamp = now()) => {
+    upsertCheckpoint.run(randomUUID(), taskId, stage, safeJson(result), timestamp)
+    return { taskId, stage, result, createdAt: timestamp }
+  }
 
   const appendEventTx = (taskId, eventType, payload = {}, stage = null, at = now()) => {
     const task = selectTask.get(taskId)
@@ -126,13 +137,15 @@ export function createTaskService(database, {
       id,
       userId: input.userId,
       productId: input.productId || 'contract-review',
+      threadId: input.threadId ? String(input.threadId).slice(0, 200) : null,
       title: String(input.title || '商业合同审查').slice(0, 120),
       prompt: String(input.prompt || '').slice(0, 16000),
       mode: input.mode === 'fast' ? 'fast' : 'thinking',
       status: TASK_STATUS.QUEUED,
       maxAttempts: Number(input.maxAttempts) > 0 ? Number(input.maxAttempts) : maxAttempts,
       workflowVersion: input.workflowVersion || 'contract-review-v1',
-      createdAt
+      createdAt,
+      inputJson: safeJson(input.input || {})
     })
 
     const retentionHours = Math.max(1, Number(process.env.TASK_FILE_RETENTION_HOURS || 24))
@@ -219,6 +232,27 @@ export function createTaskService(database, {
     }
   }
 
+  const getTaskInput = (taskId, userId = null) => {
+    const row = userId ? selectUserTask.get(taskId, userId) : selectTask.get(taskId)
+    return row ? parseJson(row.input_json, {}) : null
+  }
+
+  const getActiveTaskByThread = (userId, productId, threadId) => {
+    if (!userId || !productId || !threadId) return null
+    const row = database.prepare(`
+      SELECT * FROM tasks
+      WHERE user_id = ? AND product_id = ? AND thread_id = ?
+        AND status IN (?, ?, ?, ?)
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).get(userId, productId, threadId,
+      TASK_STATUS.QUEUED,
+      TASK_STATUS.RUNNING,
+      TASK_STATUS.RETRY_WAITING,
+      TASK_STATUS.CANCEL_REQUESTED)
+    return row ? getTask(row.id, userId, false) : null
+  }
+
   const listTasks = (userId, limit = 20) => taskList(database.prepare(`
     SELECT * FROM tasks WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
   `).all(userId, Math.min(Math.max(Number(limit) || 20, 1), 100)), false)
@@ -245,15 +279,7 @@ export function createTaskService(database, {
     }))
   }
 
-  const saveCheckpoint = database.transaction((taskId, stage, result = {}) => {
-    const timestamp = now()
-    database.prepare(`
-      INSERT INTO task_checkpoints (id, task_id, stage, result_json, created_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(task_id, stage) DO UPDATE SET result_json = excluded.result_json, created_at = excluded.created_at
-    `).run(randomUUID(), taskId, stage, safeJson(result), timestamp)
-    return { taskId, stage, result, createdAt: timestamp }
-  })
+  const saveCheckpoint = database.transaction((taskId, stage, result = {}) => saveCheckpointTx(taskId, stage, result))
 
   const getCheckpoint = (taskId, stage) => {
     const row = database.prepare('SELECT * FROM task_checkpoints WHERE task_id = ? AND stage = ?').get(taskId, stage)
@@ -280,13 +306,21 @@ export function createTaskService(database, {
   }
 
   const completeTask = database.transaction((taskId, result) => {
+    const current = selectTask.get(taskId)
+    if (!current) return null
+    if (current.status === TASK_STATUS.CANCEL_REQUESTED || current.status === TASK_STATUS.CANCELLED) {
+      return summarizeTask(current)
+    }
+    if (TERMINAL_STATUSES.has(current.status)) return summarizeTask(current)
     const finishedAt = now()
     const expiresAt = new Date(Date.now() + Math.max(1, resultRetentionDays) * 24 * 60 * 60 * 1000).toISOString()
-    database.prepare(`
+    const updated = database.prepare(`
       UPDATE tasks SET status = ?, finished_at = ?, result_json = ?, result_expires_at = ?,
         error_code = NULL, error_summary = NULL, next_run_at = NULL
-      WHERE id = ?
-    `).run(TASK_STATUS.SUCCEEDED, finishedAt, safeJson(result), expiresAt, taskId)
+      WHERE id = ? AND status = ? AND cancel_requested_at IS NULL
+    `).run(TASK_STATUS.SUCCEEDED, finishedAt, safeJson(result), expiresAt, taskId, TASK_STATUS.RUNNING)
+    if (updated.changes !== 1) return summarizeTask(selectTask.get(taskId))
+    saveCheckpointTx(taskId, 'persistence', { persisted: true, resultAvailable: true, taskId }, finishedAt)
     appendEventTx(taskId, 'task.succeeded', {
       status: TASK_STATUS.SUCCEEDED,
       resultAvailable: true,
@@ -296,12 +330,19 @@ export function createTaskService(database, {
   })
 
   const failTask = database.transaction((taskId, error, { code = 'task_failed' } = {}) => {
+    const current = selectTask.get(taskId)
+    if (!current) return null
+    // 取消或终态已经赢得状态竞争时，迟到的模型/队列异常不能覆盖它。
+    if (current.status === TASK_STATUS.CANCEL_REQUESTED || TERMINAL_STATUSES.has(current.status)) {
+      return summarizeTask(current)
+    }
     const finishedAt = now()
     const summary = String(error?.message || error || '任务处理失败').slice(0, 1000)
-    database.prepare(`
+    const updated = database.prepare(`
       UPDATE tasks SET status = ?, finished_at = ?, error_code = ?, error_summary = ?, next_run_at = NULL
-      WHERE id = ?
-    `).run(TASK_STATUS.FAILED, finishedAt, code, summary, taskId)
+      WHERE id = ? AND status NOT IN (?, ?, ?) AND cancel_requested_at IS NULL
+    `).run(TASK_STATUS.FAILED, finishedAt, code, summary, taskId, TASK_STATUS.SUCCEEDED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED)
+    if (updated.changes !== 1) return summarizeTask(selectTask.get(taskId))
     appendEventTx(taskId, 'error', { status: TASK_STATUS.FAILED, code, message: summary })
     appendEventTx(taskId, 'done', { status: TASK_STATUS.FAILED, resultAvailable: false })
     return getTask(taskId, null, true)
@@ -310,10 +351,14 @@ export function createTaskService(database, {
   const retryTask = database.transaction((taskId, error, delayMs) => {
     const row = selectTask.get(taskId)
     if (!row) return null
+    if (row.status === TASK_STATUS.CANCEL_REQUESTED || TERMINAL_STATUSES.has(row.status)) return summarizeTask(row)
     const nextRunAt = new Date(Date.now() + Math.max(250, Number(delayMs) || 1000)).toISOString()
     const summary = String(error?.message || error || '暂时性错误').slice(0, 1000)
-    database.prepare(`UPDATE tasks SET status = ?, next_run_at = ?, error_code = ?, error_summary = ? WHERE id = ?`)
-      .run(TASK_STATUS.RETRY_WAITING, nextRunAt, 'retryable_error', summary, taskId)
+    const updated = database.prepare(`
+      UPDATE tasks SET status = ?, next_run_at = ?, error_code = ?, error_summary = ?
+      WHERE id = ? AND status IN (?, ?) AND cancel_requested_at IS NULL
+    `).run(TASK_STATUS.RETRY_WAITING, nextRunAt, 'retryable_error', summary, taskId, TASK_STATUS.RUNNING, TASK_STATUS.RETRY_WAITING)
+    if (updated.changes !== 1) return summarizeTask(selectTask.get(taskId))
     appendEventTx(taskId, 'task.retry_waiting', {
       status: TASK_STATUS.RETRY_WAITING,
       nextRunAt,
@@ -386,6 +431,8 @@ export function createTaskService(database, {
     markCancelled,
     isCancellationRequested,
     getFiles: (taskId) => selectFiles.all(taskId).map(summarizeFile),
+    getTaskInput,
+    getActiveTaskByThread,
     isTerminal: (status) => TERMINAL_STATUSES.has(status),
     terminalStatuses: TERMINAL_STATUSES
   }
