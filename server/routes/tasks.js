@@ -32,6 +32,14 @@ const parseJsonValue = (value, fallback = null) => {
   try { return JSON.parse(String(value)) } catch { return fallback }
 }
 
+const normalizeConversationHistory = (value) => (Array.isArray(value) ? value : [])
+  .filter((item) => item && typeof item === 'object' && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
+  .slice(-12)
+  .map((item) => ({
+    role: item.role,
+    content: item.content.slice(0, 6000)
+  }))
+
 const normalizeThreadId = (value) => String(value || '').trim().slice(0, MAX_THREAD_ID_LENGTH)
 
 const draftTaskError = (res, error) => {
@@ -39,7 +47,18 @@ const draftTaskError = (res, error) => {
   return jsonError(res, 400, error?.message || '合同起草任务参数无效', error?.code || 'draft_input_invalid')
 }
 
-const isUniqueDraftThreadError = (error) => String(error?.code || '').startsWith('SQLITE_CONSTRAINT_UNIQUE')
+// 审查任务与起草任务共用同一套「同一对话串行」约束，命中时返回 409 而不是 503，
+// 让前端能区分「旧任务还没结束」与「服务暂时不可用」。
+// better-sqlite3 的报错只给出列名（UNIQUE constraint failed: tasks.user_id, tasks.thread_id），
+// 不带索引名，所以按列名判定，并限定为 tasks 表的 user_id/thread_id 组合。
+// 起草与审查各自有独立的部分唯一索引，因此再按 product_id 区分冲突类型。
+const isUniqueThreadBusyError = (error) => {
+  const code = String(error?.code || '')
+  const message = String(error?.message || '')
+  return code.startsWith('SQLITE_CONSTRAINT_UNIQUE')
+    && /tasks\.user_id/.test(message)
+    && /tasks\.thread_id/.test(message)
+}
 
 export function createTaskRouter({
   taskService,
@@ -54,6 +73,8 @@ export function createTaskRouter({
   router.post('/tasks/contract-review', upload.array('files', MAX_FILES), async (req, res) => {
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : ''
     const mode = normalizeMode(req.body?.mode)
+    const threadId = normalizeThreadId(req.body?.threadId)
+    const history = normalizeConversationHistory(parseJsonValue(req.body?.history, []))
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : ''
     const files = Array.isArray(req.files) ? req.files : []
     if (!files.length) return jsonError(res, 400, '请至少上传一个合同文件')
@@ -66,14 +87,26 @@ export function createTaskRouter({
     let storedFiles = []
     let createdTask = null
     try {
-      storedFiles = await fileStore.saveIncomingFiles(taskId, files)
+      storedFiles = (await fileStore.saveIncomingFiles(taskId, files)).map((file) => ({ ...file, id: randomUUID() }))
       createdTask = taskService.createTask({
         id: taskId,
         userId: req.user.id,
         productId: 'contract-review',
+        threadId: threadId || null,
         title: title || files[0].originalname || '商业合同审查',
         prompt: message,
         mode,
+        input: {
+          schemaVersion: 1,
+          threadId: threadId || null,
+          history,
+          fileRefs: storedFiles.map((file) => ({
+            id: file.id,
+            originalName: file.originalName,
+            size: file.size,
+            mimeType: file.mimeType
+          }))
+        },
         files: storedFiles
       })
       await taskQueue.enqueue(taskId)
@@ -81,10 +114,20 @@ export function createTaskRouter({
         taskId,
         status: createdTask.status,
         productId: createdTask.productId,
+        threadId: createdTask.threadId,
         eventsUrl: `/api/tasks/${taskId}/events?after=0`,
         task: createdTask
       })
     } catch (error) {
+      if (isUniqueThreadBusyError(error)) {
+        const activeTask = threadId ? taskService.getActiveTaskByThread?.(req.user.id, 'contract-review', threadId) : null
+        await fileStore.removeTaskFiles(taskId).catch(() => {})
+        return res.status(409).json({
+          error: '该对话已有审查任务正在处理，请先停止或等待其结束',
+          code: 'review_task_conflict',
+          task: activeTask
+        })
+      }
       const currentTask = createdTask ? taskService.getTaskInternal(taskId, false) : null
       if (currentTask && !taskService.isTerminal(currentTask.status)) taskService.failTask(taskId, new Error('任务队列暂不可用'), { code: 'queue_unavailable' })
       await fileStore.removeTaskFiles(taskId).catch(() => {})
@@ -212,7 +255,7 @@ export function createTaskRouter({
         task: createdTask
       })
     } catch (error) {
-      if (isUniqueDraftThreadError(error)) {
+      if (isUniqueThreadBusyError(error)) {
         const activeTask = taskService.getActiveTaskByThread?.(req.user.id, 'contract-draft', threadId)
         await fileStore.removeTaskFiles(taskId).catch(() => {})
         return res.status(409).json({

@@ -17,6 +17,7 @@ import {
   PenLine,
   Plus,
   Send,
+  Square,
   Trash2,
   X,
   Zap
@@ -61,6 +62,7 @@ const normalizeStoredMessage = (message) => {
     role: message.role === 'user' ? 'user' : 'assistant',
     content: asText(message.content),
     status: asText(message.status),
+    interrupted: message.interrupted === true,
     originalText: asText(message.originalText),
     contractText: asText(message.contractText),
     rewrite: asText(message.rewrite),
@@ -136,6 +138,31 @@ const readOrCreateClientId = (userId) => {
   }
 }
 const displayTitle = (content, fallback = '新对话') => content.trim().replace(/\s+/g, ' ').slice(0, 22) || fallback
+const isRequestAbort = (error) => error?.name === 'AbortError' || error?.code === 'REQUEST_ABORTED' || error?.code === 'LLM_REQUEST_ABORTED'
+const TERMINAL_TASK_STATUSES = ['succeeded', 'failed', 'cancelled']
+const isTerminalStatus = (status) => TERMINAL_TASK_STATUSES.includes(status)
+const STATUS_LABELS = {
+  queued: '任务已排队，等待处理。',
+  running: '任务正在处理中。',
+  retry_waiting: '任务暂时失败，等待重试。',
+  cancel_requested: '正在停止任务…',
+  cancelled: '任务已取消。',
+  failed: '任务未完成。'
+}
+const createRequestAbortError = () => {
+  const error = new Error('请求已停止')
+  error.name = 'AbortError'
+  error.code = 'REQUEST_ABORTED'
+  return error
+}
+const buildConversationHistory = (messages = []) => messages
+  .slice(-10)
+  .map((message) => {
+    if (!message?.content || !['user', 'assistant'].includes(message.role)) return null
+    const prefix = message.interrupted ? '【上一轮回答在用户插话时被中断，以下内容可能不完整】\n' : ''
+    return { role: message.role, content: `${prefix}${message.content}` }
+  })
+  .filter(Boolean)
 
 const LEVEL_META = {
   高: { key: 'high', label: '高风险', cls: 'level-high' },
@@ -367,6 +394,10 @@ function ContractRewritePage() {
   const conversationRef = useRef(null)
   const activeThreadIdRef = useRef('')
   const inFlightThreadsRef = useRef(new Set())
+  const requestRunsRef = useRef(new Map())
+  const interruptingThreadsRef = useRef(new Set())
+  // 已在恢复订阅中的 thread，避免刷新/切换对话时重复挂载同一个任务的事件流。
+  const watchThreadsRef = useRef(new Set())
   // 用户是否贴近底部：用于流式输出时决定是否自动跟随滚动
   const stickToBottomRef = useRef(true)
   const threadStorageKey = `fafee-history-v2:${user.id}:contract-review:threads`
@@ -376,7 +407,6 @@ function ContractRewritePage() {
     return saved.length ? saved : [createThread('商业合同审查与批注')]
   })
   const [tasks, setTasks] = useState(() => readStorage(taskStorageKey, [], normalizeStoredTasks))
-  const [serverTasks, setServerTasks] = useState([])
   const [activeThreadId, setActiveThreadId] = useState('')
   const [files, setFiles] = useState([])
   const [instruction, setInstruction] = useState('')
@@ -390,6 +420,7 @@ function ContractRewritePage() {
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [taskTitle, setTaskTitle] = useState('')
   const [taskPrompt, setTaskPrompt] = useState('')
+  const threadsRef = useRef(threads)
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) || threads[0]
   const activeMessages = activeThread?.messages || []
@@ -410,21 +441,36 @@ function ContractRewritePage() {
   }, [activeThreadId, threads])
 
   useEffect(() => { activeThreadIdRef.current = activeThread?.id || '' }, [activeThread?.id])
+  useEffect(() => { threadsRef.current = threads }, [threads])
 
   useEffect(() => { writeStorage(threadStorageKey, threads) }, [threadStorageKey, threads])
   useEffect(() => { writeStorage(taskStorageKey, tasks) }, [taskStorageKey, tasks])
+
+  // 后台任务入口收敛后，历史对话的 taskId 是用户查看后台任务状态的唯一入口。
+  // 只在切换对话时触发一次；进行中的状态由 requestRunsRef / watchThreadsRef 去重，
+  // 不能依赖 threads，否则每条流式消息都会重跑并造成恢复风暴。
   useEffect(() => {
-    let active = true
-    authFetch('/api/tasks', { headers: { Accept: 'application/json' } })
-      .then(async (response) => {
-        if (!response.ok) return null
-        const payload = await response.json()
-        return Array.isArray(payload.tasks) ? payload.tasks : []
-      })
-      .then((items) => { if (active && items) setServerTasks(items) })
-      .catch(() => {})
-    return () => { active = false }
-  }, [user.id])
+    const thread = threadsRef.current.find((item) => item.id === activeThreadId)
+    if (!thread?.taskId) return
+    if (requestRunsRef.current.has(thread.id) || watchThreadsRef.current.has(thread.id)) return
+    const lastMessage = thread.messages[thread.messages.length - 1]
+    if (lastMessage?.role === 'assistant' && (lastMessage.completed || lastMessage.interrupted || lastMessage.failed)) return
+    const assistantId = lastMessage?.role === 'assistant' ? lastMessage.id : null
+    let cancelled = false
+    watchThreadsRef.current.add(thread.id)
+    fetchTaskDetail(thread.taskId).then((task) => {
+      if (cancelled || !task) return
+      if (isTerminalStatus(task.status)) {
+        if (assistantId) applyRecoveredTask(thread.id, assistantId, task)
+        return
+      }
+      if (assistantId) void resumeThreadTask(thread.id, thread.taskId, assistantId)
+    }).catch(() => {}).finally(() => {
+      if (requestRunsRef.current.has(thread.id)) return
+      watchThreadsRef.current.delete(thread.id)
+    })
+    return () => { cancelled = true }
+  }, [activeThreadId])
 
   // 仅在用户已贴近底部时跟随滚动；流式增量更新时用 instant 避免动画抢夺滚动控制
   useEffect(() => {
@@ -500,42 +546,235 @@ function ContractRewritePage() {
     setFiles(next)
   }
 
-  const readSSE = async (response, onEvent) => {
+  const readSSE = async (response, onEvent, signal) => {
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const packets = buffer.split('\n\n')
-      buffer = packets.pop() || ''
-      for (const packet of packets) {
-        const event = packet.match(/^event:\s*(.+)$/m)?.[1]?.trim()
-        const dataText = [...packet.matchAll(/^data:\s*(.+)$/gm)].map((match) => match[1]).join('\n')
-        if (!event || !dataText) continue
-        let data
-        try { data = JSON.parse(dataText) } catch { data = { content: dataText } }
-        onEvent(event, data)
+    const cancelReader = () => { void reader.cancel().catch(() => {}) }
+    if (signal?.aborted) {
+      cancelReader()
+      throw createRequestAbortError()
+    }
+    signal?.addEventListener('abort', cancelReader, { once: true })
+    try {
+      while (true) {
+        if (signal?.aborted) throw createRequestAbortError()
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const packets = buffer.split('\n\n')
+        buffer = packets.pop() || ''
+        for (const packet of packets) {
+          const event = packet.match(/^event:\s*(.+)$/m)?.[1]?.trim()
+          const dataText = [...packet.matchAll(/^data:\s*(.+)$/gm)].map((match) => match[1]).join('\n')
+          if (!event || !dataText) continue
+          let data
+          try { data = JSON.parse(dataText) } catch { data = { content: dataText } }
+          onEvent(event, data)
+        }
       }
+      if (signal?.aborted) throw createRequestAbortError()
+    } finally {
+      signal?.removeEventListener('abort', cancelReader)
+      reader.releaseLock()
     }
   }
 
-  const sendMessage = async () => {
-    if ((!files.length && !instruction.trim()) || !activeThread) return
-    const threadId = activeThread.id
-    if (inFlightThreadsRef.current.has(threadId)) return
+  const clearCurrentRun = (threadId, runId) => {
+    const current = requestRunsRef.current.get(threadId)
+    if (!current || current.runId !== runId) return false
+    requestRunsRef.current.delete(threadId)
+    inFlightThreadsRef.current.delete(threadId)
+    updateThreadRequest(threadId, { loading: false, stage: '', cancelPending: false })
+    return true
+  }
+
+  const fetchTaskDetail = async (taskId) => {
+    const response = await authFetch(`/api/tasks/${taskId}`, { headers: { Accept: 'application/json' } })
+    if (!response.ok) return null
+    const payload = await response.json().catch(() => ({}))
+    return payload.task || null
+  }
+
+  const waitForTaskTerminal = async (taskId, attempts = 120) => {
+    let latest = null
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      latest = await fetchTaskDetail(taskId)
+      if (latest && ['succeeded', 'failed', 'cancelled'].includes(latest.status)) return latest
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    return latest
+  }
+
+  const markRunInterrupted = (threadId, run, status) => {
+    const patch = {
+      interrupted: true,
+      interruptedAt: Date.now(),
+      completed: false,
+      failed: false,
+      status,
+      phase: '',
+      revisions: [],
+      contractText: '',
+      originalText: ''
+    }
+    if (run.partialContent) patch.content = run.partialContent
+    updateMessage(threadId, run.assistantId, patch)
+    return { id: run.assistantId, role: 'assistant', content: run.partialContent || '', interrupted: true }
+  }
+
+  // 未终态任务在页面重新打开后继续订阅事件，回填最终结果或终态状态。
+  const resumeThreadTask = async (threadId, taskId, assistantId) => {
+    if (!taskId || !assistantId) return
+    let seq = 0
+    const controller = new AbortController()
+    const run = { runId: createId('request'), controller, assistantId, taskId, partialContent: '', superseded: false, kind: 'task' }
+    requestRunsRef.current.set(threadId, run)
     inFlightThreadsRef.current.add(threadId)
+    watchThreadsRef.current.add(threadId)
+    updateThreadRequest(threadId, { loading: true, error: '', cancelPending: false, stage: 'resuming' })
+    let analysis = ''
+    let review = ''
+    try {
+      for (let reconnect = 0; reconnect < 20; reconnect += 1) {
+        const response = await authFetch(`/api/tasks/${taskId}/events?after=${seq}`, { headers: { Accept: 'text/event-stream' }, signal: controller.signal })
+        if (!response.ok || !response.body) throw new Error('任务进度订阅失败。')
+        await readSSE(response, (event, data) => {
+          seq = Math.max(seq, Number(data?._seq) || 0)
+          if (event === 'stage.start') {
+            updateThreadRequest(threadId, { stage: data.stage || '' })
+            updateMessage(threadId, assistantId, { status: data.label || '正在处理…' })
+          }
+          if (event === 'stage.progress') updateMessage(threadId, assistantId, { status: data.message || '正在处理…' })
+          if (event === 'analysis.delta') { analysis += data.content || ''; run.partialContent = analysis; updateMessage(threadId, assistantId, { content: analysis, analysis, status: '正在分析合同结构…' }) }
+          if (event === 'review.delta') {
+            review += data.content || ''
+            const combined = analysis ? `${analysis}\n\n---\n\n${review}` : review
+            run.partialContent = combined
+            updateMessage(threadId, assistantId, { content: combined, analysis, review, status: '正在审查风险条款…' })
+          }
+        }, controller.signal)
+        const detail = await fetchTaskDetail(taskId)
+        if (detail && isTerminalStatus(detail.status)) return applyRecoveredTask(threadId, assistantId, detail)
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+      updateThreadRequest(threadId, { error: '任务进度连接中断，请稍后重新打开该对话恢复。' })
+    } catch (resumeError) {
+      if (!run.superseded) updateThreadRequest(threadId, { error: resumeError.message || '任务恢复未完成。' })
+    } finally {
+      const current = requestRunsRef.current.get(threadId)
+      if (current?.runId === run.runId && !run.superseded) clearCurrentRun(threadId, run.runId)
+      watchThreadsRef.current.delete(threadId)
+    }
+  }
+
+  const applyRecoveredTask = (threadId, assistantId, task) => {
+    const result = task?.result || {}
+    updateMessage(threadId, assistantId, {
+      content: (() => {
+        const analysis = result.analysis || ''
+        const review = result.review || ''
+        return analysis ? (review ? `${analysis}\n\n---\n\n${review}` : analysis) : (review || task?.errorSummary || '合同审查已完成。')
+      })(),
+      analysis: result.analysis || '',
+      review: result.review || '',
+      reviewRounds: Array.isArray(result.reviewRounds) ? result.reviewRounds : [],
+      originalText: result.contractText || '',
+      contractText: result.contractText || '',
+      revisions: Array.isArray(result.revisions) ? result.revisions : [],
+      rewriteStats: result.stats || null,
+      phase: result.contractText || result.revisions?.length ? 'rewrite' : '',
+      status: task?.status === 'succeeded' ? '' : (task?.errorSummary || STATUS_LABELS[task.status] || ''),
+      completed: task?.status === 'succeeded',
+      failed: task?.status === 'failed',
+      interrupted: task?.status === 'cancelled'
+    })
+    return task
+  }
+
+  const interruptActiveRequest = async (threadId, { waitForTask = false } = {}) => {
+    const run = requestRunsRef.current.get(threadId)
+    if (!run) return null
+    if (run.interruptPromise) return run.interruptPromise
+    interruptingThreadsRef.current.add(threadId)
+    run.superseded = true
+    run.interruptPromise = (async () => {
+      updateThreadRequest(threadId, { loading: true, cancelPending: Boolean(run.taskId), stage: run.taskId && waitForTask ? 'cancelling' : '' })
+      run.controller.abort()
+      let task = null
+      if (run.taskId) {
+        const response = await authFetch(`/api/tasks/${run.taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.error || '上一轮审查任务暂时无法停止。')
+        task = payload.task || null
+        if (waitForTask && task && !['succeeded', 'failed', 'cancelled'].includes(task.status)) {
+          task = await waitForTaskTerminal(run.taskId)
+          if (!task || !['succeeded', 'failed', 'cancelled'].includes(task.status)) {
+            throw new Error('上一轮审查仍在停止中，请稍后再提交新的文件审查。')
+          }
+        }
+      }
+      const interruptedMessage = markRunInterrupted(threadId, run, task?.status === 'succeeded' ? '上一轮已完成，已插入新消息' : '已被新消息打断')
+      clearCurrentRun(threadId, run.runId)
+      return { task, interruptedMessage }
+    })().catch((error) => {
+      run.superseded = false
+      updateThreadRequest(threadId, { loading: false, cancelPending: false, stage: '', error: error.message || '上一轮请求暂时无法停止。' })
+      throw error
+    }).finally(() => {
+      run.interruptPromise = null
+      interruptingThreadsRef.current.delete(threadId)
+    })
+    return run.interruptPromise
+  }
+
+  const sendMessage = async () => {
+    if (!activeThread) return
+    const threadId = activeThread.id
+    const instructionSnapshot = instruction.trim()
+    const filesSnapshot = [...files]
+    const hasNewInput = Boolean(instructionSnapshot || filesSnapshot.length)
+    let interruption = null
+    const existingRun = requestRunsRef.current.get(threadId)
+    if (existingRun) {
+      if (interruptingThreadsRef.current.has(threadId)) return
+      if (!hasNewInput) {
+        await interruptActiveRequest(threadId)
+        return
+      }
+      interruption = await interruptActiveRequest(threadId, { waitForTask: filesSnapshot.length > 0 })
+    }
+    if (requestRunsRef.current.has(threadId) || interruptingThreadsRef.current.has(threadId) || !hasNewInput) return
+
+    const sourceThread = threadsRef.current.find((thread) => thread.id === threadId) || activeThread
+    let historyMessages = sourceThread.messages || []
+    if (interruption?.interruptedMessage) {
+      historyMessages = historyMessages.map((message) => message.id === interruption.interruptedMessage.id
+        ? { ...message, ...interruption.interruptedMessage }
+        : message)
+    }
     const requestMode = mode
-    const content = instruction.trim() || '请根据合同类型匹配知识库中的优秀模板和已批注风险案例，完成合规审查并生成带修改说明的合同稿。'
-    const uploadedFiles = files.map((file) => ({ name: file.name, size: file.size }))
+    const content = instructionSnapshot || '请根据合同类型匹配知识库中的优秀模板和已批注风险案例，完成合规审查并生成带修改说明的合同稿。'
+    const history = buildConversationHistory(historyMessages)
+    const uploadedFiles = filesSnapshot.map((file) => ({ name: file.name, size: file.size }))
     const userMessage = { id: createId('message'), role: 'user', content, files: uploadedFiles, createdAt: Date.now() }
     const assistantId = createId('message')
+    const run = {
+      runId: createId('request'),
+      controller: new AbortController(),
+      assistantId,
+      taskId: null,
+      partialContent: '',
+      superseded: false,
+      kind: uploadedFiles.length ? 'task' : 'chat'
+    }
+    requestRunsRef.current.set(threadId, run)
+    inFlightThreadsRef.current.add(threadId)
     appendMessage(threadId, userMessage)
-    appendMessage(threadId, { id: assistantId, role: 'assistant', content: '', mode: requestMode, createdAt: Date.now(), status: files.length ? '正在读取合同文件…' : '正在思考…' })
+    appendMessage(threadId, { id: assistantId, role: 'assistant', content: '', mode: requestMode, createdAt: Date.now(), status: uploadedFiles.length ? '正在读取合同文件…' : '正在思考…' })
     setInstruction('')
     setFiles([])
-    updateThreadRequest(threadId, { loading: true, error: '', stage: files.length ? 'parsing' : 'chat', mode: requestMode })
+    updateThreadRequest(threadId, { loading: true, error: '', cancelPending: false, stage: uploadedFiles.length ? 'parsing' : 'chat', mode: requestMode })
     let analysis = ''
     let review = ''
     let originalText = ''
@@ -548,15 +787,16 @@ function ContractRewritePage() {
         form.append('message', content)
         form.append('mode', requestMode)
         form.append('threadId', threadId)
-        form.append('title', activeThread.title || '商业合同审查')
-        files.forEach((file) => form.append('files', file))
-        const response = await authFetch(TASK_ENDPOINT, { method: 'POST', headers: { Accept: 'application/json', 'X-Client-ID': clientId }, body: form })
+        form.append('title', sourceThread.title || '商业合同审查')
+        form.append('history', JSON.stringify(history))
+        filesSnapshot.forEach((file) => form.append('files', file))
+        const response = await authFetch(TASK_ENDPOINT, { method: 'POST', headers: { Accept: 'application/json', 'X-Client-ID': clientId }, body: form, signal: run.controller.signal })
         const createdPayload = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(createdPayload.error || '审查任务暂不可用。')
         const taskId = createdPayload.taskId
         if (!taskId) throw new Error('任务服务未返回任务 ID。')
+        run.taskId = taskId
         updateThread(threadId, (thread) => ({ ...thread, taskId }))
-        setServerTasks((items) => [createdPayload.task || { id: taskId, title: activeThread.title, status: 'queued', createdAt: new Date().toISOString() }, ...items.filter((item) => item.id !== taskId)])
         let lastEventSeq = 0
         const applyTaskEvent = (event, data) => {
           lastEventSeq = Math.max(lastEventSeq, Number(data?._seq) || 0)
@@ -583,11 +823,12 @@ function ContractRewritePage() {
               updateMessage(threadId, assistantId, { status: data.message || `第 ${data.round}/${data.total} 轮审查中…` })
             }
           }
-          if (event === 'analysis.delta') { analysis += data.content || ''; updateMessage(threadId, assistantId, { content: analysis, analysis, status: '正在分析合同结构…' }) }
+          if (event === 'analysis.delta') { analysis += data.content || ''; run.partialContent = analysis; updateMessage(threadId, assistantId, { content: analysis, analysis, status: '正在分析合同结构…' }) }
           if (event === 'review.delta') {
             review += data.content || ''
             // 拼接展示：分析报告 + 审查报告，而不是用审查覆盖分析
             const combined = analysis ? `${analysis}\n\n---\n\n${review}` : review
+            run.partialContent = combined
             updateMessage(threadId, assistantId, { content: combined, analysis, review, reviewRounds, status: '正在审查风险条款…' })
           }
           if (event === 'review.original') {
@@ -622,14 +863,12 @@ function ContractRewritePage() {
         }
         let latestTask = null
         for (let reconnect = 0; reconnect < 20; reconnect += 1) {
-          const eventResponse = await authFetch(`/api/tasks/${taskId}/events?after=${lastEventSeq}`, { headers: { Accept: 'text/event-stream' } })
+          const eventResponse = await authFetch(`/api/tasks/${taskId}/events?after=${lastEventSeq}`, { headers: { Accept: 'text/event-stream' }, signal: run.controller.signal })
           if (!eventResponse.ok || !eventResponse.body) throw new Error(await eventResponse.text() || '任务进度订阅失败。')
-          await readSSE(eventResponse, applyTaskEvent)
-          const detailResponse = await authFetch(`/api/tasks/${taskId}`, { headers: { Accept: 'application/json' } })
-          if (detailResponse.ok) {
-            const detailPayload = await detailResponse.json()
-            latestTask = detailPayload.task || latestTask
-            if (latestTask) setServerTasks((items) => [latestTask, ...items.filter((item) => item.id !== taskId)])
+          await readSSE(eventResponse, applyTaskEvent, run.controller.signal)
+          const detail = await fetchTaskDetail(taskId)
+          if (detail) {
+            latestTask = detail
             if (latestTask && ['succeeded', 'failed', 'cancelled'].includes(latestTask.status)) break
           }
           await new Promise((resolve) => setTimeout(resolve, 300))
@@ -664,23 +903,29 @@ function ContractRewritePage() {
           }
         }
       } else {
-        const history = activeMessages.slice(-10).map((message) => ({ role: message.role, content: message.content })).filter((message) => message.content)
-        const response = await authFetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Client-ID': clientId }, body: JSON.stringify({ message: content, mode: requestMode, threadId, history }) })
+        const response = await authFetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Client-ID': clientId }, body: JSON.stringify({ message: content, mode: requestMode, threadId, history }), signal: run.controller.signal })
         if (!response.ok || !response.body) throw new Error(await response.text() || '对话服务暂不可用。')
         let answer = ''
         await readSSE(response, (event, data) => {
           if (event === 'chat.start') updateMessage(threadId, assistantId, { model: data.model, status: requestMode === 'thinking' ? '正在深度思考…' : '正在快速回复…' })
-          if (event === 'chat.delta') { answer += data.content || ''; updateMessage(threadId, assistantId, { content: answer, status: '' }) }
+          if (event === 'chat.delta') { answer += data.content || ''; run.partialContent = answer; updateMessage(threadId, assistantId, { content: answer, status: '' }) }
           if (event === 'error') throw new Error(data.message || '对话未完成，请稍后重试。')
-        })
+        }, run.controller.signal)
         updateMessage(threadId, assistantId, { status: '', completed: true })
       }
     } catch (requestError) {
-      updateMessage(threadId, assistantId, { content: '本次处理未完成。', status: '', failed: true })
-      updateThreadRequest(threadId, { error: requestError.message || '请求未完成，请稍后重试。' })
+      if (!run.superseded) {
+        if (isRequestAbort(requestError)) {
+          const interruptedMessage = markRunInterrupted(threadId, run, '已停止生成')
+          void interruptedMessage
+        } else {
+          updateMessage(threadId, assistantId, { content: run.partialContent || '本次处理未完成。', status: '', failed: true })
+          updateThreadRequest(threadId, { error: requestError.message || '请求未完成，请稍后重试。' })
+        }
+      }
     } finally {
-      inFlightThreadsRef.current.delete(threadId)
-      updateThreadRequest(threadId, { loading: false, stage: '' })
+      const current = requestRunsRef.current.get(threadId)
+      if (current?.runId === run.runId && !run.superseded) clearCurrentRun(threadId, run.runId)
     }
   }
 
@@ -697,37 +942,6 @@ function ContractRewritePage() {
   }
   const openTask = (task) => { selectConversation(task.threadId); setInstruction(task.prompt || ''); setMode(task.mode || 'thinking') }
   const deleteTask = (event, taskId) => { event.stopPropagation(); setTasks((items) => items.filter((task) => task.id !== taskId)) }
-  const openServerTask = async (task) => {
-    if (!task?.id) return
-    const response = await authFetch(`/api/tasks/${task.id}`, { headers: { Accept: 'application/json' } })
-    if (!response.ok) return
-    const payload = await response.json()
-    const detail = payload.task || task
-    setServerTasks((items) => [detail, ...items.filter((item) => item.id !== detail.id)])
-    const existing = threads.find((thread) => thread.taskId === detail.id)
-    if (existing) {
-      selectConversation(existing.id)
-      return
-    }
-    const result = detail.result || {}
-    const next = createThread(detail.title || '商业合同审查', detail.id)
-    const content = [result.analysis, result.review].filter(Boolean).join('\n\n---\n\n') || (detail.errorSummary || (detail.status === 'queued' ? '任务已排队，等待 Worker 执行。' : '任务尚未产生结果。'))
-    next.messages = [{ id: createId('message'), role: 'assistant', content, analysis: result.analysis || '', review: result.review || '', contractText: result.contractText || '', originalText: result.contractText || '', revisions: Array.isArray(result.revisions) ? result.revisions : [], rewriteStats: result.stats || null, reviewRounds: Array.isArray(result.reviewRounds) ? result.reviewRounds : [], phase: result.contractText ? 'rewrite' : '', status: detail.status === 'succeeded' ? '' : detail.status, completed: detail.status === 'succeeded', createdAt: Date.now() }]
-    setThreads((items) => [next, ...items])
-    setActiveThreadId(next.id)
-    setDocumentOpen(false)
-    if (next.messages[0].revisions.length || next.messages[0].contractText) {
-      setDocumentMessageId(next.messages[0].id)
-      setDocumentOpen(true)
-    }
-  }
-  const cancelServerTask = async (event, taskId) => {
-    event.stopPropagation()
-    const response = await authFetch(`/api/tasks/${taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
-    if (!response.ok) return
-    const payload = await response.json()
-    if (payload.task) setServerTasks((items) => [payload.task, ...items.filter((item) => item.id !== taskId)])
-  }
   const openDocument = (messageId) => { setDocumentMessageId(messageId); setDocumentOpen(true) }
 
   // 导出 Word：沿用页面的局部编号批注，避免导出后重新退化成整段三明治卡片。
@@ -808,7 +1022,11 @@ function ContractRewritePage() {
     anchor.href = url; anchor.download = `${name}-审查批注稿.doc`; anchor.click(); URL.revokeObjectURL(url)
   }
 
-  const status = stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'consolidation' ? '正在归并重复和关联问题…' : stage === 'rewrite' ? '正在生成局部批注稿…' : activeRequest.mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
+  const status = stage === 'cancelling' ? '正在停止上一轮审查…' : stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'consolidation' ? '正在归并重复和关联问题…' : stage === 'rewrite' ? '正在生成局部批注稿…' : activeRequest.mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
+  const hasComposerInput = Boolean(files.length || instruction.trim())
+  const composerActionLabel = loading
+    ? (hasComposerInput ? '停止当前生成并发送' : '停止生成')
+    : '发送消息'
 
   return <main className={`contract-chat ${documentOpen ? 'document-expanded' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
     {!documentOpen && <aside className="chat-sidebar">
@@ -822,7 +1040,6 @@ function ContractRewritePage() {
         return <button className={`${thread.id === activeThread?.id ? 'selected' : ''}${running ? ' thread-running' : ''}`} key={thread.id} onClick={() => selectConversation(thread.id)}><span className="history-thread-icon" title={running ? '该会话正在后台处理中' : ''}>{running ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span>{thread.title}</span><i className="history-delete" title={running ? '处理中，暂不能删除' : '删除对话'} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>
       })}</nav>
       {tasks.length > 0 && <><p className="history-label task-label">审查任务</p><nav className="history-list task-list">{tasks.map((task) => <button key={task.id} className={task.threadId === activeThread?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title="删除任务" onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
-      {serverTasks.length > 0 && <><p className="history-label task-label">后台任务</p><nav className="history-list task-list">{serverTasks.map((task) => <button key={task.id} onClick={() => openServerTask(task)}><FolderOpen size={16} /><span>{task.title || '商业合同审查'}</span><small>{task.status === 'succeeded' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'retry_waiting' ? '等待重试' : task.status === 'running' || task.status === 'cancel_requested' ? '处理中' : '排队中'}</small>{['queued', 'running', 'retry_waiting'].includes(task.status) && <i className="history-delete" title="取消任务" onClick={(event) => cancelServerTask(event, task.id)}><X size={14} /></i>}</button>)}</nav></>}
       <div className="sidebar-footer-wrap">
         <div className="sidebar-footer account-trigger">
           <span className="footer-avatar">{user.username.slice(0, 1)}</span><span className="account-label"><strong>{user.username}</strong><small>{user.email}</small></span>
@@ -843,7 +1060,7 @@ function ContractRewritePage() {
           {activeMessages.length === 0 && <div className="assistant-turn welcome-turn"><div><p>你好，我是法飞飞合同审查助手。上传合同后，我会结合对应合同类型的优质模板和风险案例，帮你梳理风险、生成修改建议，并输出一份可继续编辑的批注稿。</p></div></div>}
           {activeMessages.map((message) => message.role === 'user'
             ? <div className="user-turn" key={message.id}><p>{message.content}</p>{message.files?.map((file) => <div className="attached-file" key={`${message.id}-${file.name}`}><FileText size={18} /><span>{file.name}</span><small>{Math.ceil(file.size / 1024)} KB</small></div>)}</div>
-            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status"><Loader2 size={15} className="spinner" />{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>{message.rewriteStats?.total ? `${message.rewriteStats.total} 个问题 · ${message.rewriteStats.blocks || message.revisions?.length || 0} 个就近标记 · ` : (message.revisions?.length ? `${message.revisions.length} 个修订标记 · ` : '')}点击展开文档</small></span></button>}</>}</div></div>)}
+: <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status">{!message.interrupted && <Loader2 size={15} className="spinner" />}{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{message.interrupted && <small className="message-interrupted">已被新消息打断，以上内容可能不完整。</small>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>{message.rewriteStats?.total ? `${message.rewriteStats.total} 个问题 · ${message.rewriteStats.blocks || message.revisions?.length || 0} 个就近标记 · ` : (message.revisions?.length ? `${message.revisions.length} 个修订标记 · ` : '')}点击展开文档</small></span></button>}</>}</div></div>)}
           {loading && <div className="assistant-turn loading-turn"><div><p>{status}</p></div></div>}
           {error && <p className="chat-error">{error}</p>}
           {!activeMessages.length && <div className="starter-prompts"><button onClick={() => setInstruction('请从甲方视角重点审查付款、验收和违约责任。')}>从甲方视角审查付款与违约责任 <span>→</span></button><button onClick={() => setInstruction('请检查合同是否缺少核心条款。')}>检查是否缺少核心条款 <span>→</span></button></div>}
@@ -851,9 +1068,9 @@ function ContractRewritePage() {
       </div>
 
       <div className="composer-wrap"><div className="composer">
-        <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage() } }} placeholder="上传合同或输入你特别关注的审查重点…" disabled={loading} />
+        <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage() } }} placeholder="上传合同或输入你特别关注的审查重点…" />
         {files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button aria-label={`移除 ${file.name}`} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}
-        <div className="composer-bottom"><div className="composer-tools"><button onClick={() => inputRef.current?.click()} title="上传合同"><Plus size={24} /></button><i /><div className="mode-switch" aria-label="模型模式"><button className={mode === 'fast' ? 'active' : ''} onClick={() => setMode('fast')} title="使用 DeepSeek-v4-flash"><Zap size={16} />快速</button><button className={mode === 'thinking' ? 'active' : ''} onClick={() => setMode('thinking')} title="使用 DeepSeek-v4-pro"><Brain size={16} />深度思考</button></div><button className="tool-text mobile-hide" onClick={() => setTaskModalOpen(true)}><Menu size={18} />更多</button></div><button className="voice-send" onClick={sendMessage} disabled={loading || (!files.length && !instruction.trim())} aria-label="发送消息">{loading ? <Loader2 size={20} className="spinner" /> : <Send size={19} />}</button></div>
+        <div className="composer-bottom"><div className="composer-tools"><button onClick={() => inputRef.current?.click()} title="上传合同"><Plus size={24} /></button><i /><div className="mode-switch" aria-label="模型模式"><button className={mode === 'fast' ? 'active' : ''} onClick={() => setMode('fast')} title="使用 DeepSeek-v4-flash"><Zap size={16} />快速</button><button className={mode === 'thinking' ? 'active' : ''} onClick={() => setMode('thinking')} title="使用 DeepSeek-v4-pro"><Brain size={16} />深度思考</button></div><button className="tool-text mobile-hide" onClick={() => setTaskModalOpen(true)}><Menu size={18} />更多</button></div><button className="voice-send" onClick={sendMessage} disabled={Boolean(activeRequest.cancelPending) || (!loading && !hasComposerInput)} aria-label={composerActionLabel} title={composerActionLabel}>{loading ? (hasComposerInput ? <Send size={19} /> : <Square size={17} />) : <Send size={19} />}</button></div>
         <input ref={inputRef} hidden type="file" multiple accept={ACCEPTED} onChange={(event) => { uploadFiles([...event.target.files]); event.target.value = '' }} />
       </div></div>
     </section>

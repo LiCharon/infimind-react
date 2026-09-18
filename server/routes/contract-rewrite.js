@@ -318,12 +318,17 @@ router.post('/contract-chat', async (req, res) => {
   const history = Array.isArray(req.body?.history) ? req.body.history : []
   if (!message) return res.status(400).json({ error: '请输入问题' })
 
+  const upstreamController = new AbortController()
+  const onResponseClose = () => {
+    if (!res.writableEnded) upstreamController.abort()
+  }
+  res.once('close', onResponseClose)
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive'
   })
-  const writeSSE = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  const writeSSE = (event, data) => { if (res.writableEnded || upstreamController.signal.aborted) return; res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
   try {
     const modelProfile = resolveModel(mode)
     writeSSE('chat.start', { mode, model: modelProfile.model })
@@ -334,15 +339,18 @@ router.post('/contract-chat', async (req, res) => {
       maxTokens: modelProfile.maxTokens,
       history,
       thinking: modelProfile.thinking,
-      reasoningEffort: modelProfile.reasoningEffort
+      reasoningEffort: modelProfile.reasoningEffort,
+      signal: upstreamController.signal
     })) {
       if (chunk.content) writeSSE('chat.delta', { content: chunk.content })
     }
     writeSSE('done', {})
   } catch (error) {
+    if (upstreamController.signal.aborted) return
     writeSSE('error', { message: error.message || '对话请求失败' })
     writeSSE('done', {})
   } finally {
+    res.removeListener('close', onResponseClose)
     res.end()
   }
 })
@@ -381,6 +389,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
     })
 
     const writeSSE = (event, data) => {
+      if (res.writableEnded) return
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     }
 

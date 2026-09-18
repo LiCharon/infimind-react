@@ -10,6 +10,8 @@ import { createTaskProcessor } from '../services/task-processor.js'
 import { createTaskQueue } from '../services/task-queue.js'
 import { createTaskService } from '../services/task-service.js'
 
+// 回归测试必须自带环境：.env.local 里的 TASK_QUEUE_MODE/REDIS_URL/TASK_RUN_WORKER
+// 面向真实部署，不能决定测试行为，否则本地无 Redis 时 enqueue 会直接失败。
 const database = createBusinessDatabase(':memory:')
 const directory = mkdtempSync(join(tmpdir(), 'fafee-task-platform-'))
 const fileStore = createTaskFileStore({ root: directory })
@@ -24,7 +26,7 @@ for (const [inviteId, hash, userId, email] of inviteRows) {
 }
 
 const processor = createTaskProcessor({ taskService, fileStore, fakeLlm: true })
-const queue = createTaskQueue({ taskService, processTask: processor.processTask, pollIntervalMs: 30 })
+const queue = createTaskQueue({ taskService, processTask: processor.processTask, mode: 'local', workerEnabled: true, pollIntervalMs: 30 })
 let apiOnlyRecoveryCalls = 0
 const apiOnlyQueue = createTaskQueue({
   taskService: { recoverInFlight: () => { apiOnlyRecoveryCalls += 1 } },
@@ -38,7 +40,7 @@ app.use((req, res, next) => {
   req.user = { id: req.get('X-Test-User') || 'user-a' }
   next()
 })
-app.use('/api', createTaskRouter({ taskService, taskQueue: queue, fileStore }))
+app.use('/api', createTaskRouter({ taskService, taskQueue: queue, fileStore, fakeLlm: true }))
 
 const server = await new Promise((resolve) => {
   const listener = app.listen(0, () => resolve(listener))

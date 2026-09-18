@@ -131,12 +131,21 @@ export function createBusinessDatabase(filename = process.env.BUSINESS_DB_PATH |
   if (!taskColumns.has('current_stage')) database.exec('ALTER TABLE tasks ADD COLUMN current_stage TEXT')
   if (!taskColumns.has('stage_summary')) database.exec('ALTER TABLE tasks ADD COLUMN stage_summary TEXT')
   database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(user_id, product_id, thread_id, status)')
-  // 同一用户同一对话同时只允许一个完整起草任务；终态任务不再占用该槽位。
-  // 这是部分唯一索引，既不影响已有审查任务，也能在并发 INSERT 时提供原子保护。
+  // 同一用户同一对话同时只允许一个未终态的长任务，起草与审查一致。
+  // 插队发送的前端串行是软约束，重复提交或重放请求会绕过它，
+  // 因此串行边界必须由数据库原子保证：旧任务进入终态后才允许创建新任务。
+  // 这是部分唯一索引，不影响 thread_id 为空的旧任务。
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_contract_draft_thread
     ON tasks(user_id, thread_id)
     WHERE product_id = 'contract-draft'
+      AND thread_id IS NOT NULL
+      AND status IN ('queued', 'running', 'retry_waiting', 'cancel_requested')
+  `)
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_contract_review_thread
+    ON tasks(user_id, thread_id)
+    WHERE product_id = 'contract-review'
       AND thread_id IS NOT NULL
       AND status IN ('queued', 'running', 'retry_waiting', 'cancel_requested')
   `)
