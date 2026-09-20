@@ -192,7 +192,7 @@ SSE 连接需要 Nginx 关闭代理缓冲并保留较长读取超时；不要把
 
 生产环境要求：
 
-1. Node.js 20 LTS 或更高（`jimp` 要求 Node 18+）；执行 `npm ci` 安装依赖。
+1. Node.js **24**（见 `.nvmrc`；`server` / `worker` 脚本使用 `--use-env-proxy`，需 Node ≥ 22.21）；执行 `npm ci` 安装依赖。
 2. 安装 `libreoffice`/`soffice` 与中文字体（Ubuntu 常用 `libreoffice fonts-noto-cjk`）。没有它时 DOC、Office 格式无法可靠转换。
 3. Tesseract.js 首次 OCR 需取得中英语言模型；生产环境要保证可下载，或预热/缓存语言模型。
 4. Multer 使用内存存储，单文件上限 80MB、一次最多 6 个。OCR 与 Office 转换会占用 CPU/内存，线上建议至少 4GB 内存，并在 Nginx 同步配置请求体限制与超时。

@@ -40,6 +40,3 @@ agent-api-v2/
 
 # Auto-generated HTML file
 index.html
-
-# Local-only AI agent instructions (kept on disk, not shared)
-AGENTS.md
