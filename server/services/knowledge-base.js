@@ -408,6 +408,31 @@ export function getKnowledgeBaseStatus() {
   }
 }
 
+/**
+ * 「最低可用线」（mentor 2026-09-22 确认）：≥3 份范本 且 ≥1 个坏例 且 ≥30 条风险规则。
+ *
+ * 不够线的类型（保证/知产/赠与各 4 条规则、委托 5 条、物业/融资租赁各 6 条）拿出来的
+ * 审查结果不可靠 —— 由调用方在**产品侧显式提示**，而不是闷头给一份看着正常的结果。
+ */
+const MIN_USABLE_TEMPLATES = 3
+const MIN_USABLE_CASES = 1
+const MIN_USABLE_RULES = 30
+
+export function getTypeAvailability(contractType) {
+  if (!db) initialize()
+  if (!contractType) {
+    return { contractType: '', templates: 0, cases: 0, rules: 0, meetsLine: false, shortfalls: ['未判定合同类型'] }
+  }
+  const templates = db.prepare('SELECT COUNT(*) AS n FROM templates WHERE contract_type = ?').get(contractType).n
+  const cases = db.prepare("SELECT COUNT(*) AS n FROM templates WHERE contract_type = ? AND reference_role = 'annotated_case'").get(contractType).n
+  const rules = db.prepare('SELECT COUNT(*) AS n FROM risk_rules r JOIN templates t ON t.id = r.template_id WHERE t.contract_type = ?').get(contractType).n
+  const shortfalls = []
+  if (templates < MIN_USABLE_TEMPLATES) shortfalls.push(`范本 ${templates}<${MIN_USABLE_TEMPLATES}`)
+  if (cases < MIN_USABLE_CASES) shortfalls.push(`坏例 ${cases}<${MIN_USABLE_CASES}`)
+  if (rules < MIN_USABLE_RULES) shortfalls.push(`风险规则 ${rules}<${MIN_USABLE_RULES}`)
+  return { contractType, templates, cases, rules, meetsLine: shortfalls.length === 0, shortfalls }
+}
+
 export function listIndexableEvidence() {
   if (!db) initialize()
   const clauses = db.prepare(`SELECT 'clause:' || c.id AS evidence_id, 'clause' AS kind, c.id AS source_id,

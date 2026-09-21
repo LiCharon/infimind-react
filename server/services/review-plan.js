@@ -1,5 +1,5 @@
 import { inferRiskCategory } from './knowledge-processor.js'
-import { getSubTypeFeatures, listSubTypeLabels } from './knowledge-base.js'
+import { getSubTypeFeatures, listSubTypeLabels, getTypeAvailability } from './knowledge-base.js'
 
 const UNIVERSAL_TOPICS = [
   ['合同效力与权利救济', ['法律适用', '合同效力', '永久有效', '口头约定', '单方解释', '起诉', '仲裁']],
@@ -110,12 +110,21 @@ const SUB_TYPE_FEATURE_MIN_RATIO = 0.6
  */
 export const TYPE_UNCONFIRMED_NOTICE = '本次未能确定合同类型，参考证据可能不够对口；请确认合同类型后重新审查。'
 
-/** 把提示追加进结构化审查结果的完整性清单（幂等） */
+/** 把「类型未确认」的提示追加进结构化审查结果的完整性清单（幂等） */
 export function withTypeNoticeInResult(reviewResult, reviewPlan) {
-  if (!reviewPlan?.typeResolution?.needsUserConfirm) return reviewResult
+  const notices = []
+  if (reviewPlan?.typeResolution?.needsUserConfirm) notices.push(TYPE_UNCONFIRMED_NOTICE)
+  // 材料不足的类型也要说清楚，否则用户不知道这份结果的可信度有限
+  const availability = reviewPlan?.availability
+  if (availability && availability.meetsLine === false && availability.contractType) {
+    notices.push(`知识库里「${availability.contractType}」的材料不足（${availability.shortfalls.join('、')}），` +
+      '本次可参考的同类证据有限，结论请结合专业判断复核。')
+  }
+  if (!notices.length) return reviewResult
   const list = Array.isArray(reviewResult?.completeness) ? reviewResult.completeness : []
-  if (list.includes(TYPE_UNCONFIRMED_NOTICE)) return reviewResult
-  return { ...reviewResult, completeness: [...list, TYPE_UNCONFIRMED_NOTICE] }
+  const missing = notices.filter((notice) => !list.includes(notice))
+  if (!missing.length) return reviewResult
+  return { ...reviewResult, completeness: [...list, ...missing] }
 }
 
 /**
@@ -125,9 +134,16 @@ export function withTypeNoticeInResult(reviewResult, reviewPlan) {
  */
 export function withTypeNoticeInReport(reportText, reviewPlan) {
   const text = String(reportText || '')
-  if (!reviewPlan?.typeResolution?.needsUserConfirm) return text
-  if (text.includes(TYPE_UNCONFIRMED_NOTICE)) return text
-  return `${text}\n\n> ${TYPE_UNCONFIRMED_NOTICE}`
+  const notices = []
+  if (reviewPlan?.typeResolution?.needsUserConfirm) notices.push(TYPE_UNCONFIRMED_NOTICE)
+  const availability = reviewPlan?.availability
+  if (availability && availability.meetsLine === false && availability.contractType) {
+    notices.push(`知识库里「${availability.contractType}」的材料不足（${availability.shortfalls.join('、')}），` +
+      '本次可参考的同类证据有限，结论请结合专业判断复核。')
+  }
+  const missing = notices.filter((notice) => !text.includes(notice))
+  if (!missing.length) return text
+  return `${text}\n\n${missing.map((notice) => `> ${notice}`).join('\n\n')}`
 }
 
 export function checkSubTypeAgainstContract(contractType, subType, contractText) {
@@ -179,10 +195,15 @@ export function buildReviewPlan({ analysisReport = '', contractText = '', userIn
       priority: explicitFocus && label.includes(focusedCategory.split('、')[0]) ? 'high' : 'normal'
     }))
 
+  // 该类型的材料够不够（最低可用线）——不够就要在产品侧显式提示，而不是闷头给结果
+  const availability = typeResolution.contractType ? getTypeAvailability(typeResolution.contractType) : null
+
   return {
     contractType,
     // 子类型（可选）：只作检索过滤键；为空时检索自动退化为按 contractType 过滤
     subType: subTypeCheck.subType,
+    // 材料可用性：meetsLine=false 时调用方应给用户一句提示（见 withTypeNoticeInResult）
+    availability,
     // 类型判定过程的可观测信息：来源、Agent 1 声明过但库内没有的类型名、是否需要问用户、
     // 以及子类型的正文复核结果（reason/ratio 用于排查"为什么这次没过子类型过滤"）
     typeResolution: {
