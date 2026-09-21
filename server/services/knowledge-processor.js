@@ -52,7 +52,11 @@ export function splitIntoClauses(text) {
   return (nonEmpty.length ? nonEmpty : expanded).map((segment, index) => ({
     ...segment,
     clauseKey: `clause-${index + 1}`,
-    chunkIndex: segment.chunkIndex || 0
+    chunkIndex: segment.chunkIndex || 0,
+    // 条款此前没有类别，映射证据时硬写空串，正向模板条款因此完全进不了类别覆盖统计。
+    // 这里用与风险规则同一套 inferRiskCategory 推导，让正向条款也能参与维度覆盖。
+    // 已知缺口：inferRiskCategory 不产出「劳动用工合规」，劳动合同条款会落到邻近类或兜底类。
+    category: segment.category || inferRiskCategory(segment.content)
   }))
 }
 
