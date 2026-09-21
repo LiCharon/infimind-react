@@ -44,7 +44,10 @@ export function buildReviewUserMessage({ contractText, analysisReport, evidence,
       ? item.sourceNote?.startsWith('【Word 原生批注】') ? '人工批注风险规则' : '风险反例规则'
       : item.referenceRole === 'excellent_template' ? '正向模板条款' : '参考条款'
     const heading = [item.clauseNo, item.title, item.category].filter(Boolean).join('｜')
-    return `[E${index + 1}] ID=${item.evidenceId}｜${roleLabel}\n来源：${item.sourceName}｜${heading || '未编号条款'}｜${item.sourcePath || item.sourceFile || '本地素材'}\n主题：${(item.topicLabels || []).join('、') || '通用'}\n证据正文：${(item.text || '').slice(0, 2400)}`
+    // 严重度只对风险规则类证据存在（条款类为空）。此前它只躺在证据对象里、从没进过提示词，
+    // 等于修好了分级也没人用 —— 这里补上，Agent 2 才能参考它判断风险等级。
+    const severityLabel = item.severity ? `｜严重度：${item.severity}` : ''
+    return `[E${index + 1}] ID=${item.evidenceId}｜${roleLabel}\n来源：${item.sourceName}${severityLabel}｜${heading || '未编号条款'}｜${item.sourcePath || item.sourceFile || '本地素材'}\n主题：${(item.topicLabels || []).join('、') || '通用'}\n证据正文：${(item.text || '').slice(0, 2400)}`
   }).join('\n\n') || '无匹配证据。'
   const planSection = reviewPlan
     ? `${reviewPlan.contractType}；${reviewPlan.topics.map((topic) => `${topic.label}（${topic.priority}）`).join('、')}`
