@@ -79,7 +79,11 @@ function pickEnvironment(report) {
     reranker: config.reranker?.enabled ? `siliconflow:${config.reranker.model}` : 'heuristic',
     vector: config.vector?.runtimeDegraded ? 'lexical(runtime-degraded)' : (config.vector?.mode || 'unknown'),
     subTypeFilter: config.subTypeFilter?.requested ? 'on' : 'off',
-    contractTypeHint: config.contractTypeHint === false ? 'off' : 'on'
+    contractTypeHint: config.contractTypeHint === false ? 'off' : 'on',
+    // 9-22 的教训：cap 3→4→5 改了三次，基线口径跟着变，全靠人肉记得 --update——
+    // 指纹不记 cap/limit 的话，门禁会拿旧口径的基线静默判新口径的结果
+    cap: config.referenceCombo?.cap ?? '(未记录)',
+    limit: config.topK ?? '(未记录)'
   }
 }
 
