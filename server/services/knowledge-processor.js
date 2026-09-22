@@ -61,6 +61,35 @@ export function splitIntoClauses(text) {
 }
 
 /** 将坏例中的人工批注转成可检索、可复用的风险规则。 */
+/**
+ * 汇总式批注拆分 —— **实测后决定不启用**，代码保留在此仅作记录。
+ *
+ * 背景：两类批注粒度差 10 倍。租赁/买卖等是逐条 `【风险批注N：…】`（每份抽 15~18 条）；
+ * 委托/中介/保证/知产等是末尾一大段 `（风险分析：…修改建议：…）`，一段里塞了 2~3 个风险点，
+ * 整段被存成 1 条 ⇒ 每份只抽出 1~3 条。猜测拆开能补回一批证据。
+ *
+ * 实测（41 例，heuristic 口径，拆分后规则 604→637）：
+ *   拆全量：召回 +1.20pp、精度 −1.02pp
+ *   只拆低密度文档：召回 +0.62pp、精度 −0.21pp
+ * ⇒ 召回涨的与精度掉的是同一量级（都在 1pp 噪声区间），净收益不明，却要长期背碎片化风险
+ *   ⇒ **不采用**。真要补证据，靠补素材而不是切碎现有批注。
+ */
+export function splitSummaryAnnotation(normalized) {
+  const SUMMARY_MIN_CHARS = 150
+  const SPLIT_MIN_CHARS = 24
+  if (normalized.length < SUMMARY_MIN_CHARS) return null
+  const matched = normalized.match(/风险分析[：:]([\s\S]*?)(?:修改建议[：:]|建议[：:]|$)/)
+  if (!matched) return null
+  const advice = (normalized.match(/修改建议[：:]([\s\S]*)$/) || [])[1] || ''
+  const sentences = String(matched[1] || '')
+    .split(/(?<=[。；])/)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length >= SPLIT_MIN_CHARS)
+  if (sentences.length < 2) return null
+  const suffix = advice.trim() ? ` 修改建议：${advice.trim()}` : ''
+  return sentences.map((sentence) => `风险分析：${sentence}${suffix}`)
+}
+
 export function extractRiskRules(text, clauses) {
   const source = String(text || '')
   const annotations = [
