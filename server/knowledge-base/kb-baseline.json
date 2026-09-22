@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-21T07:31:57.779Z",
+  "updatedAt": "2026-09-22T03:12:01.533Z",
   "note": "知识库评测基线。由 check-kb-baseline.js --update 写入，人工确认无问题后再提交。",
   "assertionRule": "断言：精度不得下降、对准度指标不得升高（容差 0.01）。召回只记录、不参与判定。",
   "tolerance": 0.01,
@@ -11,8 +11,8 @@
     "contractTypeHint": "on"
   },
   "metrics": {
-    "finalCategoryRecall": 0.5893,
-    "finalCategoryPrecision": 0.7195,
+    "finalCategoryRecall": 0.6593,
+    "finalCategoryPrecision": 0.7187,
     "finalTypeMismatchRate": 0,
     "finalEmptyRate": 0,
     "finalZeroRecallRate": 0.0244
