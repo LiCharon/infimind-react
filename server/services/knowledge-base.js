@@ -24,7 +24,10 @@ const RRF_K = 60
  */
 export const DEFAULT_EVIDENCE_LIMIT = 12
 export const EVIDENCE_CANDIDATE_LIMIT = 48
-export const EVIDENCE_PER_DOCUMENT_CAP = 3
+// 每文档证据上限。2026-09-22 实测参数矩阵：3→4 是帕累托改进（41 例、heuristic+向量口径）——
+// 召回 0.5955→0.6312（+3.57pp）且精度 0.7195→0.7327（+1.32pp）；limit 不变 ⇒ 提示词长度零成本。
+// 再往上（cap≥6）就开始用精度换召回了（见 evaluation-report.json 的 sensitivity 矩阵）。
+export const EVIDENCE_PER_DOCUMENT_CAP = 4
 
 /**
  * 模板子类型目录（`knowledge-base/sub-types.json`）。
