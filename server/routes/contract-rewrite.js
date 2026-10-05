@@ -108,13 +108,13 @@ const DRAFT_CHAT_SYSTEM_PROMPT = `你是法飞飞合同起草助手。根据对�
 
 const isFakeLlm = () => String(process.env.TASK_FAKE_LLM || '').toLowerCase() === 'true'
 
-const resolveDraftAction = async ({ message, hasExistingDraft, attachments, model, operation }) => {
-  const resolved = await resolveDraftIntent({ operation, message, hasExistingDraft, attachments, model, fakeLlm: isFakeLlm() })
+const resolveDraftAction = async ({ message, hasExistingDraft, attachments, model, operation, mode }) => {
+  const resolved = await resolveDraftIntent({ operation, message, hasExistingDraft, attachments, model, mode, fakeLlm: isFakeLlm() })
   return resolved.action
 }
 
 // 分类失败不影响主流程：关键词和通用模板仍能让未知合同类型正常起草。
-const classifyContractDraft = async ({ instruction, referenceMaterials, model }) => {
+const classifyContractDraft = async ({ instruction, referenceMaterials, model, mode }) => {
   const fallbackInput = `${instruction}\n${referenceMaterials.map((item) => `${item.name}\n${item.text}`).join('\n')}`
   const fallback = guessContractType(fallbackInput)
   if (isFakeLlm()) return fallback
@@ -122,9 +122,9 @@ const classifyContractDraft = async ({ instruction, referenceMaterials, model })
     const result = await chat(CONTRACT_TYPE_CLASSIFIER_SYSTEM_PROMPT, buildContractTypeClassifierMessage({ instruction, referenceMaterials }), {
       model,
       temperature: 0,
-      maxTokens: 180,
-      thinking: { type: 'enabled' },
-      reasoningEffort: 'low'
+      maxTokens: mode === 'fast' ? 512 : 2048,
+      thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
+      ...(mode === 'fast' ? {} : { reasoningEffort: 'low' })
     })
     return parseContractTypeClassification(result, fallbackInput)
   } catch (error) {
@@ -135,10 +135,11 @@ const classifyContractDraft = async ({ instruction, referenceMaterials, model })
 
 /**
  * POST /api/contract-draft
- * 单模型合同起草：固定使用 DeepSeek Flash，并开启 thinking。
+ * 单模型合同起草：使用 DeepSeek Flash，按用户选择开启或关闭 thinking。
  * Body: { message, history?: Array<{role, content}> }
  */
 router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
+  const mode = req.body?.mode === 'fast' ? 'fast' : 'thinking'
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : ''
   const operation = typeof req.body?.operation === 'string' ? req.body.operation.trim() : ''
   let history = []
@@ -184,7 +185,7 @@ router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
       throw new Error(`参考材料正文超过 ${MAX_DRAFT_REFERENCE_TEXT} 字符，请减少附件或拆分后重试`)
     }
     const hasExistingDraft = history.some((item) => item?.role === 'assistant' && String(item?.content || '').includes('【当前合同草稿'))
-    const action = await resolveDraftAction({ message, hasExistingDraft, attachments, model, operation })
+    const action = await resolveDraftAction({ message, hasExistingDraft, attachments, model, operation, mode })
     if (action === 'clarify') {
       writeSSE('chat.start', { model: isFakeLlm() ? 'fake' : model, label: '需要补充本轮起草用途…' })
       writeSSE('chat.delta', { content: DRAFT_INTENT_CLARIFICATION })
@@ -202,8 +203,9 @@ router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
           temperature: 0.3,
           maxTokens: 2048,
           history,
-          thinking: { type: 'enabled' },
-          reasoningEffort: 'medium'
+          thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
+          ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }),
+          requestTimeoutMs: mode === 'fast' ? 120000 : 240000
         })) {
           if (chunk.content) writeSSE('chat.delta', { content: chunk.content })
         }
@@ -213,7 +215,7 @@ router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
       return
     }
     writeSSE('draft.progress', { label: '正在识别合同类型并加载专项条款框架…' })
-    const classification = await classifyContractDraft({ instruction: message, referenceMaterials, model })
+    const classification = await classifyContractDraft({ instruction: message, referenceMaterials, model, mode })
     const typeProfile = classification.profile
     writeSSE('draft.type', { typeId: typeProfile.id, label: `已识别为：${typeProfile.label}${typeProfile.risk === 'high' ? '（需专项复核）' : ''}`, risk: typeProfile.risk, confidence: classification.confidence })
     writeSSE('draft.start', { model, label: attachments.length ? `正在依据${typeProfile.label}专项框架结合参考文件起草…` : `正在依据${typeProfile.label}专项框架起草…`, attachments: referenceMaterials.map((item) => item.name) })
@@ -226,8 +228,9 @@ router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
         temperature: 0.2,
         maxTokens: 12288,
         history,
-        thinking: { type: 'enabled' },
-        reasoningEffort: 'medium'
+        thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
+        ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }),
+        requestTimeoutMs: mode === 'fast' ? 120000 : 240000
       })) {
         if (!chunk.content) continue
         draftText += chunk.content

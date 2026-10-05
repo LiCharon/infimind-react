@@ -59,7 +59,7 @@ export function buildRewriteUserMessage({ contractText, analysisReport, reviewRe
           `  风险：${member.risk}`,
           `  建议：${member.advice}${member.replacement ? `\n  建议替换文本：${member.replacement}` : ''}`
         ].join('\n')).join('\n')
-        return `${index + 1}. findingId：${finding.id}\n修订组关系：${finding.relation || 'independent'}｜成员问题 ${members.length} 个\n位置：${finding.location || '相关条款'}（定位 ${finding.anchor}）\n统一修改范围：${finding.originalText}\n组内问题：\n${memberSection}`
+        return `${index + 1}. findingId：${finding.id}\n修订组关系：${finding.relation || 'independent'}｜成员问题 ${members.length} 个\n位置：${finding.location || '相关条款'}（定位 ${finding.anchor}）\n统一修改范围：${finding.originalText}\n组内问题：\n${memberSection}${finding.repairInstructions ? `\n最终复核发现的问题（本次必须逐项修复，不重复旧方案）：${finding.repairInstructions}` : ''}`
       }).join('\n\n')
     : reviewReport || '未提供批注。'
 

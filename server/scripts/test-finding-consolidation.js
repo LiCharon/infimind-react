@@ -192,6 +192,8 @@ const invalidLocalization = mergeRevisions([revisionGroup], JSON.stringify({
 assert.ok(invalidLocalization.revisions[0].localizedEdits.length > 0, '局部化协议异常时仍应保留可定位的 fallback 编辑')
 assert.ok(invalidLocalization.revisions[0].localizedEdits.every((edit) => edit.localizationStatus === 'finding-fallback'))
 assert.ok(invalidLocalization.revisions[0].localizedEdits.every((edit) => edit.replacementText !== invalidLocalization.revisions[0].rewrittenText))
+assert.ok(invalidLocalization.revisions[0].localizedEdits.every((edit) => edit.operation === 'notice'), '缺少可信局部替换时保留提醒，不能给出空替换指令')
+assert.ok(invalidLocalization.revisions[0].rewrittenText, '提醒回退仍保留完整条款建议')
 
 const outOfRangeLocalization = mergeRevisions([revisionGroup], JSON.stringify({
   revisions: [{

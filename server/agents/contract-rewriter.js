@@ -17,7 +17,7 @@ import { AGENT_3_SYSTEM_PROMPT, buildRewriteUserMessage } from '../prompts/agent
  * @param {function} onChunk - 每收到一个 token 时的回调（用于前端进度提示，非逐字展示）
  * @returns {Promise<string>} 模型返回的完整 JSON 文本
  */
-export async function rewriteContract({ contractText, analysisReport, reviewReport, findings }, onChunk, model = getProModel()) {
+export async function rewriteContract({ contractText, analysisReport, reviewReport, findings, completedRevisions = [] }, onChunk, model = getProModel(), { systemPromptSuffix = '', requireComplete = false, ...completionOptions } = {}) {
   const userMessage = buildRewriteUserMessage({
     contractText,
     analysisReport,
@@ -26,20 +26,34 @@ export async function rewriteContract({ contractText, analysisReport, reviewRepo
   })
 
   let fullOutput = ''
+  let finishReason = null
 
-  for await (const chunk of streamChat(AGENT_3_SYSTEM_PROMPT, userMessage, {
+  const systemPrompt = systemPromptSuffix ? `${AGENT_3_SYSTEM_PROMPT}\n\n${systemPromptSuffix}` : AGENT_3_SYSTEM_PROMPT
+  const context = completedRevisions.length ? `\n\n其他组已完成的修订（只用于一致性检查，不重复输出）：${JSON.stringify(completedRevisions.map(({ findingId, rewrittenText, action }) => ({ findingId, rewrittenText, action })))}` : ''
+  for await (const chunk of streamChat(systemPrompt, userMessage + context, {
     model,
     temperature: 0.3,
     // 每条 revision 含完整改写条款（30~150 字）+ 批注（30~80 字），13 条约需 6~10k tokens。
     // 预留充足空间避免输出被 maxTokens 截断导致 JSON 不完整。
-    maxTokens: 16384
+    maxTokens: 16384,
+    ...completionOptions
   })) {
+    if (chunk.finishReason) finishReason = chunk.finishReason
     if (chunk.content) {
       fullOutput += chunk.content
       if (onChunk) onChunk(chunk.content)
     }
+    if (requireComplete && finishReason === 'stop') break
   }
 
+  if (requireComplete && finishReason === 'length') {
+    const error = new Error('局部修订输出达到模型长度上限')
+    error.code = 'rewrite_output_truncated'
+    throw error
+  }
+  if (requireComplete && finishReason !== 'stop') {
+    throw Object.assign(new Error('局部修订连接未完整结束'), { code: 'labor_revision_incomplete', retryable: true })
+  }
   return fullOutput
 }
 

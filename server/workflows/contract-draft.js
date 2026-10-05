@@ -132,6 +132,8 @@ export async function resolveDraftAction({
   hasExistingDraft,
   attachments = [],
   model = getFlashModel(),
+  mode = 'thinking',
+  signal,
   fakeLlm = false,
   chatFn = chat
 } = {}) {
@@ -142,8 +144,9 @@ export async function resolveDraftAction({
     const result = await chatFn(DRAFT_ACTION_CLASSIFIER_SYSTEM_PROMPT, `用户本轮消息：${message}`, {
       model,
       temperature: 0,
-      maxTokens: 40,
-      thinking: { type: 'disabled' }
+      maxTokens: mode === 'fast' ? 128 : 2048,
+      thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
+      ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }), signal
     })
     return draftActionFromResult(result) || (hasExplicitDraftIntent(message) ? 'draft' : (likelyChatIntent(message) ? 'chat' : 'clarify'))
   } catch (error) {
@@ -189,6 +192,8 @@ export async function resolveDraftIntent({
   hasExistingDraft = false,
   attachments = [],
   model = getFlashModel(),
+  mode = 'thinking',
+  signal,
   fakeLlm = false,
   chatFn = chat,
   classifyAction = resolveDraftAction
@@ -215,7 +220,7 @@ export async function resolveDraftIntent({
   }
 
   if (hasExistingDraft && !attachments.length) {
-    const action = await classifyAction({ message, hasExistingDraft, attachments, model, fakeLlm, chatFn })
+    const action = await classifyAction({ message, hasExistingDraft, attachments, model, mode, signal, fakeLlm, chatFn })
     if (action === 'draft') return { action, operation: inferDraftOperation({ message, hasExistingDraft, attachments }), source: 'classifier' }
     if (action === 'chat') return { action, operation: DRAFT_OPERATIONS.CHAT, source: 'classifier' }
   }
@@ -226,6 +231,8 @@ export async function classifyContractDraft({
   instruction,
   referenceMaterials = [],
   model = getFlashModel(),
+  mode = 'thinking',
+  signal,
   fakeLlm = false,
   chatFn = chat
 } = {}) {
@@ -236,9 +243,9 @@ export async function classifyContractDraft({
     const result = await chatFn(CONTRACT_TYPE_CLASSIFIER_SYSTEM_PROMPT, buildContractTypeClassifierMessage({ instruction, referenceMaterials }), {
       model,
       temperature: 0,
-      maxTokens: 180,
-      thinking: { type: 'enabled' },
-      reasoningEffort: 'low'
+      maxTokens: mode === 'fast' ? 512 : 2048,
+      thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
+      ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }), signal
     })
     return parseContractTypeClassification(result, fallbackInput)
   } catch (error) {
@@ -349,7 +356,7 @@ const parseReferences = async ({ files, emit, checkpoint, getCheckpoint, updateF
   return referenceMaterials
 }
 
-const collectDraftText = async ({ instruction, referenceMaterials, typeProfile, history, model, operation, fakeLlm, streamFn, ensure }) => {
+const collectDraftText = async ({ instruction, referenceMaterials, typeProfile, history, model, operation, fakeLlm, streamFn, ensure, mode, signal }) => {
   if (fakeLlm) return buildFakeDraft({ instruction, operation, typeProfile, referenceMaterials })
   let draftText = ''
   for await (const chunk of streamFn(buildContractDraftSystemPrompt(typeProfile), buildContractDraftUserMessage({ instruction, referenceMaterials }), {
@@ -357,9 +364,11 @@ const collectDraftText = async ({ instruction, referenceMaterials, typeProfile, 
     temperature: 0.2,
     maxTokens: 12288,
     history,
-    thinking: { type: 'enabled' },
-    reasoningEffort: 'medium'
+    thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
+    ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }),
+    signal, requestTimeoutMs: mode === 'fast' ? 120000 : 240000
   })) {
+    ensure()
     if (chunk?.content) draftText += chunk.content
   }
   ensure()
@@ -374,6 +383,7 @@ export async function runContractDraft({
   checkpoint = async () => {},
   getCheckpoint = () => null,
   isCancellationRequested = () => false,
+  signal,
   updateFileParseStatus = () => {},
   fakeLlm = String(process.env.TASK_FAKE_LLM || '').toLowerCase() === 'true',
   model = getFlashModel(),
@@ -383,7 +393,8 @@ export async function runContractDraft({
 } = {}) {
   if (!task?.id) throw new DraftInputError('task_input_invalid', '缺少任务信息')
   if (task.productId && task.productId !== 'contract-draft') throw new DraftInputError('workflow_product_mismatch', '任务不是合同起草任务')
-  const ensure = () => { if (isCancellationRequested?.()) throw new TaskCancelledError() }
+  const mode = task.mode === 'fast' || input.mode === 'fast' ? 'fast' : 'thinking'
+  const ensure = () => { if (signal?.aborted || isCancellationRequested?.()) throw new TaskCancelledError() }
   const instruction = normalizeText(task.prompt || input.message, 16000)
   const baseDraft = normalizeDraftSnapshot(input.currentDraft || input.baseDraft)
   const normalizedOperation = normalizeDraftOperation(input.operation, { hasExistingDraft: Boolean(baseDraft?.draftText), attachments: files })
@@ -412,7 +423,7 @@ export async function runContractDraft({
   let classification = typeCheckpoint?.classification || null
   if (!classification) {
     await emit('stage.start', { stage: 'contract_type', label: '正在识别合同类型并加载专项条款框架' })
-    classification = await classifyType({ instruction, referenceMaterials, model, fakeLlm, chatFn })
+    classification = await classifyType({ instruction, referenceMaterials, model, mode, signal, fakeLlm, chatFn })
     await checkpoint('contract_type', { classification })
     await emit('stage.complete', {
       stage: 'contract_type',
@@ -438,7 +449,7 @@ export async function runContractDraft({
   if (!validation.valid) {
     await emit('stage.start', { stage: 'generation', label: '正在生成完整合同正文', operation })
     await emit('stage.progress', { stage: 'generation', message: '正在调用合同起草模型；完整结果校验通过后才会保存为正式草稿' })
-    draftText = await collectDraftText({ instruction, referenceMaterials, typeProfile: classification.profile, history, model, operation, fakeLlm, streamFn, ensure })
+    draftText = await collectDraftText({ instruction, referenceMaterials, typeProfile: classification.profile, history, model, operation, fakeLlm, streamFn, ensure, mode, signal })
     validation = validateDraftMarkdown(draftText)
     if (!validation.valid) {
       const error = new Error(validation.message)

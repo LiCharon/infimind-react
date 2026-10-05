@@ -92,10 +92,26 @@ export function splitSummaryAnnotation(normalized) {
 
 export function extractRiskRules(text, clauses) {
   const source = String(text || '')
-  const annotations = [
+  const inBracket = [
     ...findAnnotations(source, /【[^】]*(?:风险批注|风险分析|批注)[^】]*】/g),
     ...findAnnotations(source, /（(?:风险批注|风险分析)[^）]*）/g)
   ]
+  // 形态 B：标记内为空、批注文字写在标记之后（例：`【风险批注】：条款过于绝对…`）。
+  // 2026-09-23 修复：此前只认"文字写在括号内"的写法，"坏2"批次的 8 份合同（委托 1 / 运输 3 /
+  // 保管 2 / 仓储 2）因此整批未入库（约 200 处批注，占当时库里规则数的三分之一）。
+  // 判定方式：括号内**没有实质内容**（如只有 `风险批注`、`风险批注1`）时，取标记之后的同段文字；
+  // 括号内已有实质内容（`【风险批注2：…】`、`【风险批注1（违法双标条款）】`）时保持原写法，避免同一条批注被计两次。
+  const innerSubstance = (item) => {
+    const inner = item.text.replace(/^[【（]|[】）]$/g, '').trim()
+    const bare = inner.replace(/^(?:风险批注|风险分析|批注)/, '').replace(/^[\s\d]*/, '').trim()
+    return bare.length
+  }
+  const keptInBracket = inBracket.filter((item) => innerSubstance(item) >= 4)
+  const keptOffsets = new Set(keptInBracket.map((item) => item.startOffset))
+  const trailing = [...source.matchAll(/【[^】【]{0,10}?(?:风险批注|风险分析|批注)[^】【]{0,4}?】[：:]?\s*([^\n【（]{8,})/g)]
+    .filter((match) => !keptOffsets.has(match.index))
+    .map((match) => ({ text: `风险批注：${match[1].trim()}`, startOffset: match.index }))
+  const annotations = [...keptInBracket, ...trailing]
   const deduped = []
   const seen = new Set()
   for (const annotation of annotations) {

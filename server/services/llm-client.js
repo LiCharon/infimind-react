@@ -7,8 +7,10 @@ dotenv.config({ path: resolve(__dirname, '../../.env.local') })
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
-const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro'
-const DEEPSEEK_FLASH_MODEL = process.env.DEEPSEEK_FLASH_MODEL || 'deepseek-v4-flash'
+// V4.1 Flash is shared by both product modes. The mode controls thinking,
+// not the model id; legacy private .env.local values are intentionally ignored.
+const DEEPSEEK_MODEL = 'deepseek-flash'
+const DEEPSEEK_FLASH_MODEL = DEEPSEEK_MODEL
 const REQUEST_TIMEOUT_MS = 60_000
 const STREAM_IDLE_TIMEOUT_MS = 60_000
 
@@ -51,8 +53,8 @@ export async function getUserBalance() {
   }
 }
 
-function resolveThinkingOptions(model, thinking, reasoningEffort) {
-  const type = thinking?.type || (model === DEEPSEEK_FLASH_MODEL ? 'disabled' : 'enabled')
+function resolveThinkingOptions(_model, thinking, reasoningEffort) {
+  const type = thinking?.type === 'disabled' ? 'disabled' : 'enabled'
   return {
     thinking: { type },
     ...(type === 'enabled' ? { reasoning_effort: reasoningEffort || 'high' } : {})
@@ -109,7 +111,7 @@ function readWithTimeout(reader, controller, timeoutMs) {
   })
 }
 
-async function deepseekFetch(path, body, retries = 3, externalSignal) {
+async function deepseekFetch(path, body, retries = 3, externalSignal, requestTimeoutMs) {
   const url = `${DEEPSEEK_BASE_URL}${path}`
 
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -119,7 +121,7 @@ async function deepseekFetch(path, body, retries = 3, externalSignal) {
     const controller = new AbortController()
     const timeout = setTimeout(() => {
       abortRequest(controller)
-    }, REQUEST_TIMEOUT_MS)
+    }, requestTimeoutMs || REQUEST_TIMEOUT_MS)
     const abortExternal = () => abortRequest(controller)
     const cleanupExternal = () => externalSignal?.removeEventListener('abort', abortExternal)
     externalSignal?.addEventListener('abort', abortExternal, { once: true })
@@ -136,6 +138,7 @@ async function deepseekFetch(path, body, retries = 3, externalSignal) {
         clearTimeout(timeout)
         cleanupExternal()
         abortRequest(controller)
+        if (attempt === retries) throw createLlmError('模型请求限流（429）', { code: 'LLM_HTTP_429', retryable: true })
         const waitMs = Math.min(1000 * Math.pow(2, attempt), 30000)
         console.warn(`[llm-client] Rate limited. Retrying in ${waitMs}ms (attempt ${attempt}/${retries})`)
         await new Promise((r) => setTimeout(r, waitMs))
@@ -192,51 +195,94 @@ async function deepseekFetch(path, body, retries = 3, externalSignal) {
 }
 
 /**
- * 非流式调用 DeepSeek Chat
+ * 非流式调用 DeepSeek Chat，并保留完成原因与用量供结构化任务校验。
  * @param {string} systemPrompt
  * @param {string} userMessage
  * @param {object} options
- * @returns {Promise<string>}
+ * @returns {Promise<{content: string, finishReason: string|null, usage: object|null, empty: boolean}>}
  */
-export async function chat(systemPrompt, userMessage, options = {}) {
+export async function chatDetailed(systemPrompt, userMessage, options = {}) {
   const {
     model = DEEPSEEK_MODEL,
     temperature = 0.3,
     maxTokens = 8192,
     thinking,
     reasoningEffort,
-    signal
+    signal,
+    responseFormat,
+    maxAttempts = 3,
+    requestTimeoutMs
   } = options
 
   const messages = []
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt })
   }
-  messages.push({ role: 'user', content: userMessage })
+  messages.push({ role: 'user', content: normalizeMessageContent(userMessage) })
 
-  const { response, controller, cleanup } = await deepseekFetch('/chat/completions', {
+  const requestBody = {
     model,
     messages,
     temperature,
     max_tokens: maxTokens,
     ...resolveThinkingOptions(model, thinking, reasoningEffort)
-  }, 3, signal)
+  }
+  if (responseFormat?.type === 'json_object') requestBody.response_format = responseFormat
+
+  const requestStarted = Date.now()
+  const { response, controller, cleanup } = await deepseekFetch('/chat/completions', requestBody, maxAttempts, signal, requestTimeoutMs)
+  const deadline = requestTimeoutMs ? setTimeout(() => abortRequest(controller), Math.max(1, requestTimeoutMs - (Date.now() - requestStarted))) : null
 
   try {
     const data = await response.json()
-    const content = data?.choices?.[0]?.message?.content || ''
+    const choice = data?.choices?.[0]
+    const rawContent = choice?.message?.content
+    const content = typeof rawContent === 'string' ? rawContent : ''
+    const usage = data?.usage && typeof data.usage === 'object' ? data.usage : null
 
-    if (data?.usage) {
+    if (usage) {
       console.log(
-        `[llm-client] Tokens: prompt=${data.usage.prompt_tokens}, completion=${data.usage.completion_tokens}, total=${data.usage.total_tokens}`
+        `[llm-client] Tokens: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}`
       )
     }
 
-    return content
+    return {
+      content,
+      finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : null,
+      usage,
+      empty: !content.trim()
+    }
   } finally {
+    if (deadline) clearTimeout(deadline)
     abortRequest(controller)
     cleanup?.()
   }
+}
+
+function normalizeMessageContent(value) {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return String(value ?? '')
+  const parts = value.filter((part) => {
+    if (part?.type === 'text') return typeof part.text === 'string'
+    if (part?.type !== 'image_url') return false
+    const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url
+    return typeof url === 'string' && /^(data:image\/(?:jpeg|png|gif|webp);base64,|https:\/\/)/i.test(url)
+  })
+  return parts.map((part) => part.type === 'text'
+    ? { type: 'text', text: part.text }
+    : { type: 'image_url', image_url: typeof part.image_url === 'string' ? { url: part.image_url } : part.image_url })
+}
+
+/**
+ * 兼容既有调用方：普通聊天仍只返回文本。
+ * @param {string} systemPrompt
+ * @param {string} userMessage
+ * @param {object} options
+ * @returns {Promise<string>}
+ */
+export async function chat(systemPrompt, userMessage, options = {}) {
+  const response = await chatDetailed(systemPrompt, userMessage, options)
+  return response.content
 }
 
 /**
@@ -254,7 +300,11 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
     history = [],
     thinking,
     reasoningEffort,
-    signal
+    signal,
+    responseFormat,
+    maxAttempts = 3,
+    requestTimeoutMs,
+    onTransientError
   } = options
 
   const messages = []
@@ -267,21 +317,28 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
       .slice(-12)
       .forEach((message) => messages.push({ role: message.role, content: message.content.slice(0, 6000) }))
   }
-  messages.push({ role: 'user', content: userMessage })
+  messages.push({ role: 'user', content: normalizeMessageContent(userMessage) })
 
-  const inputChars = systemPrompt.length + userMessage.length
+  const inputChars = systemPrompt.length + (typeof userMessage === 'string' ? userMessage.length : JSON.stringify(userMessage).length)
   console.log(`[llm-client] Starting stream with model: ${model}, input ~${inputChars} chars`)
 
-  const { response, controller, cleanup } = await deepseekFetch('/chat/completions', {
+  const requestBody = {
     model,
     messages,
     temperature,
     max_tokens: maxTokens,
     stream: true,
     ...resolveThinkingOptions(model, thinking, reasoningEffort)
-  }, 3, signal)
+  }
+  if (responseFormat?.type === 'json_object') requestBody.response_format = responseFormat
+
+  const requestStarted = Date.now()
+  const { response, controller, cleanup } = await deepseekFetch('/chat/completions', requestBody, maxAttempts, signal, requestTimeoutMs)
+  let deadlineReached = false
+  const deadline = requestTimeoutMs ? setTimeout(() => { deadlineReached = true; abortRequest(controller) }, Math.max(1, requestTimeoutMs - (Date.now() - requestStarted))) : null
 
   if (!response.body) {
+    if (deadline) clearTimeout(deadline)
     abortRequest(controller)
     cleanup?.()
     throw createLlmError('DeepSeek 响应没有可读取的流式内容', {
@@ -305,6 +362,8 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
         if (signal?.aborted) {
           throw createLlmError('流式请求已取消', { code: 'LLM_REQUEST_ABORTED', retryable: false, cause: readError })
         }
+        if (deadlineReached) throw createLlmError('模型请求达到单次时间限制', { code: 'LLM_REQUEST_TIMEOUT', retryable: true, cause: readError })
+        onTransientError?.(readError)
         if (readError?.code === 'LLM_STREAM_TIMEOUT') throw readError
         if (receivedChunks === 0) {
           throw createLlmError(`流读取失败（尚未收到任何数据，可能是输入过大或 API 拒绝请求）: ${describeError(readError)}`, {
@@ -341,7 +400,10 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
           try {
             const parsed = JSON.parse(jsonStr)
             const choice = parsed.choices?.[0]
-            if (!choice) continue
+            if (!choice) {
+              if (parsed.usage) yield { content: '', reasoning: '', finishReason: null, usage: parsed.usage }
+              continue
+            }
 
             const delta = choice.delta ?? {}
             const content = delta.content ?? ''
@@ -354,7 +416,8 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
             yield {
               content,
               reasoning,
-              finishReason: choice.finish_reason ?? null
+              finishReason: choice.finish_reason ?? null,
+              usage: parsed.usage || null
             }
           } catch {
             // 跳过不完整 JSON
@@ -364,6 +427,7 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
       }
     }
   } finally {
+    if (deadline) clearTimeout(deadline)
     reader.releaseLock()
     abortRequest(controller)
     cleanup?.()

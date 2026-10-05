@@ -71,3 +71,12 @@
   .prototype-composer-wrap { padding: 12px 14px 16px; }
   .prototype-composer { min-height: 102px; padding: 13px 15px 10px; border-radius: 20px; }
 }
+
+/* Prototype tools share the workbench shell; business capabilities remain placeholders. */
+.contract-chat.prototype-chat .prototype-chat-sidebar { width: 268px; flex-basis: 268px; min-height: 0; }
+.contract-chat.prototype-chat.history-collapsed .prototype-chat-sidebar { width: 0; flex-basis: 0; }
+.prototype-chat .prototype-thread-list { flex: 1; min-height: 0; align-content: start; }
+.prototype-chat .prototype-chat-main { min-height: 0; height: 100%; }
+.prototype-chat .prototype-composer-wrap { position: absolute; left: 0; width: 100%; }
+.prototype-chat .prototype-thread > button:first-child { display: flex; width: 100%; align-items: center; }
+.prototype-chat .prototype-thread .history-row-copy { display: flex; flex-direction: column; gap: 3px; }

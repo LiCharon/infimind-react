@@ -1,5 +1,5 @@
 import { extractText } from '../services/file-parser.js'
-import { searchEvidence, DEFAULT_EVIDENCE_LIMIT } from '../services/knowledge-base.js'
+import { searchEvidence, getWholeTemplateForReview, DEFAULT_EVIDENCE_LIMIT } from '../services/knowledge-base.js'
 import { buildReviewPlan, withTypeNoticeInResult, withTypeNoticeInReport } from '../services/review-plan.js'
 import { buildReviewResult, renderReviewReport, extractReviewPayload, findingSimilarity } from '../services/annotation-locator.js'
 import { buildRevisionGroups } from '../services/finding-consolidator.js'
@@ -59,8 +59,13 @@ const modelFor = (mode) => mode === 'fast'
   ? { model: getFlashModel(), thinking: { type: 'disabled' }, maxTokens: 2048 }
   : { model: getProModel(), thinking: { type: 'enabled' }, reasoningEffort: 'high', maxTokens: 4096 }
 
-const isValidAttachment = (file) => ACCEPTED_TYPES.includes(file?.mimetype) ||
-  /\.(pdf|doc|docx|rtf|odt|xls|xlsx|ods|ppt|pptx|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|png|jpg|jpeg|webp|bmp|tif|tiff|gif)$/i.test(file?.originalname || '')
+const isValidAttachment = (file) => {
+  const name = file?.originalname || ''
+  // MIME is client-controlled. A supplied extension must be one the parser
+  // supports; MIME remains a fallback for files without an extension.
+  if (/\.[^./\\]+$/.test(name)) return /\.(pdf|doc|docx|rtf|odt|xls|xlsx|ods|ppt|pptx|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|png|jpg|jpeg|webp|bmp|tif|tiff|gif)$/i.test(name)
+  return ACCEPTED_TYPES.includes(file?.mimetype)
+}
 
 const checkpointValue = (getCheckpoint, stage) => {
   const value = getCheckpoint?.(stage)
@@ -246,6 +251,8 @@ export async function runContractReview({
   ensure()
   let evidence = checkpointValue(getCheckpoint, 'knowledge')?.evidence || []
   let reviewPlan = checkpointValue(getCheckpoint, 'knowledge')?.reviewPlan || null
+  // 整份范本通道：与证据通道分离，只作 Agent 2 的结构参照（不进证据交付、不参与精度）
+  let wholeTemplate = checkpointValue(getCheckpoint, 'knowledge')?.wholeTemplate || null
   await emit('stage.start', { stage: 'knowledge', label: '正在检索合同条款与风险证据' })
   if (!reviewPlan) {
     reviewPlan = buildReviewPlan({ analysisReport, contractText: parsedText, userInstruction: task.prompt })
@@ -253,11 +260,20 @@ export async function runContractReview({
     try {
       // 证据条数取自 knowledge-base.js 的唯一定义，避免生产与评测各写一个值
       evidence = await searchEvidence(reviewPlan, { limit: DEFAULT_EVIDENCE_LIMIT, subType: reviewPlan.subType })
+      // 整份范本通道（RAG_WHOLE_TEMPLATE=off 可整体关闭）：交付证据里的正向模板经
+      // diversifyEvidence 保底，取其中得分最高（排序最前）的一份作 Agent 2 的结构参照
+      const exemplarEnabled = process.env.RAG_WHOLE_TEMPLATE !== 'off'
+      const exemplar = exemplarEnabled ? evidence.find((item) => item.referenceRole === 'excellent_template' && item.kind === 'clause') : null
+      if (exemplar) wholeTemplate = getWholeTemplateForReview(exemplar.templateId)
       await emit('templates.found', {
         count: evidence.length,
         // 内部诊断：类型判定的来源、Agent 1 声明过但库内没有的类型名、是否需要问用户。
         // 前端不渲染这个字段；留痕是为了出问题时能回放到具体某次请求。
-        diagnostics: { typeResolution: reviewPlan.typeResolution, subType: reviewPlan.subType },
+        diagnostics: {
+          typeResolution: reviewPlan.typeResolution,
+          subType: reviewPlan.subType,
+          wholeTemplate: wholeTemplate ? { name: wholeTemplate.name, clauseCount: wholeTemplate.clauses.length, chars: wholeTemplate.chars } : null
+        },
         names: [...new Set(evidence.map((item) => item.sourceName))],
         references: evidence.map((item) => ({ evidenceId: item.evidenceId, name: item.sourceName, contractType: item.contractType, role: item.referenceRole || 'reference', kind: item.kind, clauseNo: item.clauseNo, category: item.category }))
       })
@@ -266,7 +282,7 @@ export async function runContractReview({
       evidence = []
       await emit('stage.progress', { stage: 'knowledge', message: '知识库检索暂时不可用，将继续进行审查' })
     }
-    await checkpoint('knowledge', { evidence, reviewPlan })
+    await checkpoint('knowledge', { evidence, reviewPlan, wholeTemplate })
   } else {
     await emit('stage.progress', { stage: 'knowledge', message: '已从检查点恢复审查计划和风险证据' })
   }
@@ -293,7 +309,8 @@ export async function runContractReview({
         reviewPlan,
         userInstruction: task.prompt,
         round,
-        previousFindings: accumulatedSummary
+        previousFindings: accumulatedSummary,
+        wholeTemplate
       }, modelProfile.model)
       let roundPayload
       try { roundPayload = extractReviewPayload(roundOutput) } catch (error) {
@@ -326,7 +343,7 @@ export async function runContractReview({
     if (reviewResult.stats.confirmed === 0) {
       await emit('stage.progress', { stage: 'review', message: '三轮未得到可定位批注，正在进行一次格式与定位复核' })
       try {
-        const recoveryOutput = await reviewContract({ contractText: parsedText, analysisReport, evidence, reviewPlan, userInstruction: `${task.prompt || '无'}\n\n【系统复核】前三轮未生成可确认的风险批注。请重新逐条审查合同，必须输出完整 JSON；只要存在风险或需完善事项，就必须给出条款位置、尽量逐字的 quote、风险和建议。不要输出行号，定位由程序完成。` }, modelProfile.model)
+        const recoveryOutput = await reviewContract({ contractText: parsedText, analysisReport, evidence, reviewPlan, userInstruction: `${task.prompt || '无'}\n\n【系统复核】前三轮未生成可确认的风险批注。请重新逐条审查合同，必须输出完整 JSON；只要存在风险或需完善事项，就必须给出条款位置、尽量逐字的 quote、风险和建议。不要输出行号，定位由程序完成。`, wholeTemplate }, modelProfile.model)
         const recoveryResult = buildReviewResult({ contractText: parsedText, modelOutput: recoveryOutput })
         if (recoveryResult.stats.confirmed > 0 || recoveryResult.stats.generated > reviewResult.stats.generated) reviewResult = recoveryResult
       } catch (error) { console.warn('[task-workflow] Review recovery failed:', error.message) }

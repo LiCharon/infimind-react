@@ -71,6 +71,12 @@ for (const item of evidence) {
 console.log(`      ${evidence.length} 条；严重度分布 ${JSON.stringify(severityOf)}`)
 console.log(`      证据来源合同类型：${[...contractTypes].join('、') || '(空)'}`)
 
+// 整份范本通道（与 workflow 同一选择逻辑；RAG_WHOLE_TEMPLATE=off 关闭）
+const wholeOn = process.env.RAG_WHOLE_TEMPLATE !== 'off'
+const exemplar = wholeOn ? evidence.find((item) => item.referenceRole === 'excellent_template' && item.kind === 'clause') : null
+const wholeTemplate = exemplar ? kb.getWholeTemplateForReview(exemplar.templateId) : null
+console.log(`      范本通道：${wholeTemplate ? `${wholeTemplate.name}（${wholeTemplate.clauses.length} 条 / ${wholeTemplate.chars} 字）` : '(关闭或无正向模板)'}`)
+
 console.log('[4/4] Agent 2 审查…')
 const output = await reviewContract({
   contractText: target.content,
@@ -78,7 +84,8 @@ const output = await reviewContract({
   evidence,
   reviewPlan,
   userInstruction: '请识别合同中需要修改的风险条款。',
-  round: 1
+  round: 1,
+  wholeTemplate
 }, model)
 
 const parsed = extractReviewPayload(output) || {}
@@ -86,22 +93,34 @@ const findings = parsed.findings || []
 const levelOf = {}
 let withEvidence = 0
 const cited = new Set()
+// 范本通道的预期收益观察点：缺失事项类批注（建议补充/未约定/缺少条款）
+const supplementKeywords = /(建议补充|未约定|缺少|缺失|应增加|宜增加|未见.*条款|补充条款)/
+let supplementCount = 0
 for (const finding of findings) {
   levelOf[finding.level] = (levelOf[finding.level] || 0) + 1
   const refs = Array.isArray(finding.evidence) ? finding.evidence : []
   if (refs.length) withEvidence++
   for (const ref of refs) cited.add(String(ref).replace(/[^\d]/g, ''))
+  const text = `${finding.title || ''}${finding.risk || ''}${finding.advice || ''}`
+  if (supplementKeywords.test(text)) supplementCount++
 }
 console.log(`\n===== 结果 =====`)
-console.log(`批注 ${findings.length} 条｜等级分布 ${JSON.stringify(levelOf)}`)
+console.log(`模式：${wholeTemplate ? '带范本通道' : '基线（无范本）'}｜批注 ${findings.length} 条｜等级分布 ${JSON.stringify(levelOf)}`)
+console.log(`缺失事项类批注（建议补充/未约定等）：${supplementCount} 条`)
 console.log(`引用了知识库证据的批注：${withEvidence}/${findings.length}（${findings.length ? Math.round(withEvidence / findings.length * 100) : 0}%）`)
 console.log(`被引用的证据编号：${[...cited].sort().join('、') || '（无）'}，共 ${evidence.length} 条证据中的 ${cited.size} 条`)
 console.log(`结论：${String(parsed.conclusion || '').slice(0, 120)}`)
+console.log(`完整性清单（completeness）：${JSON.stringify(parsed.completeness || [])}`)
 console.log(`\n耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s`)
 console.log('\n--- 批注样例（前 5 条）---')
 for (const [index, finding] of findings.slice(0, 5).entries()) {
   console.log(`${index + 1}. [${finding.level}] ${finding.title}`)
   console.log(`   引用：${(finding.evidence || []).join('、') || '（未引用证据）'}`)
 }
+// 全量批注落盘，便于 A/B 逐条对比
+const outName = `e2e-${wholeTemplate ? 'with-whole' : 'baseline'}.json`
+const { writeFileSync } = await import('fs')
+writeFileSync(join(__dirname, '..', 'knowledge-base', outName), JSON.stringify({ mode: wholeTemplate ? 'with-whole' : 'baseline', contract: target.name, model, findings, completeness: parsed.completeness || [] }, null, 2))
+console.log(`全量批注已写 server/knowledge-base/${outName}`)
 db.close()
 kb.close()

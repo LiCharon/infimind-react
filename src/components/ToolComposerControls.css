@@ -1,0 +1,15 @@
+.contract-chat .tool-composer-controls { gap: 12px; }
+.contract-chat .tool-composer-controls .tool-thinking-toggle { padding: 7px 10px; border-radius: 8px; color: #73737b; font-weight: 500; }
+.contract-chat .tool-composer-controls .tool-thinking-toggle.active { color: #124775; background: #eaf2fb; }
+.tool-context { position: relative; }
+.contract-chat .tool-context-trigger { gap: 6px; color: #808089; font-size: 12px; font-weight: 400; }
+.tool-context-ring { width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; background: conic-gradient(#7f9cb8 var(--context-progress), #e9e9ec 0); position: relative; }
+.tool-context-ring::after { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: #fff; }
+.tool-context-popover { position: absolute; bottom: calc(100% + 18px); left: -10px; width: 340px; max-width: calc(100vw - 40px); padding: 20px; border: 1px solid #e5e5e9; border-radius: 18px; background: #fff; box-shadow: 0 10px 36px rgb(0 0 0 / 9%); color: #555560; z-index: 5; }
+.tool-context-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 15px; }
+.tool-context-heading strong { color: #19191d; }
+.tool-context-heading small { font-size: 13px; color: #909099; }
+.tool-context-track { height: 6px; overflow: hidden; margin: 16px 0; border-radius: 4px; background: #ececef; }
+.tool-context-track span { display: block; height: 100%; background: #8ba6be; }
+.tool-context-popover p { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid #f0f0f2; color: #9999a1; font-size: 12px; line-height: 1.65; }
+@media (max-width: 760px) { .tool-context-popover { left: -140px; width: 300px; } }

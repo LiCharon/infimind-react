@@ -24,6 +24,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import {
   initialize, listEvaluationCases, searchEvidence, getKnowledgeBaseStatus, close,
+  getWholeTemplateForReview,
   DEFAULT_EVIDENCE_LIMIT, EVIDENCE_CANDIDATE_LIMIT, EVIDENCE_PER_DOCUMENT_CAP,
   resolveSubType, getSubTypeFilterStats, resetSubTypeFilterStats
 } from '../services/knowledge-base.js'
@@ -165,6 +166,7 @@ async function main() {
   const caseReports = []
   const sweepRows = []
   const poolDigests = new Map()
+  const poolSignatures = new Map()
   const poolRecalls = new Map()
   const referenceKey = `${topK}/${EVIDENCE_PER_DOCUMENT_CAP}`
 
@@ -191,6 +193,15 @@ async function main() {
     const requestInfo = { contractType: plan.contractType, requestedSubType }
     const finalLayer = layerMetrics(production.evidence, expectedCategories, requestInfo)
     const candidateLayer = layerMetrics(production.candidates, expectedCategories, requestInfo)
+    // 整份范本通道（与证据通道分离，见 knowledge-base.getWholeTemplateForReview）：
+    // 与生产 workflow 同一选择逻辑 —— 交付证据里得分最高的正向模板条款所属文档。
+    // 只新增维度，不改动现有 recall/precision 公式与基线字段。
+    const exemplar = production.evidence.find((item) => item.referenceRole === 'excellent_template' && item.kind === 'clause')
+    const wholeTemplate = exemplar ? getWholeTemplateForReview(exemplar.templateId) : null
+    const wholeCats = [...new Set((wholeTemplate?.clauses || []).map((c) => c.category).filter(Boolean))]
+    const wholeRecall = expectedCategories.length ? expectedCategories.filter((c) => wholeCats.includes(c)).length / expectedCategories.length : 1
+    const combinedCategories = new Set([...finalLayer.categories, ...wholeCats])
+    const combinedRecall = expectedCategories.length ? expectedCategories.filter((c) => combinedCategories.has(c)).length / expectedCategories.length : 1
 
     caseReports.push({
       // 以下旧字段名与口径保持不变，便于与改前报告逐字段对比
@@ -211,6 +222,15 @@ async function main() {
       deliveredChars: finalLayer.chars,
       deliveredDocumentCount: finalLayer.documentCount,
       categoryPrecision: round4(finalLayer.categoryPrecision),
+      // 整份范本通道（新增维度）：模板单独算召回，合并召回 = 证据类别 ∪ 范本类别
+      wholeTemplate: wholeTemplate ? {
+        name: wholeTemplate.name,
+        clauseCount: wholeTemplate.clauses.length,
+        chars: wholeTemplate.chars,
+        categoryCount: wholeCats.length,
+        recall: round4(wholeRecall)
+      } : null,
+      combinedCategoryRecall: round4(combinedRecall),
       // 对口程度：类型错配率 + 子类型错配率（后者仅在请求过子类型时非 null）
       requestedType: plan.contractType,
       requestedSubType: requestInfo.requestedSubType,
@@ -242,11 +262,17 @@ async function main() {
         const run = isProductionCombo ? production : await runSearch(plan, item, { searchLimit: sweepLimit, perDocumentCap: sweepCap, subType: requestedSubType })
         const layer = isProductionCombo ? finalLayer : layerMetrics(run.evidence, expectedCategories)
         sweepRows.push({ key, categoryRecall: round4(layer.categoryRecall), categoryPrecision: round4(layer.categoryPrecision), count: layer.count, chars: layer.chars })
-        // 候选层解耦自检：池只可能在检索层变动时改变，与 limit / cap 无关
+        // 候选层解耦自检：池只可能在检索层变动时改变，与 limit / cap 无关。
+        // ⚠️ 稳定性判定用「类别集合签名」而不是 evidenceId 摘要：摘要对条目顺序敏感，
+        // 向量启用后并列分数的排序会抖动，导致明明池内容一致却报 unstable（2026-09-22 实测：
+        // 同一用例 5 种 (limit,cap) 组合的池 digest 全同、12 组合的候选层类别召回全为 0.8884）。
+        // digest 仍保留在报告里作内容指纹，不再参与判定。
         const pool = isProductionCombo ? candidateLayer : layerMetrics(run.candidates, expectedCategories)
         if (!poolDigests.has(key)) poolDigests.set(key, [])
+        if (!poolSignatures.has(key)) poolSignatures.set(key, [])
         if (!poolRecalls.has(key)) poolRecalls.set(key, [])
         poolDigests.get(key).push(pool.evidenceIdDigest)
+        poolSignatures.get(key).push([...pool.categories].sort().join(','))
         poolRecalls.get(key).push(round4(pool.categoryRecall))
       }
     }
@@ -280,11 +306,12 @@ async function main() {
 
   // 候选层解耦自检：以「生产组合」为基准；该组合由上面的 sweepLimits 保证一定被扫到。
   // 若基准缺失（例如有人把 topK 从 sweep 里排掉），退化为「所有其他组合都算不一致」，不会静默放过。
-  const referenceDigests = poolDigests.get(referenceKey) || []
-  const otherCombos = [...poolDigests.keys()].filter((key) => key !== referenceKey)
-  const decouplingMismatch = referenceDigests.length === 0
+  // 比较依据是类别集合签名（顺序不敏感），理由见上方注释。
+  const referenceSignatures = poolSignatures.get(referenceKey) || []
+  const otherCombos = [...poolSignatures.keys()].filter((key) => key !== referenceKey)
+  const decouplingMismatch = referenceSignatures.length === 0
     ? otherCombos
-    : otherCombos.filter((key) => poolDigests.get(key).join('|') !== referenceDigests.join('|'))
+    : otherCombos.filter((key) => poolSignatures.get(key).join('|') !== referenceSignatures.join('|'))
 
   const contractTypes = [...new Set(caseReports.map((row) => row.contractType))]
   const byContractType = contractTypes.map((contractType) => {
@@ -340,6 +367,17 @@ async function main() {
     layers: {
       candidate: aggregateLayer(candidateRows),
       final: aggregateLayer(finalRows)
+    },
+    // 整份范本通道（新增维度，不参与门禁的既有口径）：双通道 = 证据通道 ∪ 范本通道
+    // ⚠️ 口径提示：**生产**链路上范本是每次审查都注入的（workflow 默认开，RAG_WHOLE_TEMPLATE=off 可关），
+    // 但本报告的 layers.final 只统计「证据条」——范本单独记在 wholeTemplateChannel。
+    // 因此 layers.final 的数字**不等于**生产实际交给 Agent 2 的上下文量；两者要看不同的字段。
+    wholeTemplateChannel: {
+      presentRate: round4(mean(caseReports.map((row) => (row.wholeTemplate ? 1 : 0)))),
+      meanWholeRecall: round4(mean(caseReports.map((row) => (row.wholeTemplate ? row.wholeTemplate.recall : 0)))),
+      meanCombinedCategoryRecall: round4(mean(caseReports.map((row) => row.combinedCategoryRecall))),
+      meanClauseCount: Math.round(mean(caseReports.filter((row) => row.wholeTemplate).map((row) => row.wholeTemplate.clauseCount))),
+      meanChars: Math.round(mean(caseReports.filter((row) => row.wholeTemplate).map((row) => row.wholeTemplate.chars)))
     },
     timing: {
       meanMs: Math.round(mean(timings)),
@@ -409,6 +447,7 @@ async function main() {
   console.log(`[config] 评测 topK=${report.config.topK} 生产 limit=${report.config.productionEvidenceLimit} 口径一致=${report.config.topK === report.config.productionEvidenceLimit}`)
   console.log(`[layers] 候选层 recall=${report.layers.candidate.meanCategoryRecall} precision=${report.layers.candidate.meanCategoryPrecision} 条数=${report.layers.candidate.meanEvidenceCount} 文档=${report.layers.candidate.meanDocumentCount}`)
   console.log(`[layers] 最终层 recall=${report.layers.final.meanCategoryRecall} precision=${report.layers.final.meanCategoryPrecision} 条数=${report.layers.final.meanEvidenceCount} 文档=${report.layers.final.meanDocumentCount}`)
+  console.log(`[whole-template] 通道覆盖=${report.wholeTemplateChannel.presentRate} 模板召回=${report.wholeTemplateChannel.meanWholeRecall} 合并召回(证据∪范本)=${report.wholeTemplateChannel.meanCombinedCategoryRecall} 条款数=${report.wholeTemplateChannel.meanClauseCount} 字符=${report.wholeTemplateChannel.meanChars}`)
   // 对口程度：类别召回看不出"证据是不是来自同一类合同"，这两项专看这件事
   console.log(`[alignment] 最终层 类型错配率=${report.layers.final.meanTypeMismatchRate} 子类型错配率=${report.layers.final.meanAlienSubTypeRate ?? 'n/a'}（仅统计请求过子类型的用例）`)
   console.log(`[decoupling] 候选层跨 (limit × cap) 组合稳定=${report.decoupling.candidateLayerStable} 不一致=${report.decoupling.mismatchedCombos.join(',') || '无'}`)

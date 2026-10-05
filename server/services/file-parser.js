@@ -1,8 +1,9 @@
 import { readFile, writeFile, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
-import { join, extname, basename } from 'path'
+import { join, extname, basename, dirname, delimiter } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { pathToFileURL } from 'node:url'
 import JSZip from 'jszip'
 
 const execFileAsync = promisify(execFile)
@@ -15,12 +16,19 @@ const MACOS_TEXTUTIL_EXTENSIONS = new Set(['.rtf', '.odt'])
  * @param {{ buffer: Buffer, originalname: string, mimetype: string }} file
  * @returns {Promise<{ text: string, pageCount: number|null, metadata: object }>}
  */
-export async function extractText(file) {
+export async function extractText(file, options = {}) {
+  options.signal?.throwIfAborted()
   const extension = extname(file.originalname || '').toLowerCase()
   const mimeType = file.mimetype || ''
 
   if (extension === '.pdf' || mimeType === 'application/pdf') {
-    return extractPdfText(file)
+    return extractPdfText(file, options)
+  }
+
+  // The commercial-review UI exports a self-contained HTML document with a
+  // .doc suffix. Read that generated format directly instead of invoking LO.
+  if ((extension === '.doc' || mimeType === 'application/msword') && isHtmlDocument(file.buffer)) {
+    return extractPlainText(file, '.html')
   }
 
   if (extension === '.docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
@@ -53,7 +61,7 @@ export async function extractText(file) {
   }
 
   if (isImage(extension, mimeType)) {
-    return extractImageText(file)
+    return extractImageText(file, options)
   }
 
   throw new Error(`暂不支持的文件格式: ${extension || mimeType || '未知'}`)
@@ -69,6 +77,7 @@ export async function extractWordAnnotations(file) {
   const isDocx = extension === '.docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   const isDoc = extension === '.doc' || mimeType === 'application/msword' || isLegacyWord(file.buffer)
   if (!isDocx && !isDoc) return emptyWordAnnotations()
+  if (isDoc && !isLegacyWord(file.buffer) && isHtmlDocument(file.buffer)) return emptyWordAnnotations()
 
   try {
     // macOS textutil 转换 .doc 会丢弃 comments.xml；批注解析必须优先使用 LibreOffice。
@@ -94,21 +103,50 @@ export function stripNativeCommentText(text, annotations = []) {
 /**
  * PDF 文本提取
  */
-async function extractPdfText(file) {
+async function extractPdfText(file, { signal, recognizeImage = extractImageText } = {}) {
+  let parser
+  let abort
   try {
-    const pdfParse = (await import('pdf-parse')).default
-    const data = await pdfParse(file.buffer)
-
-    return {
-      text: data.text || '',
-      pageCount: data.numpages || null,
-      metadata: {
-        pages: data.numpages,
-        info: data.info ? { title: data.info.Title, author: data.info.Author } : {}
+    const { PDFParse } = await import('pdf-parse')
+    // Copy into a transferable Uint8Array; a pooled Node Buffer is not transferable.
+    parser = new PDFParse({ data: new Uint8Array(file.buffer) })
+    abort = () => { void parser.destroy().catch(() => {}) }
+    signal?.addEventListener('abort', abort, { once: true })
+    signal?.throwIfAborted()
+    const data = await parser.getText()
+    const pages = []
+    for (const page of data.pages || []) {
+      signal?.throwIfAborted()
+      if (page.text?.trim()) {
+        pages.push({ page: page.num, text: page.text, method: 'text' })
+        continue
+      }
+      // Render one empty-text page at a time; never render a whole PDF into memory.
+      try {
+        const rendered = await parser.getScreenshot({ partial: [page.num], desiredWidth: 1800, imageDataUrl: false })
+        const image = rendered.pages[0]
+        const recognized = image ? await recognizeImage({ originalname: `${file.originalname} 第${page.num}页.png`, buffer: Buffer.from(image.data) }, { signal }) : null
+        pages.push({ page: page.num, text: recognized?.text || '', method: 'ocr', confidence: recognized?.metadata?.confidence ?? null })
+      } catch (error) {
+        signal?.throwIfAborted()
+        // Preserve readable pages even when another scan cannot be recognized.
+        pages.push({ page: page.num, text: '', method: 'ocr', error: String(error.message || '').slice(0, 180) })
       }
     }
+    return {
+      text: pages.filter((page) => page.text.trim()).map((page) => `【第${page.page}页${page.method === 'ocr' ? '，OCR识别待核对' : ''}】\n${page.text}`).join('\n\n'),
+      pageCount: data.total || pages.length,
+      metadata: { pages, warnings: pages.filter((page) => !page.text.trim() || page.method === 'ocr').map((page) =>
+        !page.text.trim() || Number(page.confidence || 0) < 82
+          ? `第${page.page}页未读取成功或OCR置信度较低，请核对原件中的日期、金额及请求。`
+          : `第${page.page}页使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。`) }
+    }
   } catch (error) {
+    signal?.throwIfAborted()
     throw new Error(`PDF 解析失败: ${error.message}`)
+  } finally {
+    signal?.removeEventListener('abort', abort)
+    await parser?.destroy().catch(() => {})
   }
 }
 
@@ -379,9 +417,12 @@ function stripMarkup(source) {
  * 图片 OCR：先放大、灰度化、增强对比度，再以中英双语识别；低置信度时补跑稀疏文本模式。
  * Jimp 为纯 JavaScript 依赖，避免部署时编译原生图像库。
  */
-async function extractImageText(file) {
+async function extractImageText(file, { signal, createOcrWorker } = {}) {
+  let abort
+  let worker
   try {
-    const { createWorker } = await import('tesseract.js')
+    signal?.throwIfAborted()
+    const createWorker = createOcrWorker || (await import('tesseract.js')).createWorker
     const { Jimp, JimpMime } = await import('jimp')
     console.log(`[file-parser] Starting OCR for: ${file.originalname}`)
 
@@ -400,9 +441,27 @@ async function extractImageText(file) {
       console.warn(`[file-parser] Image preprocessing skipped for ${file.originalname}: ${error.message}`)
     }
 
-    const worker = await createWorker(['chi_sim', 'eng'])
+    // Initialization may load language resources. Stop waiting immediately on cancel,
+    // and release a worker that finishes initializing after the task has stopped.
+    const initializing = Promise.resolve(createWorker(['chi_sim', 'eng']))
+    let abortInitialization
+    try {
+      worker = signal ? await Promise.race([initializing, new Promise((_, reject) => {
+        abortInitialization = () => reject(signal.reason || new Error('OCR 初始化已停止'))
+        if (signal.aborted) abortInitialization()
+        else signal.addEventListener('abort', abortInitialization, { once: true })
+      })]) : await initializing
+    } catch (error) {
+      void initializing.then((lateWorker) => lateWorker.terminate()).catch(() => {})
+      throw error
+    } finally {
+      if (abortInitialization) signal.removeEventListener('abort', abortInitialization)
+    }
+    abort = () => { void worker.terminate().catch(() => {}) }
+    signal?.addEventListener('abort', abort, { once: true })
     let data
     try {
+      signal?.throwIfAborted()
       await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1', user_defined_dpi: '300' })
       const primary = (await worker.recognize(imageBuffer)).data
       data = primary
@@ -412,8 +471,10 @@ async function extractImageText(file) {
         if (ocrScore(alternate) > ocrScore(primary)) data = alternate
       }
     } finally {
-      await worker.terminate()
+      signal?.removeEventListener('abort', abort)
+      await worker.terminate().catch(() => {})
     }
+    signal?.throwIfAborted()
 
     const text = normalizeOcrText(data?.text || '')
     console.log(`[file-parser] OCR completed, text length: ${text.length}`)
@@ -425,10 +486,12 @@ async function extractImageText(file) {
         format: 'image',
         confidence: data?.confidence ?? null,
         languages: 'chi_sim+eng',
-        preprocessed
+        preprocessed,
+        warnings: ['本文件使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。']
       }
     }
   } catch (error) {
+    signal?.throwIfAborted()
     throw new Error(`图片 OCR 识别失败: ${error.message}`)
   }
 }
@@ -469,18 +532,51 @@ function isLegacyWord(buffer) {
   )
 }
 
-async function runLibreOfficeConversion(inputPath, outputDir, outputFormat = 'docx') {
-  const args = ['--headless', '--convert-to', outputFormat, '--outdir', outputDir, inputPath]
+function isHtmlDocument(buffer) {
+  const prefix = decodeTextBuffer(Buffer.from(buffer || []).subarray(0, 4096)).trimStart()
+  return /^(?:<!doctype\s+html\b|<html\b|<\?xml[\s\S]*?<html\b)/i.test(prefix)
+}
 
-  try {
-    await execFileAsync('libreoffice', args, { timeout: 60000 })
-  } catch (firstError) {
-    try {
-      await execFileAsync('soffice', args, { timeout: 60000 })
-    } catch {
-      throw new Error(`${firstError.message || 'libreoffice not available'}。Linux 服务器请安装 libreoffice。`)
+async function runLibreOfficeConversion(inputPath, outputDir, outputFormat = 'docx') {
+  // Each conversion has its own profile so concurrent uploads do not reuse a
+  // running desktop process or compete for LibreOffice's user-profile lock.
+  const profileUrl = pathToFileURL(join(outputDir, 'lo-profile')).href
+  const args = [`-env:UserInstallation=${profileUrl}`, '--headless', '--convert-to', outputFormat, '--outdir', outputDir, inputPath]
+  const commands = [String(process.env.LIBREOFFICE_BIN || '').trim(), 'libreoffice', 'soffice']
+  if (process.platform === 'win32') {
+    const installRoots = [process.env.LIBREOFFICE_HOME, 'E:\\LibreOffice'].filter(Boolean)
+    for (const root of installRoots) {
+      commands.push(join(root, 'program', 'soffice.com'), join(root, 'program', 'soffice.exe'))
+      commands.push(join(root, 'soffice.com'), join(root, 'soffice.exe'))
+    }
+    for (const programFiles of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]) {
+      if (programFiles) {
+        commands.push(join(programFiles, 'LibreOffice', 'program', 'soffice.com'))
+        commands.push(join(programFiles, 'LibreOffice', 'program', 'soffice.exe'))
+      }
     }
   }
+
+  let missingCommandError = null
+  for (const command of [...new Set(commands.filter(Boolean))]) {
+    try {
+      const commandDirectory = dirname(command)
+      const env = process.platform === 'win32' && commandDirectory !== '.'
+        ? { ...process.env, PATH: [commandDirectory, process.env.PATH].filter(Boolean).join(delimiter) }
+        : process.env
+      await execFileAsync(command, args, { timeout: 60000, env, windowsHide: true })
+      return
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
+        missingCommandError ||= error
+        continue
+      }
+      throw new Error(`LibreOffice 转换失败：${error.message || '转换进程异常'}`)
+    }
+  }
+
+  const detail = String(missingCommandError?.message || '未找到可执行文件').slice(0, 240)
+  throw new Error(`当前服务进程找不到 LibreOffice（${detail}）。请将其加入启动服务时的 PATH，设置 LIBREOFFICE_BIN 指向 soffice 可执行文件，或设置 LIBREOFFICE_HOME 为安装目录；也可将 .doc 另存为 .docx 后上传。`)
 }
 
 function sanitizeFilename(name) {
