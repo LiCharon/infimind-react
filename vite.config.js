@@ -7,6 +7,27 @@ import { resolve } from 'path'
 dotenv.config({ path: '.env.local' })
 
 /**
+ * 双核浏览器的「切内核」声明 + IE「文档模式」声明。
+ *
+ * 两条解决的是同一个现网问题：**360 等双核浏览器把本站落进 IE 兼容模式后整页白屏**
+ * （IE 内核不认识 `<script type="module">`，DOM 完整但什么都不渲染）。但两者分工不同，
+ * 只写一条不够：
+ *
+ *  - `renderer=webkit` 才是**真正切换内核**的那条。国产双核浏览器（360/QQ/搜狗）
+ *    只认它，取值仅 `webkit`/`ie-comp`/`ie-stand` 三个，且**区分大小写**。
+ *    本站是 React SPA，必须跑在 Chromium 内核上，所以强制 webkit。
+ *  - `X-UA-Compatible: IE=edge` 只影响 **IE 的文档模式**（避免落进 quirks 模式），
+ *    **并不切换内核**——极速模式下双核浏览器根本不解析它。单靠它白屏依旧。
+ *
+ * ⚠️ 必须紧跟在 `<meta charset>` 之后：双核浏览器要求在 <head> 最前部读到 renderer，
+ * 顺序挪后指令就不生效。另外用户手动选过内核时，其优先级高于这里的 meta。
+ */
+const HEAD_COMPAT_META = [
+  '    <meta name="renderer" content="webkit">',
+  '    <meta http-equiv="X-UA-Compatible" content="IE=edge">'
+].join('\n')
+
+/**
  * 标签页图标（favicon）的 <head> 声明。
  *
  * 为什么四行都要有：老 Safari（15 以下）不认 PNG 的 `rel="icon"`，只认 /favicon.ico，
@@ -24,19 +45,15 @@ const FAVICON_LINKS = [
 // 动态生成HTML的插件
 function generateHTMLPlugin() {
   /**
-   * ⚠️ `X-UA-Compatible: IE=edge` 不是历史包袱，它解决一个现网问题：
-   * **360 浏览器等双核浏览器会默认落进 IE 兼容模式**，而 IE 内核根本不认识
-   * `<script type="module">` —— 表现是整页白屏（不是崩溃）。加上这条 meta
-   * 会强制它们使用可用的最高内核（Chromium/WebKit），走正常渲染路径。
-   *
-   * 注意 index.html 是**构建产物**（已在 .gitignore 中，且本插件仅在文件不存在时生成），
-   * 所以修复必须写在这里，直接改 index.html 会在下次构建时被沿用/覆盖而不生效。
+   * index.html 是**构建产物**（在 .gitignore 中），所以 `<head>` 内的修复必须写在
+   * 这里——直接改 index.html 会在下次构建时被重新生成覆盖。ensureHtml 负责对
+   * 已存在的旧版本做定向补写。
    */
   const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+${HEAD_COMPAT_META}
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 ${FAVICON_LINKS}
     <title>法飞飞-你的用工风险专家</title>
@@ -52,13 +69,19 @@ ${FAVICON_LINKS}
       writeFileSync(htmlPath, htmlContent)
       return
     }
-    // 已存在的 index.html 可能是旧版本（缺 X-UA-Compatible 或缺 favicon 声明）。
-    // 逐项检查、只补缺失的那部分，避免每次构建都无谓改动文件时间戳，
-    // 也避免覆盖掉文件里已有的其它内容。
+    // 已存在的 index.html 可能是旧版本。逐项检查、只补缺失的那部分，避免每次构建都
+    // 无谓改动文件时间戳，也避免覆盖掉文件里已有的其它内容。
+    //
+    // 兼容性 meta 按「一整块」补齐，而不是逐条补：它俩同属双核浏览器白屏这一个问题，
+    // 且 renderer 必须排在 X-UA-Compatible 前面。逐条补会留下"只有半条、且顺序不对"
+    // 的状态（本仓库当前的 index.html 恰好就是这种：有 X-UA-Compatible、没有 renderer）。
     const current = readFileSync(htmlPath, 'utf8')
     let next = current
-    if (!next.includes('X-UA-Compatible')) {
-      next = next.replace('<meta charset="UTF-8">', '<meta charset="UTF-8">\n    <meta http-equiv="X-UA-Compatible" content="IE=edge">')
+    if (!next.includes('name="renderer"') || !next.includes('X-UA-Compatible')) {
+      next = next
+        .replace(/^[ \t]*<meta name="renderer"[^>]*>\r?\n?/m, '')
+        .replace(/^[ \t]*<meta http-equiv="X-UA-Compatible"[^>]*>\r?\n?/m, '')
+        .replace('<meta charset="UTF-8">', `<meta charset="UTF-8">\n${HEAD_COMPAT_META}`)
     }
     if (!next.includes('rel="icon"')) {
       next = next.replace('    <title>', `${FAVICON_LINKS}\n    <title>`)
