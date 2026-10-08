@@ -292,7 +292,7 @@ export async function searchEvidence(reviewPlan, options = {}) {
   // 既有调用方不传时取默认值，取值与行为与改动前完全一致。
   const {
     limit = DEFAULT_EVIDENCE_LIMIT, candidateLimit = EVIDENCE_CANDIDATE_LIMIT, excludeTemplateId,
-    perDocumentCap = EVIDENCE_PER_DOCUMENT_CAP, onCandidates
+    perDocumentCap = EVIDENCE_PER_DOCUMENT_CAP, onCandidates, strictContractType = false
   } = options
   const topics = reviewPlan?.topics?.length ? reviewPlan.topics : [{ id: 'topic-1', label: '通用合同审查', query: '合同' }]
   // 回退值「通用商业合同」并非数据库真实类型，参与 SQL 过滤会把全部模板筛为 0 条。
@@ -338,13 +338,18 @@ export async function searchEvidence(reviewPlan, options = {}) {
   // 只读观测钩子：把「交付截断之前」的候选池交给调用方，用于离线评测把
   // 「检索质量」与「交付质量」分开度量。不传时不改变返回值，也不改变任何行为。
   if (typeof onCandidates === 'function') onCandidates(reranked)
-  return diversifyEvidence(reranked, {
+  const diversified = diversifyEvidence(reranked, {
     limit,
     perDocumentCap,
     // 保底的是「审查计划里列出的主题」，而不是「候选里恰好出现过的标签」——后者会漏掉
     // 一个主题都没召回上来的情况，而那正是最需要保底的。
     topicLabels: topics.map((topic) => topic.label)
   })
+  // Newly introduced product types can opt out of any future cross-type
+  // fallback. Existing callers retain the current behavior unless requested.
+  return strictContractType && contractType
+    ? diversified.filter((item) => item.contractType === contractType)
+    : diversified
 }
 
 /**
@@ -412,6 +417,21 @@ export function getKnowledgeBaseStatus() {
 }
 
 /**
+ * 给用工咨询的状态接口提供合同知识库检索能力摘要。
+ *
+ * 用工模块只需要知道合同侧的向量/重排能力是否可用；这里复用现有
+ * vector-store 与 evidence-reranker 的状态接口，避免把两套检索实现耦合起来。
+ */
+export function getEvidenceRetrievalHealth() {
+  const vector = getVectorStatus()
+  const reranker = getRerankerStatus()
+  return {
+    vector: { ...vector, available: vector.enabled },
+    rerank: { ...reranker, available: reranker.enabled }
+  }
+}
+
+/**
  * 「最低可用线」（mentor 2026-09-22 确认）：≥3 份范本 且 ≥1 个坏例 且 ≥30 条风险规则。
  *
  * 不够线的类型（保证/知产/赠与各 4 条规则、委托 5 条、物业/融资租赁各 6 条）拿出来的
@@ -447,6 +467,35 @@ export function listIndexableEvidence() {
     trim(r.trigger_text || '\n' || r.risk_text || '\n' || r.recommendation) AS content
     FROM risk_rules r JOIN templates t ON t.id = r.template_id LEFT JOIN template_clauses c ON c.id = r.clause_id`).all()
   return [...clauses, ...rules].filter((item) => item.content?.trim())
+}
+
+/**
+ * 整份范本通道：取一份模板的全部条款（按原文顺序），供审查 Agent 作「结构参照」。
+ * 与证据通道严格分离 —— 范本条款不是风险证据，不进 searchEvidence 的交付与精度口径。
+ * （2026-09-22 探针实测：双通道口径下召回 0.6593→0.8028、精度不变，41 例 0 下降）
+ */
+export function getWholeTemplateForReview(templateId, { maxClauses = 60 } = {}) {
+  if (!db) initialize()
+  if (!templateId) return null
+  const tpl = db.prepare('SELECT id, name, contract_type, sub_type, reference_role FROM templates WHERE id = ?').get(templateId)
+  if (!tpl) return null
+  const clauses = db.prepare(`SELECT clause_no, title, parent_title, category, content
+    FROM template_clauses WHERE template_id = ? ORDER BY start_offset, chunk_index, id LIMIT ?`).all(templateId, maxClauses)
+  if (!clauses.length) return null
+  return {
+    templateId: tpl.id,
+    name: tpl.name,
+    contractType: tpl.contract_type,
+    subType: tpl.sub_type || '',
+    referenceRole: tpl.reference_role,
+    clauses: clauses.map((c) => ({
+      clauseNo: c.clause_no || '',
+      title: c.title || c.parent_title || '',
+      category: c.category || '',
+      content: c.content || ''
+    })),
+    chars: clauses.reduce((sum, c) => sum + (c.content || '').length, 0)
+  }
 }
 
 export function listEvaluationCases({ limit = 100 } = {}) {

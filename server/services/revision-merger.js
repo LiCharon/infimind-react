@@ -209,7 +209,8 @@ const buildFallbackLocalizedEdits = ({ finding, contractLines, usedIds, fallback
     const first = groupMembers[0]
     const spans = first.quoteSpans
     const replacement = asText(first.replacement)
-    const operation = fallbackAction === 'delete' ? 'delete' : 'replace'
+    const usableReplacement = replacement && replacement.length <= 900 ? replacement : ''
+    const operation = fallbackAction === 'delete' ? 'delete' : usableReplacement ? 'replace' : 'notice'
     const memberFindingIds = groupMembers.map((member) => member.id)
     memberFindingIds.forEach((id) => usedIds.add(id))
     edits.push({
@@ -217,7 +218,7 @@ const buildFallbackLocalizedEdits = ({ finding, contractLines, usedIds, fallback
       memberFindingIds,
       operation,
       targetQuote: asText(first.quoteText),
-      replacementText: operation === 'delete' ? '' : (replacement.length <= 900 ? replacement : ''),
+      replacementText: operation === 'replace' ? usableReplacement : '',
       riskNote: compactNotes(groupMembers, 'advice') || compactNotes(groupMembers, 'risk'),
       lineStart: spans[0].line,
       lineEnd: spans.at(-1).line,

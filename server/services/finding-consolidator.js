@@ -154,7 +154,7 @@ const buildGroup = (members, groupIndex, relation, contractLines) => {
   const locations = [...new Set(sorted.map((finding) => asText(finding.location)).filter(Boolean))]
   const evidence = [...new Set(sorted.flatMap((finding) => Array.isArray(finding.evidence) ? finding.evidence : [finding.evidence]).filter(Boolean))]
   const highestLevel = sorted.reduce((top, finding) =>
-    (LEVEL_RANK[finding.level] || 0) > (LEVEL_RANK[top] || 0) ? finding.level : top, sorted[0]?.level || '中')
+    (LEVEL_RANK[finding.level] || 0) > (LEVEL_RANK[top] || 0) ? finding.level : top, sorted[0]?.level || null)
   const isDuplicateGroup = sorted.length > 1 && relation === 'duplicate'
 
   return {

@@ -15,7 +15,7 @@ const featuredTools = [
 const toolGroups = [
   {
     title: '用工管理', desc: '覆盖入职、在职、离职及争议处理场景', tools: [
-      { id: 'ai-assistant', icon: Brain, title: '用工风险助手', desc: '围绕调岗、解除、工时等问题梳理风险和处理步骤。', path: '/tools/ai-assistant' },
+      { id: 'labor-consult', icon: Brain, title: '用工咨询', desc: '优先支持劳动合同分析，并可延伸到调岗、解除、工时等用工问题。', path: '/labor-consult' },
       { id: 'labor-contract', icon: FileText, title: '劳动合同分析', desc: '检查期限、试用期、薪酬、解除等核心条款。', path: '/tools/labor-contract' },
       { id: 'arbitration', icon: Scale, title: '劳动仲裁答辩', desc: '整理仲裁请求、事实经过和证据缺口，形成答辩思路。', path: '/tools/arbitration' },
       { id: 'handbook', icon: BookOpen, title: '员工手册诊断', desc: '检查奖惩、考勤、离职等制度的合规性与制定程序。', path: '/tools/handbook' }

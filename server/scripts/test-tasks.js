@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import express from 'express'
+import JSZip from 'jszip'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,9 +10,12 @@ import { createTaskFileStore } from '../services/task-file-store.js'
 import { createTaskProcessor } from '../services/task-processor.js'
 import { createTaskQueue } from '../services/task-queue.js'
 import { createTaskService } from '../services/task-service.js'
+import { initialize as initializeLawDatabase } from '../services/law-whitelist.js'
 
 // 回归测试必须自带环境：.env.local 里的 TASK_QUEUE_MODE/REDIS_URL/TASK_RUN_WORKER
 // 面向真实部署，不能决定测试行为，否则本地无 Redis 时 enqueue 会直接失败。
+// Fake LLM仍会经过咨询runner的法规初始化；先隔离其单例，避免打开现役labor.db。
+initializeLawDatabase(':memory:')
 const database = createBusinessDatabase(':memory:')
 const directory = mkdtempSync(join(tmpdir(), 'fafee-task-platform-'))
 const fileStore = createTaskFileStore({ root: directory })
@@ -97,6 +101,78 @@ try {
   assert.match(replayText, /event: task\.succeeded/)
   const checkpointCount = database.prepare('SELECT COUNT(*) AS count FROM task_checkpoints WHERE task_id = ?').get(created.taskId).count
   assert.ok(checkpointCount >= 5)
+
+  const laborBody = new FormData()
+  laborBody.append('message', '请分析这份劳动合同的试用期和解除风险')
+  laborBody.append('threadId', 'labor-thread-test')
+  laborBody.append('mode', 'fast')
+  laborBody.append('files', new Blob(['劳动合同：试用期三个月，双方可依法解除。'], { type: 'text/plain' }), '劳动合同.txt')
+  const laborCreatedResponse = await request('/api/tasks/labor-consult', { method: 'POST', body: laborBody })
+  assert.equal(laborCreatedResponse.status, 202)
+  const laborCreated = await laborCreatedResponse.json()
+  assert.equal(laborCreated.productId, 'labor-consult')
+  assert.ok(laborCreated.taskId)
+  const laborFinished = await waitFor(async () => {
+    const response = await request(`/api/tasks/${laborCreated.taskId}`)
+    const payload = await response.json()
+    return payload.task?.status === 'succeeded' ? payload.task : null
+  })
+  assert.match(laborFinished.result.answer, /Fake LLM 用工咨询结果/)
+  assert.equal(laborFinished.result.mode, 'fast')
+  assert.equal(
+    database.prepare('SELECT parse_status FROM task_files WHERE task_id = ?').get(laborCreated.taskId)?.parse_status,
+    'succeeded'
+  )
+  const laborEventsResponse = await request(`/api/tasks/${laborCreated.taskId}/events?after=0`, { headers: { Accept: 'text/event-stream' } })
+  const laborEventsText = await laborEventsResponse.text()
+  assert.match(laborEventsText, /event: consult\.start/)
+  assert.match(laborEventsText, /event: consult\.evidence/)
+  assert.match(laborEventsText, /event: consult\.delta/)
+  assert.match(laborEventsText, /event: consult\.citations/)
+  assert.ok(database.prepare("SELECT COUNT(*) AS count FROM task_checkpoints WHERE task_id = ? AND stage IN ('materials', 'retrieval', 'generation')").get(laborCreated.taskId).count >= 3)
+
+  const emptyLaborBody = new FormData()
+  emptyLaborBody.append('message', '请说明附件为空文本时如何继续咨询')
+  emptyLaborBody.append('threadId', 'labor-thread-empty')
+  emptyLaborBody.append('mode', 'fast')
+  emptyLaborBody.append('files', new Blob(['  \r\n  '], { type: 'text/plain' }), '空文本.txt')
+  const emptyLaborResponse = await request('/api/tasks/labor-consult', { method: 'POST', body: emptyLaborBody })
+  assert.equal(emptyLaborResponse.status, 202)
+  const emptyLaborCreated = await emptyLaborResponse.json()
+  const emptyLaborFinished = await waitFor(async () => {
+    const response = await request(`/api/tasks/${emptyLaborCreated.taskId}`)
+    const payload = await response.json()
+    return payload.task?.status === 'succeeded' ? payload.task : null
+  })
+  assert.equal(
+    database.prepare('SELECT parse_status FROM task_files WHERE task_id = ?').get(emptyLaborCreated.taskId)?.parse_status,
+    'empty'
+  )
+  assert.ok(emptyLaborFinished.result.warnings.some((warning) => warning.includes('未提取到可用文字')))
+
+  const brokenDocx = await new JSZip().file('placeholder.txt', 'not a Word document').generateAsync({ type: 'nodebuffer' })
+  const failedLaborBody = new FormData()
+  failedLaborBody.append('message', '请在附件解析失败时仅依据当前问题回复并提示材料未读取')
+  failedLaborBody.append('threadId', 'labor-thread-failed')
+  failedLaborBody.append('mode', 'fast')
+  failedLaborBody.append(
+    'files',
+    new Blob([brokenDocx], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+    '无法解析.docx'
+  )
+  const failedLaborResponse = await request('/api/tasks/labor-consult', { method: 'POST', body: failedLaborBody })
+  assert.equal(failedLaborResponse.status, 202)
+  const failedLaborCreated = await failedLaborResponse.json()
+  const failedLaborFinished = await waitFor(async () => {
+    const response = await request(`/api/tasks/${failedLaborCreated.taskId}`)
+    const payload = await response.json()
+    return payload.task?.status === 'succeeded' ? payload.task : null
+  })
+  assert.equal(
+    database.prepare('SELECT parse_status FROM task_files WHERE task_id = ?').get(failedLaborCreated.taskId)?.parse_status,
+    'failed'
+  )
+  assert.ok(failedLaborFinished.result.warnings.some((warning) => warning.includes('DOCX 解析失败')))
 
   const forbidden = await request(`/api/tasks/${created.taskId}`, { headers: { 'X-Test-User': 'user-b' } })
   assert.equal(forbidden.status, 404)

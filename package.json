@@ -11,6 +11,13 @@
     "server": "node --use-env-proxy server/index.js",
     "worker": "node --use-env-proxy server/worker.js",
     "import:templates": "node server/scripts/import-templates.js",
+    "import:labor-cases": "node server/scripts/import-labor-cases.js",
+    "import:labor-books": "node server/scripts/import-labor-books.js",
+    "evaluate:labor-kb": "node server/scripts/evaluate-labor-kb.js",
+    "evaluate:labor-kb-precision": "node server/scripts/evaluate-labor-kb-precision.js",
+    "build:labor-embeddings": "node server/scripts/build-labor-embeddings.js",
+    "tune:labor-kb": "node server/scripts/tune-labor-kb.js",
+    "verify:laws": "node server/scripts/verify-law-whitelist.js",
     "evaluate:knowledge-base": "RAG_RERANKER_MODE=heuristic node server/scripts/evaluate-knowledge-base.js",
     "check:kb": "node server/scripts/check-kb-baseline.js",
     "test:consolidation": "node server/scripts/test-finding-consolidation.js",
@@ -18,10 +25,13 @@
     "test:auth": "node server/scripts/test-auth.js",
     "test:auth:client": "node server/scripts/test-auth-client.js",
     "test:tasks": "node server/scripts/test-tasks.js",
+    "test:labor-contract-analysis": "node server/scripts/test-labor-contract-analysis.js",
     "test:interrupt": "node server/scripts/test-interrupt-queue.js",
     "test:contract-draft": "node server/scripts/test-contract-draft-tasks.js",
     "invite:create": "node server/scripts/create-invites.js",
-    "test:word-annotations": "node server/scripts/test-word-annotations.js"
+    "test:word-annotations": "node server/scripts/test-word-annotations.js",
+    "test:labor-consult": "node server/scripts/test-labor-consult.js",
+    "sync:contract-embeddings": "node server/scripts/sync-contract-embeddings.js"
   },
   "dependencies": {
     "@babel/types": "^7.29.0",

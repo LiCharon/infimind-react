@@ -231,6 +231,11 @@ const Header = () => {
     { id: 'contract-draft', icon: FilePenLine, text: '商业合同智能起草' }
   ]
 
+  const laborConsultItems = [
+    // 用工咨询与现有用工风险助手先共用产品矩阵入口；页面是否合并另行确认。
+    { id: 'ai-assistant', icon: Scale, text: '用工咨询' }
+  ]
+
   return (
     <header className="header" id="header">
       <div className="navbar">
@@ -291,6 +296,25 @@ const Header = () => {
                         const IconComponent = item.icon
                         return (
                           <a key={item.id} href={`/?product=${item.id}#products`} className="product-item" onClick={(e) => handleProductClick(e, item.id)}>
+                            <div className="product-icon"><IconComponent size={20} /></div>
+                            <span>{item.text}</span>
+                          </a>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <div className="dropdown-section">
+                    <h4>劳动用工工具</h4>
+                    <div className="product-list">
+                      {laborConsultItems.map((item) => {
+                        const IconComponent = item.icon
+                        return (
+                          <a
+                            key={item.id}
+                            href={`/?product=${item.id}#products`}
+                            className="product-item"
+                            onClick={(e) => handleProductClick(e, item.id)}
+                          >
                             <div className="product-icon"><IconComponent size={20} /></div>
                             <span>{item.text}</span>
                           </a>

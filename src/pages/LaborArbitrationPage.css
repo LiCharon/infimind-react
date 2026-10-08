@@ -1,0 +1,54 @@
+/* 仲裁沿用用工咨询外壳；本文件仅覆盖文本报告和上下文提示。 */
+.labor-arbitration .conversation-inner { padding-left: 0; padding-right: 0; padding-bottom: 210px; }
+.labor-arbitration .composer-wrap { left: 0; padding-left: 28px; padding-right: 28px; }
+.arb-welcome-turn .starter-prompts { margin-top: 32px; }
+.arb-welcome-turn .starter-prompts button { align-items: center; justify-content: space-between; max-width: 100%; text-align: left; line-height: 1.6; }
+.arb-welcome-turn .starter-prompts svg { flex-shrink: 0; color: #939399; }
+.arb-answer { overflow-wrap: anywhere; }
+.labor-arbitration .arb-answer h2 { margin: 28px 0 14px; font-size: 20px; line-height: 1.5; }
+.labor-arbitration .arb-answer h3 { margin: 22px 0 12px; font-size: 17px; line-height: 1.55; }
+.labor-arbitration .arb-answer h4 { margin: 18px 0 10px; font-size: 16px; line-height: 1.6; }
+.labor-arbitration .arb-answer p { font-size: 15px; line-height: 1.9; white-space: normal; }
+.labor-arbitration .arb-answer hr { border: 0; border-top: 1px solid #e9e9ec; margin: 28px 0; }
+.arb-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 22px 0 12px; }
+.arb-result-actions button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 0; border: 0; background: transparent; color: #62626a; font-size: 13px; cursor: pointer; }
+.arb-result-actions button:hover { color: #25252a; text-decoration: underline; }
+.arb-result-actions button:disabled { opacity: .45; cursor: not-allowed; text-decoration: none; }
+.arb-result-actions small { color: #9999a0; font-size: 12px; }
+.arb-message-error, .arb-readonly-note { display: flex; align-items: flex-start; gap: 8px; color: #aa443c; font-size: 13px; line-height: 1.7; }
+.arb-message-error svg, .arb-readonly-note svg { flex-shrink: 0; margin-top: 4px; }
+.arb-context { position: relative; }
+.labor-arbitration .arb-context-trigger { display: inline-flex; gap: 6px; color: #808089; font-size: 12px; font-weight: 400; }
+.arb-context-ring { width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; background: conic-gradient(#7f9cb8 var(--context-progress), #e9e9ec 0); position: relative; }
+.arb-context-ring::after { content: ''; position: absolute; inset: 2px; border-radius: 50%; background: #fff; }
+.arb-context-popover { position: absolute; bottom: calc(100% + 18px); left: -10px; width: 340px; max-width: calc(100vw - 40px); padding: 20px; border: 1px solid #e5e5e9; border-radius: 18px; background: #fff; box-shadow: 0 10px 36px rgb(0 0 0 / 9%); color: #555560; z-index: 5; }
+.arb-context-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 15px; }
+.arb-context-heading strong { color: #19191d; }
+.arb-context-heading small { font-size: 13px; color: #909099; }
+.arb-context-track { height: 6px; overflow: hidden; margin: 16px 0; border-radius: 4px; background: #ececef; }
+.arb-context-track span { display: block; height: 100%; background: #8ba6be; }
+.arb-context-popover dl { margin: 0; }
+.arb-context-popover dl > div { display: flex; justify-content: space-between; gap: 12px; margin: 10px 0; font-size: 13px; }
+.arb-context-popover dd { margin: 0; color: #9999a1; }
+.arb-context-popover p { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid #f0f0f2; color: #9999a1; font-size: 12px; line-height: 1.65; }
+.labor-arbitration button:focus-visible, .labor-arbitration a:focus-visible { outline: 2px solid #8ba6be; outline-offset: 3px; }
+@media (max-width: 760px) {
+  .labor-arbitration .composer-wrap { padding-left: 15px; padding-right: 15px; }
+  .labor-arbitration .chat-header { grid-template-columns: auto 1fr auto; }
+  .labor-arbitration .chat-title strong { font-size: 15px; }
+  .labor-arbitration .chat-title small { font-size: 10px; }
+  .arb-context-popover { left: -145px; width: 300px; }
+  .labor-arbitration .arb-answer h2 { font-size: 18px; }
+  .labor-arbitration .arb-answer p { font-size: 14px; }
+}
+
+.arb-materials { margin: 24px 0; border-top: 1px solid #e9e9ec; padding-top: 14px; font-size: 13px; color: #62626a; }
+.arb-materials summary { cursor: pointer; }
+.arb-materials p { font-size: 12px; line-height: 1.7; }
+.arb-materials > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.arb-materials span { min-width: 0; overflow-wrap: anywhere; }
+.arb-materials small { display: block; color: #939399; margin-top: 3px; }
+.arb-materials button { flex-shrink: 0; background: none; border: 0; cursor: pointer; color: #62626a; }
+.arb-materials button:disabled { opacity: .45; cursor: not-allowed; }
+.arb-sources > div { display: block; overflow-wrap: anywhere; }
+.arb-sources strong { font-weight: 500; }

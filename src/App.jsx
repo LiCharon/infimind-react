@@ -4,9 +4,13 @@ import HomePage from './pages/HomePage'
 import AboutPage from './pages/AboutPage'
 import ContractRewritePage from './pages/ContractRewritePage'
 import ContractDraftPage from './pages/ContractDraftPage'
+import LaborConsultPage from './pages/LaborConsultPage'
+import LaborContractAnalysisPage from './pages/LaborContractAnalysisPage'
+import LaborArbitrationPage from './pages/LaborArbitrationPage'
 import ToolHubPage from './pages/ToolHubPage'
 import AuthPage from './pages/AuthPage'
 import ToolConversationPage from './pages/ToolConversationPage'
+import CitationVerificationComparePage from './pages/CitationVerificationComparePage'
 import QRCodeModal from './components/QRCodeModal'
 import { AuthProvider, useAuth } from './components/AuthProvider'
 
@@ -50,11 +54,16 @@ function App() {
             <Route path="/aboutus" element={<AboutPage />} />
             <Route path="/contract-rewrite" element={<ProtectedPage><ContractRewritePage /></ProtectedPage>} />
             <Route path="/contract-draft" element={<ProtectedPage><ContractDraftPage /></ProtectedPage>} />
+            <Route path="/labor-consult" element={<ProtectedPage><LaborConsultPage /></ProtectedPage>} />
             <Route path="/tools" element={<ProtectedPage><ToolHubPage /></ProtectedPage>} />
             <Route path="/tools/contract-review" element={<ProtectedPage><ContractRewritePage /></ProtectedPage>} />
             <Route path="/tools/contract-draft" element={<ProtectedPage><ContractDraftPage /></ProtectedPage>} />
+            <Route path="/tools/labor-consult" element={<ProtectedPage><LaborConsultPage /></ProtectedPage>} />
+            <Route path="/tools/labor-contract" element={<ProtectedPage><LaborContractAnalysisPage /></ProtectedPage>} />
+            <Route path="/tools/arbitration" element={<ProtectedPage><LaborArbitrationPage /></ProtectedPage>} />
             <Route path="/tools/:toolId" element={<ProtectedPage><ToolConversationPage /></ProtectedPage>} />
             <Route path="/auth" element={<AuthPage />} />
+            {import.meta.env.DEV && <Route path="/__demo/citation-verification" element={<CitationVerificationComparePage />} />}
           </Routes>
           <QRCodeModal isOpen={isQRModalOpen} onClose={closeQRModal} />
         </BrowserRouter>

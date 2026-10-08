@@ -71,7 +71,7 @@ const isClauseHeadingLine = (line = '') => CLAUSE_HEADING_RE.test(String(line))
 const findClauseEnd = (lines, startLine) => {
   if (!Array.isArray(lines) || !Number.isInteger(startLine) || startLine < 0) return -1
   for (let index = startLine + 1; index < lines.length; index += 1) {
-    if (isClauseHeadingLine(lines[index])) return index - 1
+    if (isClauseHeadingLine(lines[index]) || /^=== 文件：.* ===$/.test(lines[index])) return index - 1
   }
   return lines.length - 1
 }

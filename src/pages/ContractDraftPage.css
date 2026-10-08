@@ -25,6 +25,9 @@
 .draft-search input::placeholder { color: #aaa; }
 .draft-history-list button.running { cursor: wait; opacity: .72; }
 .draft-history-list button > span { flex: 1; }
+.draft-history-list button > .history-row-copy { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; overflow: hidden; white-space: normal; }
+.draft-history-list .history-row-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4; }
+.draft-history-list .history-row-time { display: block; color: #a3a3a8; font-size: 12px; font-style: normal; font-weight: 400; line-height: 1.3; }
 .draft-history-delete { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; padding: 0; color: #a2a2a5; border: 0; border-radius: 6px; background: transparent; cursor: pointer; opacity: 0; }
 .draft-history-list button:hover .draft-history-delete, .draft-history-list button.selected .draft-history-delete { opacity: 1; }
 .draft-history-delete:hover { color: #c13c35; background: #fff0ef; }

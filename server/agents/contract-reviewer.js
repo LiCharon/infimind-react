@@ -17,9 +17,10 @@ import { AGENT_2_SYSTEM_PROMPT, buildReviewUserMessage } from '../prompts/agent-
  * @param {string} params.userInstruction - 用户额外关注点
  * @param {number} params.round - 当前审查轮次（1 起始）
  * @param {Array} params.previousFindings - 前几轮已发现问题的摘要 [{ level, title, location }]
+ * @param {object|null} params.wholeTemplate - 整份对口范本（结构参照通道，非风险证据；见 knowledge-base.getWholeTemplateForReview）
  * @returns {Promise<string>} 模型返回的完整 JSON 文本
  */
-export async function reviewContract({ contractText, analysisReport, evidence, reviewPlan, userInstruction, round = 1, previousFindings = [] }, model = getProModel()) {
+export async function reviewContract({ contractText, analysisReport, evidence, reviewPlan, userInstruction, round = 1, previousFindings = [], wholeTemplate = null }, model = getProModel()) {
   const userMessage = buildReviewUserMessage({
     contractText,
     analysisReport,
@@ -27,7 +28,8 @@ export async function reviewContract({ contractText, analysisReport, evidence, r
     reviewPlan,
     userInstruction,
     round,
-    previousFindings
+    previousFindings,
+    wholeTemplate
   })
 
   let fullReport = ''

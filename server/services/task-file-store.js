@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises'
 import { basename, extname, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +16,7 @@ const safeExtension = (name = '') => {
 
 const assertWithinRoot = (root, target) => {
   const relativePath = relative(root, target)
-  if (relativePath.startsWith('..') || relativePath.includes(':') || relativePath.includes('\\..')) {
+  if (!relativePath || relativePath.startsWith('..') || relativePath.includes(':') || relativePath.includes('\\..')) {
     throw new Error('任务文件路径越界')
   }
   return target
@@ -71,7 +71,11 @@ export function createTaskFileStore({ root = process.env.TASK_UPLOAD_ROOT || DEF
       grouped.add(resolve(target, '..'))
     }
     for (const directory of grouped) {
-      await rm(directory, { recursive: true, force: true })
+      // A bounded cleanup batch can contain only some files of a task.
+      // Remove the directory only when empty; keep other files intact.
+      await rmdir(assertWithinRoot(storageRoot, directory)).catch((error) => {
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error
+      })
     }
     return files.length
   }
