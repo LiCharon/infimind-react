@@ -1,0 +1,215 @@
+"""Test the actual App route and existing AuthProvider with fictional API responses.
+
+No live account, backend, database or model is used. Run from any directory:
+python server/scripts/test-medical-period-route-ui.py [--output <directory>]
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from urllib.parse import parse_qs, urlparse
+
+from playwright.sync_api import expect, sync_playwright
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--output')
+args = parser.parse_args()
+repo = Path(__file__).resolve().parents[2]
+output = Path(args.output) if args.output else Path(tempfile.mkdtemp(prefix='fafee-medical-route-ui-'))
+output.mkdir(parents=True, exist_ok=True)
+checks = []
+page_errors = []
+unexpected_api = []
+external_requests = []
+http_failures = []
+requests = []
+fixture_user = {'id': 'fictional-medical-user', 'username': 'medical-review', 'email': 'review@example.invalid'}
+state = {'authenticated': False}
+
+
+def check(name, condition=True):
+    if not condition:
+        raise AssertionError(name)
+    checks.append(name)
+
+
+def fill(page, name, value):
+    page.locator(f'[name="{name}"]').fill(value)
+
+
+server = subprocess.Popen(['node', str(repo / 'server/scripts/serve-medical-period-review.js'), '--app'],
+                          cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, encoding='utf-8', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+try:
+    url = None
+    root = None
+    for line in server.stdout:
+        if line.strip().startswith('{'):
+            ready = json.loads(line)
+            if ready.get('type') == 'medical-review-ready':
+                url, root = ready['url'], Path(ready['root'])
+                break
+    if not url:
+        raise RuntimeError('Isolated app did not start.')
+
+    def mock_api(route):
+        path = urlparse(route.request.url).path
+        requests.append(path)
+        current_user = {**fixture_user, 'id': state.get('userId', fixture_user['id'])}
+        token = {'accessToken': 'fictional-test-token', 'accessTokenExpiresAt': '2030-01-01T00:00:00.000Z', 'user': current_user}
+        if path == '/api/auth/refresh':
+            route.fulfill(status=200 if state['authenticated'] else 401,
+                          json=token if state['authenticated'] else {'error': 'Not logged in'})
+        elif path == '/api/auth/login':
+            state['authenticated'] = True
+            route.fulfill(status=200, json=token)
+        elif path == '/api/auth/me':
+            route.fulfill(status=200 if state['authenticated'] else 401,
+                          json={'user': current_user} if state['authenticated'] else {'error': 'Not logged in'})
+        elif path == '/api/auth/logout':
+            state['authenticated'] = False
+            route.fulfill(status=200, json={'ok': True})
+        elif path in ['/api/labor/status', '/api/labor/laws']:
+            route.fulfill(status=200, json={'laws': [], 'available': True})
+        else:
+            unexpected_api.append(path)
+            route.fulfill(status=500, json={'error': 'Unexpected test API'})
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(executable_path=os.environ.get('MEDICAL_TEST_BROWSER', r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'), headless=True)
+        context = browser.new_context(viewport={'width': 1440, 'height': 1000}, reduced_motion='reduce')
+        context.route('**/api/**', mock_api)
+        context.route('**/*', lambda route: route.continue_() if route.request.url.startswith(url) else
+                      (external_requests.append(route.request.url), route.abort()))
+        # Register API interception last; all authentication is simulated locally.
+        context.route('**/api/**', mock_api)
+        page = context.new_page()
+        page.on('pageerror', lambda error: page_errors.append(str(error)))
+        page.on('response', lambda response: http_failures.append(f'{response.status} {response.url}')
+                if response.status >= 400 and response.status != 401 else None)
+
+        page.goto(f'{url}/tools/medical-calculator?from=review', wait_until='networkidle')
+        expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+        query = parse_qs(urlparse(page.url).query)
+        check('anonymous medical URL redirects to login preserving full target', urlparse(page.url).path == '/auth' and query['redirect'] == ['/tools/medical-calculator?from=review'])
+        check('anonymous user cannot see medical form', page.locator('.medical-calculator').count() == 0)
+        page.get_by_placeholder('请输入用户名或邮箱').fill('medical-review')
+        page.get_by_placeholder('请输入密码').fill('fictional-password-123')
+        page.get_by_role('button', name='登录并继续', exact=True).click()
+        expect(page.locator('.medical-calculator')).to_be_visible()
+        check('simulated login returns to original medical URL', urlparse(page.url).path == '/tools/medical-calculator' and parse_qs(urlparse(page.url).query)['from'] == ['review'])
+        check('specific route renders new pure form, not generic chat', page.locator('.prototype-chat,.composer').count() == 0)
+        page.locator('[name="region"]').select_option('shanghai')
+        page.get_by_role('button', name='填写实际日期段', exact=True).click()
+        fill(page, 'asOf', '2026-06-30')
+        fill(page, 'hireDate', '2024-09-01')
+        fill(page, 'segments.0.startDate', '2026-06-01')
+        fill(page, 'segments.0.endDate', '2026-06-10')
+        fill(page, 'segments.0.workDays', '8')
+        page.locator('.mp-supplementary > summary').click()
+        page.locator('[name="historyComplete"]').check()
+        before_calculation = len(requests)
+        page.get_by_role('button', name='开始测算', exact=True).click()
+        expect(page.locator('.mp-metrics')).to_contain_text('2.61')
+        check('actual protected route computes Shanghai reference balance', '0.39' in page.locator('.mp-result').inner_text())
+        check('calculation makes no API/model request', len(requests) == before_calculation)
+        page.screenshot(path=str(output / 'protected-medical-result.png'))
+        # Compare computed styles with the actual reference page in a fresh tab.
+        # Its metadata reads are mocked; no consultation, model or real data used.
+        reference = context.new_page()
+        reference.on('pageerror', lambda error: page_errors.append(str(error)))
+        reference.goto(f'{url}/labor-consult', wait_until='networkidle')
+        expect(reference.locator('.labor-consult')).to_be_visible()
+        for selector, properties in [
+            ('.chat-sidebar', ['width', 'padding', 'backgroundColor', 'borderRightColor']),
+            ('.sidebar-search', ['minHeight', 'fontSize', 'borderRadius']),
+            ('.sidebar-action', ['fontSize', 'fontWeight', 'fontFamily', 'minHeight', 'padding']),
+            ('.history-thread-title', ['fontSize', 'fontWeight', 'fontFamily', 'lineHeight']),
+            ('.history-thread-time', ['fontSize', 'fontWeight', 'lineHeight']),
+            ('.account-trigger', ['fontSize', 'fontWeight', 'minHeight', 'borderRadius', 'padding']),
+            ('.footer-avatar', ['fontSize', 'width', 'height'])
+        ]:
+            styles = '(element, properties) => Object.fromEntries(properties.map(p => [p, getComputedStyle(element)[p]]))'
+            actual = page.locator(selector).first.evaluate(styles, properties)
+            expected = reference.locator(selector).first.evaluate(styles, properties)
+            check(f'sidebar matches actual labor-consult {selector}: {actual}', actual == expected)
+        reference.screenshot(path=str(output / 'reference-labor-sidebar.png'))
+        reference.close()
+        page.get_by_role('button', name='修改条件', exact=True).click()
+        fill(page, 'segments.0.workDays', '7')
+        check('changing input marks stale result in full App', page.locator('.mp-result-stale').count() == 1 and page.get_by_role('button', name='复制测算单', exact=True).is_disabled())
+        page.get_by_role('button', name='重新计算', exact=True).click()
+        expect(page.locator('.mp-result-stale')).to_have_count(0)
+        check('recalculation completes through actual route')
+        for width in [1440, 390, 320]:
+            page.set_viewport_size({'width': width, 'height': 900})
+            check(f'App result has no outer overflow at {width}', page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+        page.set_viewport_size({'width': 1440, 'height': 1000})
+        page.reload(wait_until='networkidle')
+        expect(page.locator('.medical-calculator')).to_be_visible()
+        check('refresh restores mock session and remains on medical form', page.locator('[name="region"]').input_value() == '')
+        check('authenticated history survives refresh', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 2)
+        page.locator('.mp-history-list > .mp-history-row > button:first-child').first.click()
+        expect(page.locator('.mp-metrics')).to_contain_text('2.66')
+        check('saved input and result restore through actual protected route', page.locator('[name="segments.0.workDays"]').input_value() == '7')
+        page.get_by_role('link', name='工具总览', exact=True).click()
+        expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
+        page.locator('a[href="/tools/medical-calculator"]').click()
+        expect(page.locator('.medical-calculator')).to_be_visible()
+        check('existing hub medical entry opens the new page')
+        check('leaving and reentering the tool retains saved history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 2)
+        page.get_by_role('link', name='工具总览', exact=True).click()
+        for product, title in [('pension-calc1', '企业职工养老保险测算'), ('pension-calc2', '个体工商户／灵活就业者养老保险测算')]:
+            page.locator(f'a[href="/tools/{product}"]').click()
+            expect(page.locator('.pension-calculation-page .chat-title')).to_contain_text(title)
+            check(f'{product} opens its independent pension form', page.locator('.medical-calculator,.prototype-chat').count() == 0)
+            page.get_by_role('link', name='工具总览', exact=True).click()
+        page.get_by_role('button', name='退出登录', exact=True).click()
+        expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+        page.goto(f'{url}/tools/medical-calculator', wait_until='networkidle')
+        expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+        check('logout closes access to medical route again', page.locator('.medical-calculator').count() == 0)
+        state['userId'] = 'fictional-medical-user-b'
+        page.get_by_placeholder('请输入用户名或邮箱').fill('medical-review-b')
+        page.get_by_placeholder('请输入密码').fill('fictional-password-123')
+        page.get_by_role('button', name='登录并继续', exact=True).click()
+        expect(page.locator('.medical-calculator')).to_be_visible()
+        check('another account cannot see previous account medical history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 0)
+        page.locator('[name="region"]').select_option('national')
+        fill(page, 'hireDate', '2025-01-01')
+        fill(page, 'totalWorkYears', '1')
+        fill(page, 'segments.0.startDate', '2026-01-01')
+        fill(page, 'segments.0.endDate', '2026-01-02')
+        page.get_by_role('button', name='开始测算', exact=True).click()
+        expect(page.locator('.mp-result')).to_be_visible()
+        check('second account saves its own independent history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 1)
+        page.get_by_role('link', name='工具总览', exact=True).click()
+        page.get_by_role('button', name='退出登录', exact=True).click()
+        expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+        state['userId'] = fixture_user['id']
+        page.get_by_placeholder('请输入用户名或邮箱').fill('medical-review')
+        page.get_by_placeholder('请输入密码').fill('fictional-password-123')
+        page.get_by_role('button', name='登录并继续', exact=True).click()
+        expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
+        page.locator('a[href="/tools/medical-calculator"]').click()
+        expect(page.locator('.medical-calculator')).to_be_visible()
+        check('returning to original account restores only its history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 2)
+        check('no unexpected API requests', not unexpected_api)
+        check('no external resources requested', not external_requests)
+        check('no unexpected HTTP failures', not http_failures)
+        check('no browser page exceptions', not page_errors)
+        browser.close()
+    source_hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in
+                     ['src/App.jsx', 'src/pages/MedicalCalculatorPage.jsx', 'src/utils/medical-period-calculator.js', 'src/utils/medical-period-history.js']}
+    report = {'status': 'passed', 'checks': len(checks), 'cases': checks, 'pageErrors': page_errors,
+              'unexpectedApi': unexpected_api, 'externalRequests': external_requests, 'httpFailures': http_failures,
+              'mockApiRequests': requests, 'sourceFilesSHA256': source_hashes,
+              'scope': 'actual App and AuthProvider with fictional authentication; not live backend or production deployment'}
+    (output / 'route-verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(json.dumps({'status': 'passed', 'checks': len(checks), 'output': str(output)}, ensure_ascii=False))
+finally:
+    server.terminate()
+    server.wait(timeout=20)

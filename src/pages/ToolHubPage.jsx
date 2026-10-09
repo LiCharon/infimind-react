@@ -25,7 +25,7 @@ const toolGroups = [
     title: '专项测算', desc: '结合适用条件展示计算过程与结果', tools: [
       { id: 'medical-calculator', icon: Calculator, title: '医疗期计算器', desc: '输入地区、工龄和病休日期，计算医疗期并展示依据。', path: '/tools/medical-calculator' },
       { id: 'pension-calc1', icon: Building2, title: '企业职工养老保险测算', desc: '结合地区、基数和缴费年限估算缴费与待遇。', path: '/tools/pension-calc1' },
-      { id: 'pension-calc2', icon: User, title: '灵活就业保险测算', desc: '比较不同缴费档位，了解灵活就业参保成本。', path: '/tools/pension-calc2' }
+      { id: 'pension-calc2', icon: User, title: '个体工商户／灵活就业者养老保险测算', desc: '比较养老保险缴费档位，估算缴费成本与退休待遇。', path: '/tools/pension-calc2' }
     ]
   }
 ]

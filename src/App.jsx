@@ -10,6 +10,8 @@ import LaborArbitrationPage from './pages/LaborArbitrationPage'
 import ToolHubPage from './pages/ToolHubPage'
 import AuthPage from './pages/AuthPage'
 import ToolConversationPage from './pages/ToolConversationPage'
+import MedicalCalculatorPage from './pages/MedicalCalculatorPage'
+import PensionCalculationPage from './pages/PensionCalculationPage'
 import CitationVerificationComparePage from './pages/CitationVerificationComparePage'
 import QRCodeModal from './components/QRCodeModal'
 import { AuthProvider, useAuth } from './components/AuthProvider'
@@ -61,6 +63,9 @@ function App() {
             <Route path="/tools/labor-consult" element={<ProtectedPage><LaborConsultPage /></ProtectedPage>} />
             <Route path="/tools/labor-contract" element={<ProtectedPage><LaborContractAnalysisPage /></ProtectedPage>} />
             <Route path="/tools/arbitration" element={<ProtectedPage><LaborArbitrationPage /></ProtectedPage>} />
+            <Route path="/tools/medical-calculator" element={<ProtectedPage><MedicalCalculatorPage /></ProtectedPage>} />
+            <Route path="/tools/pension-calc1" element={<ProtectedPage><PensionCalculationPage toolId="pension-calc1" /></ProtectedPage>} />
+            <Route path="/tools/pension-calc2" element={<ProtectedPage><PensionCalculationPage toolId="pension-calc2" /></ProtectedPage>} />
             <Route path="/tools/:toolId" element={<ProtectedPage><ToolConversationPage /></ProtectedPage>} />
             <Route path="/auth" element={<AuthPage />} />
             {import.meta.env.DEV && <Route path="/__demo/citation-verification" element={<CitationVerificationComparePage />} />}
