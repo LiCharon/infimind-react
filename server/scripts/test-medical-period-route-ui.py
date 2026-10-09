@@ -86,6 +86,14 @@ try:
                       (external_requests.append(route.request.url), route.abort()))
         # Register API interception last; all authentication is simulated locally.
         context.route('**/api/**', mock_api)
+        context.add_init_script("""(() => {
+          const get=Storage.prototype.getItem,set=Storage.prototype.setItem,remove=Storage.prototype.removeItem;
+          const key='fafee-history-v2:fictional-medical-user:medical-calculator:calculations',old='old-route-history';
+          if(get.call(localStorage,key)===null) set.call(localStorage,key,old);
+          window.__medicalStorageCalls=[];
+          for(const [name,original] of [['getItem',get],['setItem',set],['removeItem',remove]]) Storage.prototype[name]=function(k,...args){if(String(k).includes('medical-calculator'))window.__medicalStorageCalls.push([name,k]);return original.call(this,k,...args)};
+          window.__medicalStorageUnchanged=()=>get.call(localStorage,key)===old;
+        })()""")
         page = context.new_page()
         page.on('pageerror', lambda error: page_errors.append(str(error)))
         page.on('response', lambda response: http_failures.append(f'{response.status} {response.url}')
@@ -113,31 +121,12 @@ try:
         page.locator('[name="historyComplete"]').check()
         before_calculation = len(requests)
         page.get_by_role('button', name='开始测算', exact=True).click()
-        expect(page.locator('.mp-metrics')).to_contain_text('2.61')
-        check('actual protected route computes Shanghai reference balance', '0.39' in page.locator('.mp-result').inner_text())
+        expect(page.locator('.mp-balance')).to_contain_text('54.01')
+        check('actual protected route computes Shanghai reference balance', '54.01工作日' == page.locator('.mp-balance strong').inner_text())
         check('calculation makes no API/model request', len(requests) == before_calculation)
         page.screenshot(path=str(output / 'protected-medical-result.png'))
-        # Compare computed styles with the actual reference page in a fresh tab.
-        # Its metadata reads are mocked; no consultation, model or real data used.
-        reference = context.new_page()
-        reference.on('pageerror', lambda error: page_errors.append(str(error)))
-        reference.goto(f'{url}/labor-consult', wait_until='networkidle')
-        expect(reference.locator('.labor-consult')).to_be_visible()
-        for selector, properties in [
-            ('.chat-sidebar', ['width', 'padding', 'backgroundColor', 'borderRightColor']),
-            ('.sidebar-search', ['minHeight', 'fontSize', 'borderRadius']),
-            ('.sidebar-action', ['fontSize', 'fontWeight', 'fontFamily', 'minHeight', 'padding']),
-            ('.history-thread-title', ['fontSize', 'fontWeight', 'fontFamily', 'lineHeight']),
-            ('.history-thread-time', ['fontSize', 'fontWeight', 'lineHeight']),
-            ('.account-trigger', ['fontSize', 'fontWeight', 'minHeight', 'borderRadius', 'padding']),
-            ('.footer-avatar', ['fontSize', 'width', 'height'])
-        ]:
-            styles = '(element, properties) => Object.fromEntries(properties.map(p => [p, getComputedStyle(element)[p]]))'
-            actual = page.locator(selector).first.evaluate(styles, properties)
-            expected = reference.locator(selector).first.evaluate(styles, properties)
-            check(f'sidebar matches actual labor-consult {selector}: {actual}', actual == expected)
-        reference.screenshot(path=str(output / 'reference-labor-sidebar.png'))
-        reference.close()
+        check('medical route has no sidebar or history operations', page.locator('.chat-sidebar,.sidebar-toggle,.mp-history-list,.account-trigger').count() == 0)
+        check('actual route displays enterprise title', page.locator('.chat-title strong').inner_text() == '员工医疗期测算')
         page.get_by_role('button', name='修改条件', exact=True).click()
         fill(page, 'segments.0.workDays', '7')
         check('changing input marks stale result in full App', page.locator('.mp-result-stale').count() == 1 and page.get_by_role('button', name='复制测算单', exact=True).is_disabled())
@@ -151,16 +140,13 @@ try:
         page.reload(wait_until='networkidle')
         expect(page.locator('.medical-calculator')).to_be_visible()
         check('refresh restores mock session and remains on medical form', page.locator('[name="region"]').input_value() == '')
-        check('authenticated history survives refresh', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 2)
-        page.locator('.mp-history-list > .mp-history-row > button:first-child').first.click()
-        expect(page.locator('.mp-metrics')).to_contain_text('2.66')
-        check('saved input and result restore through actual protected route', page.locator('[name="segments.0.workDays"]').input_value() == '7')
+        check('refresh discards the current result without saving', page.locator('.mp-result').count() == 0)
         page.get_by_role('link', name='工具总览', exact=True).click()
         expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
         page.locator('a[href="/tools/medical-calculator"]').click()
         expect(page.locator('.medical-calculator')).to_be_visible()
         check('existing hub medical entry opens the new page')
-        check('leaving and reentering the tool retains saved history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 2)
+        check('reentering the tool starts an empty draft', page.locator('[name="region"]').input_value() == '' and page.locator('.mp-result').count() == 0)
         page.get_by_role('link', name='工具总览', exact=True).click()
         for product, title in [('pension-calc1', '企业职工养老保险测算'), ('pension-calc2', '个体工商户／灵活就业者养老保险测算')]:
             page.locator(f'a[href="/tools/{product}"]').click()
@@ -177,7 +163,7 @@ try:
         page.get_by_placeholder('请输入密码').fill('fictional-password-123')
         page.get_by_role('button', name='登录并继续', exact=True).click()
         expect(page.locator('.medical-calculator')).to_be_visible()
-        check('another account cannot see previous account medical history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 0)
+        check('another account starts with empty medical conditions', page.locator('[name="region"]').input_value() == '' and page.locator('.mp-result').count() == 0)
         page.locator('[name="region"]').select_option('national')
         fill(page, 'hireDate', '2025-01-01')
         fill(page, 'totalWorkYears', '1')
@@ -185,7 +171,7 @@ try:
         fill(page, 'segments.0.endDate', '2026-01-02')
         page.get_by_role('button', name='开始测算', exact=True).click()
         expect(page.locator('.mp-result')).to_be_visible()
-        check('second account saves its own independent history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 1)
+        check('second account can calculate without a history sidebar', page.locator('.chat-sidebar').count() == 0 and '2' in page.locator('.mp-metrics').inner_text())
         page.get_by_role('link', name='工具总览', exact=True).click()
         page.get_by_role('button', name='退出登录', exact=True).click()
         expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
@@ -196,7 +182,8 @@ try:
         expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
         page.locator('a[href="/tools/medical-calculator"]').click()
         expect(page.locator('.medical-calculator')).to_be_visible()
-        check('returning to original account restores only its history', page.locator('.mp-history-list > .mp-history-row > button:first-child').count() == 2)
+        check('returning to original account starts empty without restoring history', page.locator('[name="region"]').input_value() == '' and page.locator('.mp-result').count() == 0)
+        check('auth and medical remount do not touch old medical storage', page.evaluate('window.__medicalStorageCalls.length===0 && window.__medicalStorageUnchanged()'))
         check('no unexpected API requests', not unexpected_api)
         check('no external resources requested', not external_requests)
         check('no unexpected HTTP failures', not http_failures)

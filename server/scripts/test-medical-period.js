@@ -6,7 +6,8 @@ import {
   completedMedicalYears,
   formatMedicalResult,
   prepareMedicalPeriodInput,
-  describeMedicalPeriodResult
+  describeMedicalPeriodResult,
+  describeMedicalSegmentResult
 } from '../../src/utils/medical-period-calculator.js'
 
 // Fictional inputs. Expected counts/tier values are hand-derived from A1–A13
@@ -30,14 +31,14 @@ const shanghai = (overrides = {}) => base({
   ...overrides
 })
 
-test('national primary conclusions separate entitlement, recorded days and accumulation scope', () => {
+test('national primary conclusions expose reference days without asserting a legal balance', () => {
   const result = calc(base({ locality: '', hireDate: '2025-11-02', totalWorkYears: '1', tenYearDate: '',
     asOf: '2026-02-06', segments: [{ startDate: '2026-02-02', endDate: '2026-02-06' }] }))
   const display = describeMedicalPeriodResult(result)
   assert.equal(display.recordValue, 5)
   assert.equal(display.recordUnit, '自然日')
-  assert.equal(display.thirdValue, 6)
-  assert.equal(display.thirdLabel, '累计统计范围')
+  assert.equal(display.thirdValue, 85)
+  assert.equal(display.thirdLabel, '剩余医疗期（参考）')
   assert(display.quotaDetail.includes('累计工作1年'))
   assert(display.meaning.includes('6个月内累计病休'))
   assert(display.status.title.includes('法定余额待核对'))
@@ -52,10 +53,11 @@ test('Shanghai foreground uses actual workdays and unrounded workday balance', (
   const display = describeMedicalPeriodResult(result)
   assert.equal(display.recordValue, 8)
   assert.equal(display.recordUnit, '工作日')
-  assert.equal(display.thirdValue, '2.61')
+  assert.equal(display.thirdValue, 54.01)
+  assert.equal(display.thirdUnit, '工作日')
   assert.equal(result.usage.remainingWorkDays, 54.01)
   assert(display.recordDetail.includes('10个自然日'))
-  assert(display.thirdDetail.includes('54.01'))
+  assert(display.thirdDetail.includes('20.67'))
 })
 
 test('unknown date of total-tenure threshold cannot silently issue reference balance', () => {
@@ -73,8 +75,8 @@ test('small positive Shanghai balance is not displayed or copied as zero', () =>
   const result = calc(shanghai({ asOf: '2026-08-31', segments: [{ startDate: '2026-06-01', endDate: '2026-08-31', workDays: '62.00' }] }))
   assert.equal(result.usage.baseThresholdReached, false)
   assert.equal(result.usage.remainingWorkDays, 0.01)
-  assert.equal(describeMedicalPeriodResult(result).thirdValue, '<0.01')
-  assert(formatMedicalResult(result).includes('剩余不足0.01个月'))
+  assert.equal(describeMedicalPeriodResult(result).thirdValue, 0.01)
+  assert(formatMedicalResult(result).includes('0.01工作日'))
 })
 
 test('over-budget record copy explains clamping without a false subtraction equation', () => {
@@ -341,7 +343,8 @@ test('same inputs give same result; inputs and result snapshots do not share mut
 })
 test('copy receipt includes inputs, counts, rule references and pending conclusions', () => {
   const text = formatMedicalResult(calc(shanghai()))
-  for (const phrase of ['2026-06-30', '2024-09-01', '20.67', '0.39', '2.61', 'https://', '届满日期', '不预测未来届满日']) assert(text.includes(phrase), phrase)
+  for (const phrase of ['2026-06-30', '2024-09-01', '20.67', '54.01工作日', 'https://', '届满日期', '不预测未来届满日']) assert(text.includes(phrase), phrase)
+  assert(!/\d+\.\d+\s*个月/.test(text))
   assert.equal(formatMedicalResult(calc({})), '')
 })
 
@@ -404,10 +407,11 @@ test('three distant sick records retain 22 total days and three independent refe
   assert.deepEqual(result.segmentResults.map((row) => row.estimate.remainingMonths.toFixed(2)), ['2.83', '2.73', '2.70'])
   assert.equal(result.usage, null)
   const display = describeMedicalPeriodResult(result)
-  assert.equal(display.thirdValue, 3)
-  assert.equal(display.thirdUnit, '个')
+  assert.equal(display.thirdValue, 81)
+  assert.equal(display.thirdUnit, '天')
   const receipt = formatMedicalResult(result)
-  for (const value of ['2.83', '2.73', '2.70']) assert(receipt.includes(value))
+  for (const value of ['85天（参考）', '82天（参考）', '81天（参考）']) assert(receipt.includes(value))
+  assert(!/\d+\.\d+\s*个月/.test(receipt))
   assert(!receipt.includes('计算过程：'))
 })
 test('several sick records in one period accumulate instead of receiving fresh quotas', () => {
@@ -491,6 +495,47 @@ test('unsupported historical periods never announce a known reference grouping o
   assert.equal(result.quota, null)
   assert.equal(result.segmentResults[0].estimate, null)
   assert.equal(describeMedicalPeriodResult(result).thirdValue, '待核对')
+})
+
+test('segment presentation keeps day units and matches the copied receipt', () => {
+  for (const result of [calc(separated()), calc(shanghai({ leaveType: 'segmented', segments: [
+    { startDate: '2026-06-01', endDate: '2026-06-10', workDays: '8' },
+    { startDate: '2026-06-15', endDate: '2026-06-20', workDays: '5' }
+  ] }))]) {
+    const receipt = formatMedicalResult(result)
+    for (const row of result.segmentResults) {
+      const display = describeMedicalSegmentResult(result, row)
+      assert(receipt.includes(display.balance))
+      assert(receipt.includes(display.dates))
+      assert(!/\d+\.\d+\s*个月/.test(display.balance))
+    }
+  }
+})
+test('missing balance reasons stay specific and count remains available', () => {
+  for (const [input, phrase] of [
+    [base({ totalWorkYears: '9', tenYearDate: '' }), '请补充累计工龄满10年日期'],
+    [base({ historyComplete: false }), '请补齐并确认全部相关病休记录'],
+    [base({ specialCircumstances: true }), '特殊情况或延长约定需人工核对']
+  ]) {
+    const result = calc(input)
+    const display = describeMedicalPeriodResult(result)
+    assert.equal(display.thirdValue, '待核对')
+    assert.equal(display.thirdUnit, '')
+    assert.equal(display.thirdDetail, phrase)
+    assert.equal(display.recordValue, result.records.naturalDays)
+    assert(formatMedicalResult(result).includes(phrase))
+  }
+})
+test('Shanghai exact hundredth, fractional and zero balances never become monthly strings', () => {
+  for (const [workDays, remaining] of [['0',62.01],['0.5',61.51],['62',0.01],['62.01',0],['63',0]]) {
+    const result = calc(shanghai({ asOf: '2026-08-31', segments: [{ startDate: '2026-06-01', endDate: '2026-08-31', workDays }] }))
+    const display = describeMedicalPeriodResult(result)
+    assert.equal(display.thirdValue, remaining)
+    assert.equal(display.thirdUnit, '工作日')
+    const receipt = formatMedicalResult(result)
+    assert(receipt.includes(`${remaining}工作日`))
+    assert(!/\d+\.\d+\s*个月/.test(receipt))
+  }
 })
 
 console.log(`Medical period: ${checks} cases passed.`)

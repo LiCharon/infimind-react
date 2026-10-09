@@ -364,7 +364,7 @@ export function calculateMedicalPeriod(raw, { today } = {}) {
 }
 
 // One presentation contract for the page and copied receipt. Primary national
-// results never promote the unverified 30-day estimate into a legal balance.
+// balances explicitly retain the unverified 30-day reference qualification.
 export function describeMedicalPeriodResult(result) {
   if (!result?.ok) return null
   const { input, quota, records, usage, referenceEstimate, reviewReasons } = result
@@ -398,12 +398,12 @@ export function describeMedicalPeriodResult(result) {
     recordValue: shanghai ? records.workDays ?? '未提供' : records.naturalDays,
     recordUnit: shanghai ? '工作日' : '自然日',
     recordDetail: shanghai ? `${records.naturalDays === null ? '自然日总量未提供' : `日期范围合计${records.naturalDays}个自然日`}；月数按病休工作日折算` : records.precision === 'summary' ? '仅有汇总量，日期分布未知' : '各段包含首尾日期，未病休的间隔不计入',
-    thirdLabel: shanghai ? '剩余额度（工作日折算）' : '累计统计范围',
-    thirdValue: shanghai ? usage ? usage.remainingMonths > 0 && usage.remainingMonths < 0.005 ? '<0.01' : usage.remainingMonths.toFixed(2) : '待核对' : quota?.accumulationMonths ?? '待核对',
-    thirdUnit: shanghai && !usage || !shanghai && !quota ? '' : '个月',
-    thirdDetail: shanghai ? usage ? `对应${usage.remainingWorkDays}个病休工作日；按20.67工作日/月折算` : status.detail : quota ? `从参考起点${records.firstDay}核对；这是累计范围的长度` : '适用累计范围尚未确定',
+    thirdLabel: shanghai ? '剩余医疗期' : '剩余医疗期（参考）',
+    thirdValue: shanghai ? usage?.remainingWorkDays ?? '待核对' : referenceEstimate?.remainingDays ?? '待核对',
+    thirdUnit: shanghai ? usage ? '工作日' : '' : referenceEstimate ? '天' : '',
+    thirdDetail: shanghai ? usage ? '按20.67工作日/月折算' : medicalBalanceReason(actions[0]) : referenceEstimate ? '30天/月参考，非核定法定余额' : medicalBalanceReason(actions[0]),
     meaning: quota ? shanghai ? '医疗期是停工治病期间的劳动合同保护期限。上海按本单位年限设置基础额度，病休月份按工作日折算。' : `${quota.months}个月是基础医疗期额度，按${quota.accumulationMonths}个月内累计病休判断是否用满；实际需要病休多久依据医疗证明。` : '本次可以核对录入天数；基础医疗期额度需先确认适用规则。',
-    referenceDetail: referenceEstimate ? `仅用于对照：假设30天/月，${quota.months}个月 × 30 = ${quota.months * 30}天；已录入${referenceEstimate.usedDays}天，参考余额${referenceEstimate.remainingDays}天，约${referenceEstimate.remainingMonths.toFixed(2)}个月${referenceEstimate.overBudgetDays ? `（录入量超出参考预算${referenceEstimate.overBudgetDays}天）` : ''}。此假设尚未作地方规则校准，非核定法定余额，不据此判断届满。` : null,
+    referenceDetail: referenceEstimate ? `仅用于对照：假设30天/月，${quota.months}个月 × 30 = ${quota.months * 30}天；已录入${referenceEstimate.usedDays}天，参考余额${referenceEstimate.remainingDays}天${referenceEstimate.overBudgetDays ? `（录入量超出参考预算${referenceEstimate.overBudgetDays}天）` : ''}。此假设尚未作地方规则校准，非核定法定余额，不据此判断届满。` : null,
     scope, status, actions, reviewReasons
   }
   if (segmentedNational) {
@@ -411,8 +411,8 @@ export function describeMedicalPeriodResult(result) {
     Object.assign(presentation, {
       quotaLabel: '最近一段基础额度', quotaValue: lastSegment.quotaMonths ?? '待核对',
       quotaDetail: `按最近一段所在参考周期起点${lastSegment.cycleStart}的年限分档；各段额度见下方`,
-      thirdLabel: '参考累计周期', thirdValue: groupingKnown ? cycleCount : '待核对', thirdUnit: groupingKnown ? '个' : '',
-      thirdDetail: `${segments.length}段病休；同一周期累计，不按每段重新发放额度`,
+      thirdLabel: '最近一段剩余（参考）', thirdValue: lastSegment.estimate?.remainingDays ?? '待核对', thirdUnit: lastSegment.estimate ? '天' : '',
+      thirdDetail: lastSegment.estimate ? '仅对应最近一段所在周期' : medicalBalanceReason(lastSegment.issues[0]),
       meaning: '各段结果按参考累计周期分别展示，同一周期内的病休继续累计。剩余试算沿用原工具30天/月口径，具体地方口径及周期重启仍需核对。',
       scope: groupingKnown ? `${segments.length}段病休按固定累计窗口参考方案分为${cycleCount}个周期；跨周期的总天数不直接扣减某一个周期额度。` : `${segments.length}段病休已统计；部分周期长度或归属待核对，详情见分段结果。`,
       status: { tone: 'pending', title: issues.length ? '已分段统计，部分结果需补充核对' : '已按参考累计周期分段统计',
@@ -425,31 +425,55 @@ export function describeMedicalPeriodResult(result) {
   return presentation
 }
 
+// Short actionable wording is shared by result cards and the copied receipt.
+function medicalBalanceReason(issue) {
+  const messages = {
+    TOTAL_TENURE_DATE_MISSING: '请补充累计工龄满10年日期',
+    TOTAL_TENURE_UNKNOWN: '请补充累计工龄满10年日期',
+    FIRST_DATE_MISSING: '请补充首次病休日期',
+    HISTORY_INCOMPLETE: '请补齐并确认全部相关病休记录',
+    WORKDAYS_MISSING: '请补充实际病休工作日',
+    SPECIAL_REVIEW: '特殊情况或延长约定需人工核对',
+    TENURE_CHANGE: '病休期间工龄跨档，需核对额度调整',
+    TOTAL_TENURE_CHANGE: '病休期间累计工龄满10年，需核对额度调整',
+    PERIOD_TENURE_CHANGE: '请核对本周期工龄跨档及满10年日期',
+    WINDOW_SPAN: '病休跨累计周期，需核对周期归属',
+    PERIOD_BOUNDARY: '病休到达或跨周期边界，需核对归属',
+    PERIOD_ALLOCATION: '请先核对此前跨周期病休的归属',
+    RENEWAL_REVIEW: '前一周期已达参考额度，需核对是否重新享有医疗期',
+    DISTRIBUTION_UNKNOWN: '请补充实际病休日期段，核对周期归属',
+    LEAP_ANNIVERSARY: '2月29日入职，需核对周年日期',
+    HISTORICAL_CONVERSION: '较早病休记录的工作日换算需核对',
+    HISTORICAL_CONTRACT: '请核对历史合同及适用规则',
+    RULE_DATE_UNSUPPORTED: '记录日期超出当前规则范围',
+    REGION_UNSUPPORTED: '请核对适用地区规则'
+  }
+  return messages[issue?.code] || issue?.message || '请核对适用额度与病休记录'
+}
+
 export function describeMedicalSegmentResult(result, segment) {
   const shanghai = result.input.region === 'shanghai'
   const estimate = segment.estimate
   return {
     title: `第${segment.inputIndex + 1}段`, dates: `${segment.startDate} 至 ${segment.endDate}`,
     periodLabel: shanghai ? '本单位病休累计' : segment.cycleBoundary ? `参考周期 ${segment.cycleNumber}` : '周期待核对',
-    period: shanghai ? '核对本单位全部病休工作日，分段不重置额度' : segment.cycleBoundary
-      ? `${segment.cycleStart} 至 ${segment.cycleBoundary}（${segment.accumulationMonths}个月，边界日需核对）` : '工龄或规则条件不足，累计周期待核对',
+    period: shanghai ? '分段不重置额度' : segment.cycleBoundary
+      ? `${segment.cycleStart} 至 ${segment.cycleBoundary}` : '累计周期待核对',
     quota: segment.quotaMonths === null ? '待核对' : `${segment.quotaMonths}个月`,
-    recorded: shanghai ? `${segment.workDays ?? '未提供'}工作日（${segment.naturalDays}自然日）` : `${segment.naturalDays}自然日`,
+    recorded: shanghai ? `${segment.workDays ?? '未提供'}工作日` : `${segment.naturalDays}自然日`,
     cumulative: shanghai ? `${segment.cumulativeWorkDays ?? '未完整提供'}工作日` : segment.cumulativeDays === null ? '归属待核对' : `${segment.cumulativeDays}自然日`,
-    balanceLabel: shanghai ? '剩余额度（工作日折算）' : '剩余试算（30天/月）',
-    balance: !estimate ? '待核对' : estimate.remainingMonths > 0 && estimate.remainingMonths < 0.005
-      ? '不足0.01个月' : `约${estimate.remainingMonths.toFixed(2)}个月`,
-    balanceDetail: !estimate ? segment.issues[0]?.message || '适用额度尚未确定，保留记录统计。'
-      : shanghai ? `对应${estimate.remainingWorkDays}个病休工作日` : `参考未用量${estimate.remainingDays}天${estimate.overBudgetDays ? `；录入量超出参考预算${estimate.overBudgetDays}天` : ''}；非核定法定余额`
+    balanceLabel: '剩余',
+    balance: !estimate ? '待核对' : shanghai ? `${estimate.remainingWorkDays}工作日` : `${estimate.remainingDays}天（参考）`,
+    balanceDetail: !estimate ? medicalBalanceReason(segment.issues[0]) : estimate.overBudgetDays ? `已超出参考预算${estimate.overBudgetDays}天` : ''
   }
 }
 
 export function formatMedicalResult(result) {
   if (!result?.ok) return ''
-  const { input, quota, usage, records, referenceEstimate } = result
+  const { input, quota, records, referenceEstimate } = result
   const display = describeMedicalPeriodResult(result)
   const lines = [
-    '医疗期测算 · 基础规则与记录核对',
+    '员工医疗期测算',
     `适用地区：${result.regionLabel}${input.locality ? `（${input.locality}）` : ''}`,
     `统计截止日：${input.asOf}；本单位入职日：${input.hireDate}`,
     `最早录入病休日：${records.firstDay || '未提供'}；记录方式：${records.precision === 'summary' ? '汇总量，日期分布未知' : '实际日期段'}`,
@@ -457,13 +481,13 @@ export function formatMedicalResult(result) {
     `历史完整性：${input.historyComplete ? '已勾选，需核对材料' : '未确认'}；特殊情形：${input.specialCircumstances || input.specialNote ? '待人工核对' : '未填写'}`,
     ...(input.specialNote ? [`补充说明：${input.specialNote}`] : []),
     `${display.quotaLabel}：${typeof display.quotaValue === 'number' ? `${display.quotaValue}个月` : display.quotaValue}；${display.quotaDetail}`,
-    `累计窗口：${result.segmentResults?.length && input.region === 'national' ? `${display.thirdValue}${display.thirdUnit}参考累计周期，各周期长度及归属见分段结果` : quota?.accumulationMonths ? `${quota.accumulationMonths}个月（端点及重启待核对）` : input.region === 'shanghai' ? '核对本单位期间全部病休' : '待核对'}`,
+    `累计窗口：${result.segmentResults?.length && input.region === 'national' ? '各参考周期见分段结果' : quota?.accumulationMonths ? `${quota.accumulationMonths}个月（端点及重启待核对）` : input.region === 'shanghai' ? '核对本单位期间全部病休' : '待核对'}`,
     `本次录入自然日：${records.naturalDays === null ? '未提供' : `${records.naturalDays}天`}；病休工作日：${records.workDays === null ? '未完整提供或不适用' : `${records.workDays}天`}`,
     `分档依据：${display.quotaDetail}`,
     `额度含义：${display.meaning}`,
     `核算范围：${display.scope}`,
     `核算状态：${display.status.title}；${display.status.detail}`,
-    ...(usage ? [`已用月数（工作日折算）：${usage.usedMonths.toFixed(2)}个月；剩余${display.thirdValue === '<0.01' ? '不足0.01' : `约${display.thirdValue}`}个月，对应${usage.remainingWorkDays}个病休工作日。按20.67工作日/月折算，使用未舍入的数值比较额度。`] : ['最终法定余额：尚未核定，具体原因见核算状态及待核对事项。']),
+    `${display.thirdLabel}：${display.thirdValue}${display.thirdUnit}；${display.thirdDetail}`,
     ...(referenceEstimate && display.referenceDetail ? [`参考折算（非核定余额）：${display.referenceDetail}`] : []),
     '届满日期：不预测未来届满日；医疗期届满不自动构成解除劳动合同的结论。',
     '', '记录明细：',
