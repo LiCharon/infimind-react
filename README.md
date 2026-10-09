@@ -205,10 +205,14 @@ npm run dev
 访问：
 
 - 官网：<http://localhost:5173/>
+- 登录后默认工作空间（用工咨询）：<http://localhost:5173/labor-consult>
 - 合同审查：<http://localhost:5173/contract-rewrite>
+- 合同起草：<http://localhost:5173/contract-draft>
 - 劳动合同与派遣：<http://localhost:5173/tools/labor-contract>
 - 仲裁答辩：<http://localhost:5173/tools/arbitration>
 - 健康检查：<http://localhost:8789/api/health>
+
+登录后的五项已接通功能共用灰色外壳、左侧图标导航和内层会话卡片。顶部按钮统一展开或收起历史会话栏，手机端默认收起。旧 `/tools` 入口自动转到用工咨询，原有功能直达地址继续可用。
 
 Vite 会把 `/api` 代理到 `LOCAL_SERVER_PORT`，前后端端口必须保持一致。
 

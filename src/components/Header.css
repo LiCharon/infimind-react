@@ -101,7 +101,7 @@
 
 .nav-link:hover,
 .nav-item.active .nav-link {
-    color: #FD7002;
+    color: var(--fafee-brand);
 }
 
 /* Dropdown Styles */
@@ -165,7 +165,7 @@
 
 .product-item:hover {
     background: rgba(242, 242, 242, 0.1);
-    color: #FD7002;
+    color: var(--fafee-brand);
 }
 
 .product-icon {
@@ -177,12 +177,12 @@
 }
 
 .product-item:hover .product-icon {
-    color: #FD7002;
+    color: var(--fafee-brand);
 }
 
 /* Primary Button */
 .primary-btn {
-    background: linear-gradient(135deg, #FD7002 0%, #ff8c00 100%);
+    background: linear-gradient(135deg, var(--fafee-brand) 0%, #ff8c00 100%);
     color: #fff;
     text-decoration: none;
     padding: clamp(0.5rem, 1vw, 0.75rem) clamp(1rem, 2vw, 1.5rem);
@@ -205,17 +205,36 @@
     margin-left: clamp(0.5rem, 1vw, 1rem);
 }
 
-.auth-nav-link {
-    color: #17304f;
+.header .workspace-launch-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    min-height: 36px;
+    color: var(--fafee-brand-ink);
     text-decoration: none;
-    padding: 0.65rem 0;
-    font-size: clamp(0.82rem, 1vw, 0.95rem);
+    padding: 0.25rem 0;
+    font-size: 0.875rem;
     font-weight: 600;
+    line-height: 1.4;
     white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.2s ease;
 }
 
-.auth-nav-link:hover { color: #FD7002; }
-.workspace-entry-link { color: #0b3f78; font-weight: 650; }
+.header .workspace-launch-link:hover,
+.header .workspace-launch-link:focus-visible {
+    color: var(--fafee-brand-ink-hover);
+}
+.header .workspace-launch-link:focus-visible {
+    outline: 2px solid #052C63;
+    outline-offset: 4px;
+}
+
+.workspace-launch-arrow {
+    display: flex;
+    flex-shrink: 0;
+}
 
 .primary-btn:hover {
     transform: translateY(-2px);
@@ -312,15 +331,19 @@
 }
 
 /* Responsive Design - 移动端 */
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
     .navbar-container {
         padding: clamp(0.75rem, 1.5vh, 1rem) clamp(3%, 4vw, 1.5rem);
         padding-left: clamp(4%, 5vw, 2rem); /* 移动端也增加左边距 */
     }
     
     .logo-main-image {
-        height: clamp(3.5rem, 4.5vh, 4.5rem);
-        margin-left: clamp(-1.5rem, -2vw, -1rem); /* 移动端也向左移动 */
+        height: clamp(2rem, 10vw, 3rem);
+        margin-left: 0;
+    }
+
+    .logo-sub {
+        display: none;
     }
     
     .navbar-nav {
@@ -365,7 +388,7 @@
     
     .nav-link:hover {
         background: rgba(214, 210, 210, 0.1);
-        color: #FD7002;
+        color: var(--fafee-brand);
     }
     
     .dropdown-menu {
@@ -383,9 +406,10 @@
     }
     
     .navbar-right {
-        display: none;
+        display: flex;
+        margin-left: auto;
     }
-    
+
     .navbar-right.mobile-visible {
         display: flex;
         width: 100%;
@@ -403,7 +427,11 @@
     
     .mobile-menu-btn {
         display: flex;
+        margin-left: 0.75rem;
+        flex-shrink: 0;
     }
 }
 
-
+@media (prefers-reduced-motion: reduce) {
+    .header .workspace-launch-link { transition: none; }
+}

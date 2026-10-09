@@ -1,0 +1,21 @@
+:root {
+  --fafee-brand: #fd7002;
+  --fafee-brand-hover: #e76400;
+  --fafee-brand-ink: #a94700;
+  --fafee-brand-ink-hover: #c45400;
+  --fafee-brand-soft: #fff0e3;
+  --fafee-primary: linear-gradient(180deg, #ed6b0b, #db5900);
+  --fafee-primary-hover: linear-gradient(180deg, #e76507, #d65300);
+  --fafee-shell: #f2eee8;
+  --fafee-paper: #fcfaf7;
+  --fafee-surface: #fff;
+  --fafee-surface-soft: #f7f4ef;
+  --fafee-fill: #efebe5;
+  --fafee-border: #dfdcd6;
+  --fafee-line: #eee8e1;
+  --fafee-ink: #272b30;
+  --fafee-ink-muted: #6f6861;
+  --fafee-ink-subtle: #8a8178;
+  --fafee-ink-disabled: #b5aca3;
+  --fafee-shadow-rgb: 87, 63, 38;
+}

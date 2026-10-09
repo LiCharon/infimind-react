@@ -1,4 +1,6 @@
-import ToolAccountPanel from '../components/ToolAccountPanel'
+import { useComposerSend } from '../hooks/useComposerSend'
+import QueuedMessages from '../components/QueuedMessages'
+import SideChatEmptyState from '../components/SideChatEmptyState'
 import ToolComposerControls from '../components/ToolComposerControls'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -14,7 +16,6 @@ import {
   Loader2,
   Menu,
   MessageCircle,
-  PanelLeft,
   PenLine,
   Plus,
   Send,
@@ -25,7 +26,10 @@ import {
 } from 'lucide-react'
 import './ContractRewritePage.css'
 import ContractWorkbenchLayout from '../components/ContractWorkbenchLayout'
-import ToolOverviewLink from '../components/ToolOverviewLink'
+import { useWorkspaceText, useWorkspaceLayout } from '../components/WorkspaceContext'
+import { useConversationActions } from '../hooks/useConversationActions'
+import { useSharedConversations, useSharedRequestState } from '../hooks/useSharedConversations'
+
 import { useAuth } from '../components/AuthProvider'
 import { authFetch } from '../utils/auth-api'
 import { formatRelativeTime } from '../utils/relative-time.js'
@@ -303,6 +307,7 @@ export function RevisionDocument({ contractText, revisions, preserveFileMarkers 
 }
 
 function SandwichBlock({ revision: rev }) {
+  const t = useWorkspaceText()
   const meta = levelMeta(rev.level)
   const act = actionMeta(rev.action)
   if (rev.isLocalized) {
@@ -319,10 +324,10 @@ function SandwichBlock({ revision: rev }) {
         <div className="local-edit-content">
           <div className="local-edit-suggestion"><span>{operationLabel}</span><strong>{suggestion}</strong></div>
           <details className="local-edit-details">
-            <summary>查看批注{showFullRevision ? '与完整修订条款' : ''}</summary>
-            <p><b>原片段</b>{rev.originalText}</p>
-            {rev.riskNote && <p><b>说明</b>{rev.riskNote}</p>}
-            {showFullRevision && <p className="full-revision"><b>完整条款</b>{rev.fullRewrittenText}</p>}
+            <summary>{t("查看批注")}{showFullRevision ? t("与完整修订条款") : ''}</summary>
+            <p><b>{t("原片段")}</b>{rev.originalText}</p>
+            {rev.riskNote && <p><b>{t("说明")}</b>{rev.riskNote}</p>}
+            {showFullRevision && <p className="full-revision"><b>{t("完整条款")}</b>{rev.fullRewrittenText}</p>}
           </details>
         </div>
       </div>
@@ -333,13 +338,13 @@ function SandwichBlock({ revision: rev }) {
     : (rev.rewrittenText || '请参考批注手动修订')
   return (
     <div className={`compact-revision-card ${meta.cls} ${act.cls}`}>
-      <div className="compact-revision-head"><span>{act.label}</span><strong>{rev.title || '条款调整建议'}</strong></div>
-      {rev.action === 'add' && rev.anchorText && <p className="compact-anchor">插入于“{rev.anchorText}”之后</p>}
+      <div className="compact-revision-head"><span>{act.label}</span><strong>{rev.title || t("条款调整建议")}</strong></div>
+      {rev.action === 'add' && rev.anchorText && <p className="compact-anchor">{t("插入于“")}{rev.anchorText}{t("”之后")}</p>}
       <p className="compact-preview">{preview.length > 180 ? `${preview.slice(0, 180)}…` : preview}</p>
       <details>
-        <summary>查看完整修订与批注</summary>
-        {preview.length > 180 && <p><b>完整修订</b>{preview}</p>}
-        {rev.riskNote && <p><b>批注</b>{rev.riskNote}</p>}
+        <summary>{t("查看完整修订与批注")}</summary>
+        {preview.length > 180 && <p><b>{t("完整修订")}</b>{preview}</p>}
+        {rev.riskNote && <p><b>{t("批注")}</b>{rev.riskNote}</p>}
       </details>
     </div>
   )
@@ -348,13 +353,15 @@ function SandwichBlock({ revision: rev }) {
 // 审查轮次进度面板：在对话气泡中实时展示「第X轮发现/新增了哪些问题」。
 // 每轮一个折叠条目，展开后罗列该轮新增的风险点（等级 + 标题 + 位置 + 风险摘要）。
 export function ReviewRoundsPanel({ rounds, thinking, finished = false, stoppedEarly = false, activeRound = null, interrupted = false }) {
+  const t = useWorkspaceText()
+  const { settings } = useWorkspaceLayout()
   if (!rounds.length && !thinking) return null
   const totalFindings = rounds.reduce((sum, r) => sum + (r.newCount || 0), 0)
   return (
     <div className="review-rounds-panel">
       <div className="rounds-panel-head">
-        <span className="rounds-panel-title">三轮审查进度</span>
-        <span className="rounds-panel-summary">{rounds.length}/3 轮完成{stoppedEarly ? ' · 未发现新问题，审查结束' : ''}{totalFindings > 0 ? ` · 累计发现 ${totalFindings} 条问题` : ''}</span>
+        <span className="rounds-panel-title">{t("三轮审查进度")}</span>
+        <span className="rounds-panel-summary">{rounds.length}{t("/3 轮完成")}{stoppedEarly ? t(" · 未发现新问题，审查结束") : ''}{totalFindings > 0 ? (t(" · 累计发现 ") + (totalFindings) + t(" 条问题")) : ''}</span>
       </div>
       <div className="rounds-panel-body">
         {[1, 2, 3].map((roundNum) => {
@@ -365,12 +372,12 @@ export function ReviewRoundsPanel({ rounds, thinking, finished = false, stoppedE
             <div key={roundNum} className={`round-item ${round ? 'round-done' : ''} ${isThinking ? 'round-thinking' : ''} ${isPending ? 'round-pending' : ''}`}>
               <div className="round-item-head">
                 <span className="round-badge">{roundNum}</span>
-                <span className="round-label">{roundNum === 1 ? '首轮审查' : roundNum === 2 ? '二轮复审' : '三轮复审'}</span>
+                <span className="round-label">{roundNum === 1 ? t("首轮审查") : roundNum === 2 ? t("二轮复审") : t("三轮复审")}</span>
                 <span className="round-status">
-                  {round ? (round.newCount > 0 ? `新增 ${round.newCount} 条` : '未发现新问题') : isThinking ? <Loader2 size={13} className="spinner" /> : interrupted && roundNum === activeRound ? '连接中断' : finished ? stoppedEarly ? '无需继续' : '未执行' : '待开始'}
+                  {round ? (round.newCount > 0 ? (t("新增 ") + (round.newCount) + t(" 条")) : t("未发现新问题")) : isThinking ? <Loader2 size={13} className="spinner" /> : interrupted && roundNum === activeRound ? t("连接中断") : finished ? stoppedEarly ? t("无需继续") : t("未执行") : t("待开始")}
                 </span>
               </div>
-              {round && round.newFindings?.length > 0 && (
+              {settings.steps === 'detailed' && round && round.newFindings?.length > 0 && (
                 <ul className="round-findings">
                   {round.newFindings.map((finding, idx) => {
                     const meta = levelMeta(finding.level)
@@ -471,7 +478,9 @@ export function downloadRevisionWord({ name = '合同审查稿', text = '', docu
   }
 
 function ContractRewritePage() {
+  const t = useWorkspaceText()
   const { user } = useAuth()
+  const { settings, sidebarCollapsed, initialConversationId, isSideChat } = useWorkspaceLayout()
   const inputRef = useRef(null)
   const searchRef = useRef(null)
   const threadEndRef = useRef(null)
@@ -486,21 +495,20 @@ function ContractRewritePage() {
   const stickToBottomRef = useRef(true)
   const threadStorageKey = `fafee-history-v2:${user.id}:contract-review:threads`
   const taskStorageKey = `fafee-history-v2:${user.id}:contract-review:tasks`
-  const [threads, setThreads] = useState(() => {
+  const [threads, setThreads] = useSharedConversations(threadStorageKey, () => {
     const saved = readStorage(threadStorageKey, [], normalizeStoredThreads)
     return saved.length ? saved : [createThread('商业合同审查与批注')]
-  })
-  const [tasks, setTasks] = useState(() => readStorage(taskStorageKey, [], normalizeStoredTasks))
-  const [activeThreadId, setActiveThreadId] = useState('')
+  }, undefined, createThread)
+  const [tasks, setTasks] = useState(() => isSideChat ? [] : readStorage(taskStorageKey, [], normalizeStoredTasks))
+  const [activeThreadId, setActiveThreadId] = useState(initialConversationId)
   const [files, setFiles] = useState([])
   const [instruction, setInstruction] = useState('')
   const [mode, setMode] = useState('thinking')
   const [clientId] = useState(() => readOrCreateClientId(user.id))
-  const [threadRequests, setThreadRequests] = useState({})
+  const [threadRequests, setThreadRequests] = useSharedRequestState(threadStorageKey)
   const [documentOpen, setDocumentOpen] = useState(false)
   const [documentMessageId, setDocumentMessageId] = useState('')
   const [historyQuery, setHistoryQuery] = useState('')
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [taskTitle, setTaskTitle] = useState('')
   const [taskPrompt, setTaskPrompt] = useState('')
@@ -516,9 +524,6 @@ function ContractRewritePage() {
   // 修订稿文档数据：合同原文 + 结构化修订块（三明治视图）。两者均来自后端 rewrite.result 事件。
   const documentContractText = selectedDocument?.contractText || selectedDocument?.originalText || ''
   const documentRevisions = selectedDocument?.revisions || []
-  const matchingThreads = useMemo(() => [...threads]
-    .sort((left, right) => right.updatedAt - left.updatedAt)
-    .filter((thread) => thread.title.toLowerCase().includes(historyQuery.trim().toLowerCase())), [historyQuery, threads])
 
   useEffect(() => {
     if (threads.length && !threads.some((thread) => thread.id === activeThreadId)) setActiveThreadId(threads[0].id)
@@ -527,8 +532,7 @@ function ContractRewritePage() {
   useEffect(() => { activeThreadIdRef.current = activeThread?.id || '' }, [activeThread?.id])
   useEffect(() => { threadsRef.current = threads }, [threads])
 
-  useEffect(() => { writeStorage(threadStorageKey, threads) }, [threadStorageKey, threads])
-  useEffect(() => { writeStorage(taskStorageKey, tasks) }, [taskStorageKey, tasks])
+  useEffect(() => { if (!isSideChat) writeStorage(taskStorageKey, tasks) }, [taskStorageKey, tasks, isSideChat])
 
   // 后台任务入口收敛后，历史对话的 taskId 是用户查看后台任务状态的唯一入口。
   // 只在切换对话时触发一次；进行中的状态由 requestRunsRef / watchThreadsRef 去重，
@@ -757,7 +761,7 @@ function ContractRewritePage() {
       if (!run.superseded) updateThreadRequest(threadId, { error: resumeError.message || '任务恢复未完成。' })
     } finally {
       const current = requestRunsRef.current.get(threadId)
-      if (current?.runId === run.runId && !run.superseded) clearCurrentRun(threadId, run.runId)
+      if (current?.runId === run.runId && !run.superseded && !run.cancelPending) clearCurrentRun(threadId, run.runId)
       watchThreadsRef.current.delete(threadId)
     }
   }
@@ -791,29 +795,30 @@ function ContractRewritePage() {
     if (!run) return null
     if (run.interruptPromise) return run.interruptPromise
     interruptingThreadsRef.current.add(threadId)
-    run.superseded = true
+    run.cancelPending = true
     run.interruptPromise = (async () => {
-      updateThreadRequest(threadId, { loading: true, cancelPending: Boolean(run.taskId), stage: run.taskId && waitForTask ? 'cancelling' : '' })
-      run.controller.abort()
+      updateThreadRequest(threadId, { loading: true, cancelPending: true, stage: 'cancelling' })
+      // Do not abort creation: its response is needed to cancel the actual server job.
+      await run.ready
       let task = null
       if (run.taskId) {
         const response = await authFetch(`/api/tasks/${run.taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(payload.error || '上一轮审查任务暂时无法停止。')
         task = payload.task || null
-        if (waitForTask && task && !['succeeded', 'failed', 'cancelled'].includes(task.status)) {
+        if (waitForTask && !['succeeded', 'failed', 'cancelled'].includes(task?.status)) {
           task = await waitForTaskTerminal(run.taskId)
-          if (!task || !['succeeded', 'failed', 'cancelled'].includes(task.status)) {
-            throw new Error('上一轮审查仍在停止中，请稍后再提交新的文件审查。')
-          }
+          if (!task || !['succeeded', 'failed', 'cancelled'].includes(task.status)) throw new Error('上一轮审查仍在停止中，请稍后再提交。')
         }
       }
+      run.superseded = true
+      run.controller.abort()
       const interruptedMessage = markRunInterrupted(threadId, run, task?.status === 'succeeded' ? '上一轮已完成，已插入新消息' : '已被新消息打断')
       clearCurrentRun(threadId, run.runId)
       return { task, interruptedMessage }
     })().catch((error) => {
-      run.superseded = false
-      updateThreadRequest(threadId, { loading: false, cancelPending: false, stage: '', error: error.message || '上一轮请求暂时无法停止。' })
+      run.cancelPending = false
+      updateThreadRequest(threadId, { loading: true, cancelPending: false, stage: '', error: error.message || '上一轮请求暂时无法停止。' })
       throw error
     }).finally(() => {
       run.interruptPromise = null
@@ -822,11 +827,11 @@ function ContractRewritePage() {
     return run.interruptPromise
   }
 
-  const sendMessage = async () => {
+  const sendMessage = async (snapshot = null) => {
     if (!activeThread) return
     const threadId = activeThread.id
-    const instructionSnapshot = instruction.trim()
-    const filesSnapshot = [...files]
+    const instructionSnapshot = snapshot ? snapshot.text.trim() : instruction.trim()
+    const filesSnapshot = snapshot ? snapshot.files : [...files]
     const hasNewInput = Boolean(instructionSnapshot || filesSnapshot.length)
     let interruption = null
     const existingRun = requestRunsRef.current.get(threadId)
@@ -847,14 +852,16 @@ function ContractRewritePage() {
         ? { ...message, ...interruption.interruptedMessage }
         : message)
     }
-    const requestMode = mode
+    const requestMode = snapshot?.mode || mode
     const content = instructionSnapshot || '请根据合同类型匹配知识库中的优秀模板和已批注风险案例，完成合规审查并生成带修改说明的合同稿。'
     const history = buildConversationHistory(historyMessages)
     const uploadedFiles = filesSnapshot.map((file) => ({ name: file.name, size: file.size }))
     const userMessage = { id: createId('message'), role: 'user', content, files: uploadedFiles, createdAt: Date.now() }
     const shouldRefineTitle = sourceThread.messages.length === 0
     const assistantId = createId('message')
+    let resolveReady
     const run = {
+      ready: new Promise((resolve) => { resolveReady = resolve }),
       runId: createId('request'),
       controller: new AbortController(),
       assistantId,
@@ -868,8 +875,7 @@ function ContractRewritePage() {
     appendMessage(threadId, userMessage)
     if (shouldRefineTitle) void refineThreadTitle(threadId, [content, ...uploadedFiles.map((file) => file.name)].join('；'))
     appendMessage(threadId, { id: assistantId, role: 'assistant', content: '', mode: requestMode, createdAt: Date.now(), status: uploadedFiles.length ? '正在读取合同文件…' : '正在思考…' })
-    setInstruction('')
-    setFiles([])
+    if (!snapshot) { setInstruction(''); setFiles([]) }
     updateThreadRequest(threadId, { loading: true, error: '', cancelPending: false, stage: uploadedFiles.length ? 'parsing' : 'chat', mode: requestMode })
     let analysis = ''
     let review = ''
@@ -883,6 +889,7 @@ function ContractRewritePage() {
         form.append('message', content)
         form.append('mode', requestMode)
         form.append('threadId', threadId)
+        form.append('temporary', String(isSideChat))
         form.append('title', sourceThread.title || '商业合同审查')
         form.append('history', JSON.stringify(history))
         filesSnapshot.forEach((file) => form.append('files', file))
@@ -892,6 +899,7 @@ function ContractRewritePage() {
         const taskId = createdPayload.taskId
         if (!taskId) throw new Error('任务服务未返回任务 ID。')
         run.taskId = taskId
+        resolveReady()
         updateThread(threadId, (thread) => ({ ...thread, taskId }))
         let lastEventSeq = 0
         const applyTaskEvent = (event, data) => {
@@ -999,6 +1007,7 @@ function ContractRewritePage() {
           }
         }
       } else {
+        resolveReady()
         const response = await authFetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Client-ID': clientId }, body: JSON.stringify({ message: content, mode: requestMode, threadId, history }), signal: run.controller.signal })
         if (!response.ok || !response.body) throw new Error(await response.text() || '对话服务暂不可用。')
         let answer = ''
@@ -1020,8 +1029,9 @@ function ContractRewritePage() {
         }
       }
     } finally {
+      resolveReady()
       const current = requestRunsRef.current.get(threadId)
-      if (current?.runId === run.runId && !run.superseded) clearCurrentRun(threadId, run.runId)
+      if (current?.runId === run.runId && !run.superseded && !run.cancelPending) clearCurrentRun(threadId, run.runId)
     }
   }
 
@@ -1041,7 +1051,14 @@ function ContractRewritePage() {
   const openDocument = (messageId) => { setDocumentMessageId(messageId); setDocumentOpen(true) }
 
   // 导出 Word：沿用页面的局部编号批注，避免导出后重新退化成整段三明治卡片。
+  const { visibleItems: matchingThreads, titleOf, renderTitle, historyControls, getHistoryMenuProps } = useConversationActions({
+    items: threads, active: activeThread, toolKey: 'contract-review', query: historyQuery,
+    onNew: () => createConversation(), onSelect: (item) => selectConversation(item.id)
+  })
+
   const exportWord = () => downloadRevisionWord({ name: activeThread?.title, text: documentContractText || selectedDocument?.rewrite || '', documentRevisions })
+
+  const queuedComposer = useComposerSend({ tool: 'contract-review', conversationId: activeThread?.id, busy: loading, blocked: Boolean(activeRequest.cancelPending), capture: () => ({ text: instruction, files: [...files], mode }), clear: resetComposer, onSend: sendMessage, onStop: () => interruptActiveRequest(activeThread.id, { waitForTask: true }) })
 
   const status = stage === 'cancelling' ? '正在停止上一轮审查…' : stage === 'parsing' ? '正在读取合同文件…' : stage === 'analysis' ? '正在识别合同结构…' : stage === 'knowledge' ? '正在匹配参考资料…' : stage === 'review' ? '正在审查风险条款…' : stage === 'consolidation' ? '正在归并重复和关联问题…' : stage === 'rewrite' ? '正在生成局部批注稿…' : activeRequest.mode === 'thinking' ? '正在深度思考…' : '正在快速回复…'
   const hasComposerInput = Boolean(files.length || instruction.trim())
@@ -1051,40 +1068,40 @@ function ContractRewritePage() {
 
   const sidebar = (
     <>
-      <label className="sidebar-search"><History size={17} /><input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索历史对话" /><kbd>⌘ K</kbd></label>
-      <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>法飞飞</strong></div>
-      <button className="sidebar-action" onClick={() => createConversation()}><PenLine size={20} />新对话</button>
-      <button className="sidebar-action" onClick={() => setTaskModalOpen(true)}><FolderOpen size={20} />新审查任务</button>
-      <p className="history-label">历史对话</p>
+      <label className="sidebar-search"><History size={17} /><input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={t("搜索历史对话")} />{settings.shortcuts.search !== 'disabled' && <kbd>⌘ / Ctrl {settings.shortcuts.search.toUpperCase()}</kbd>}</label>
+      <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>{t("法飞飞")}</strong></div>
+      <button className="sidebar-action" onClick={() => createConversation()}><PenLine size={20} />{t("新对话")}</button>
+      <button className="sidebar-action" onClick={() => setTaskModalOpen(true)}><FolderOpen size={20} />{t("新审查任务")}</button>
+      <p className="history-label">{t("历史对话")}</p>
       <nav className="history-list">{matchingThreads.map((thread) => {
         const running = isThreadRequestRunning(threadRequests, thread.id)
-        return <button className={`${thread.id === activeThread?.id ? 'selected' : ''}${running ? ' thread-running' : ''}`} key={thread.id} onClick={() => selectConversation(thread.id)}><span className="history-thread-icon" title={running ? '该会话正在后台处理中' : ''}>{running ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span className="history-row-copy"><span className="history-row-title">{thread.title}</span><small className="history-row-time">{formatRelativeTime(thread.updatedAt)}</small></span><i className="history-delete" title={running ? '处理中，暂不能删除' : '删除对话'} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>
+        return <button className={`${thread.id === activeThread?.id ? 'selected' : ''}${running ? ' thread-running' : ''}`} key={thread.id} {...getHistoryMenuProps(thread)} onClick={() => selectConversation(thread.id)}><span className="history-thread-icon" title={running ? t("该会话正在后台处理中") : ''}>{running ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span className="history-row-copy"><span className="history-row-title">{renderTitle(thread)}</span><small className="history-row-time">{formatRelativeTime(thread.updatedAt)}</small></span><i className="history-delete" title={running ? t("处理中，暂不能删除") : t("删除对话")} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={14} /></i></button>
       })}</nav>
-      {tasks.length > 0 && <><p className="history-label task-label">审查任务</p><nav className="history-list task-list">{tasks.map((task) => <button key={task.id} className={task.threadId === activeThread?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title="删除任务" onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
-      <ToolAccountPanel label="法飞飞合同审查助手" />
+      {tasks.length > 0 && <><p className="history-label task-label">{t("审查任务")}</p><nav className="history-list task-list">{tasks.map((task) => <button key={task.id} className={task.threadId === activeThread?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title={t("删除任务")} onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
+      {historyControls}
     </>
   )
-  const headerLeft = documentOpen
-    ? <button className="icon-button" aria-label="返回对话" onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button>
-    : <><button className="icon-button sidebar-toggle" aria-label={sidebarCollapsed ? '展开历史对话栏' : '折叠历史对话栏'} title={sidebarCollapsed ? '展开历史对话栏' : '折叠历史对话栏'} onClick={() => setSidebarCollapsed((value) => !value)}><PanelLeft size={21} /></button><ToolOverviewLink /></>
+  const headerLeft = settings.analysisPanel && documentOpen
+    ? <button className="icon-button" aria-label={t("返回对话")} onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button>
+    : null
   const composer = (
-    <div className="composer-wrap"><div className="composer">
-      <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage() } }} placeholder="上传合同或输入你特别关注的审查重点…" />
-      {files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button aria-label={`移除 ${file.name}`} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}
-      <div className="composer-bottom"><ToolComposerControls onUpload={() => inputRef.current?.click()} mode={mode} onModeChange={setMode} messages={activeThread?.messages || []} question={instruction} hasPendingFiles={files.length > 0}><button className="tool-text mobile-hide" type="button" onClick={() => setTaskModalOpen(true)}><Menu size={18} />更多</button></ToolComposerControls><button className="voice-send" onClick={sendMessage} disabled={Boolean(activeRequest.cancelPending) || (!loading && !hasComposerInput)} aria-label={composerActionLabel} title={composerActionLabel}>{loading ? (hasComposerInput ? <Send size={19} /> : <Square size={17} />) : <Send size={19} />}</button></div>
+    <div className="composer-wrap"><div className="composer"><QueuedMessages composer={queuedComposer} />
+      <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage() } }} placeholder={t("上传合同或输入你特别关注的审查重点…")} />
+      {files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button aria-label={(t("移除 ") + (file.name))} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}
+      <div className="composer-bottom"><ToolComposerControls onUpload={() => inputRef.current?.click()} mode={mode} onModeChange={setMode} messages={activeThread?.messages || []} question={instruction} hasPendingFiles={files.length > 0}><button className="tool-text mobile-hide" type="button" onClick={() => setTaskModalOpen(true)}><Menu size={18} />{t("更多")}</button></ToolComposerControls><button className="voice-send" onClick={queuedComposer.send} disabled={Boolean(activeRequest.cancelPending) || (!loading && !hasComposerInput)} aria-label={queuedComposer.label || t(composerActionLabel)} title={composerActionLabel}>{loading ? (hasComposerInput ? <Send size={19} /> : <Square size={17} />) : <Send size={19} />}</button></div>
       <input ref={inputRef} hidden type="file" multiple accept={ACCEPTED} onChange={(event) => { uploadFiles([...event.target.files]); event.target.value = '' }} />
     </div></div>
   )
-  const documentPane = documentOpen && selectedDocument && (
+  const documentPane = settings.analysisPanel && documentOpen && selectedDocument && (
     <section className="document-column">
-      <header className="document-header"><span>审查修订稿</span><div><button title="复制原文" onClick={() => navigator.clipboard?.writeText(documentContractText)}><Copy size={18} />复制</button><button title="下载 Word" onClick={exportWord}><Download size={18} />下载</button><button className="close-document" aria-label="关闭文档" onClick={() => setDocumentOpen(false)}><X size={21} /></button></div></header>
+      <header className="document-header"><span>{t("审查修订稿")}</span><div><button title={t("复制原文")} onClick={() => navigator.clipboard?.writeText(documentContractText)}><Copy size={18} />{t("复制")}</button><button title={t("下载 Word")} onClick={exportWord}><Download size={18} />{t("下载")}</button><button className="close-document" aria-label={t("关闭文档")} onClick={() => setDocumentOpen(false)}><X size={21} /></button></div></header>
       <div className="document-scroll">
         {documentRevisions.length > 0
           ? <RevisionDocument contractText={documentContractText} revisions={documentRevisions} />
-          : <div className="document-empty"><FileText size={32} /><p>{selectedDocument?.status || '暂无修订内容'}</p></div>}
+          : <div className="document-empty"><FileText size={32} /><p>{selectedDocument?.status || t("暂无修订内容")}</p></div>}
         {documentRevisions.length > 0 && <aside className="revision-summary">
-          <p><b>{selectedDocument?.rewriteStats?.total || documentRevisions.length}</b> 个问题，生成 <b>{selectedDocument?.rewriteStats?.blocks || documentRevisions.length}</b> 个就近修订标记{selectedDocument?.rewriteStats ? `（修订 ${selectedDocument.rewriteStats.modify || 0} · 新增 ${selectedDocument.rewriteStats.add || 0} · 删除 ${selectedDocument.rewriteStats.delete || 0}）` : ''}{selectedDocument?.rewriteStats?.groups && selectedDocument.rewriteStats.groups < (selectedDocument.rewriteStats.total || 0) ? '，同一条款的相关问题已统一处理' : ''}</p>
-          <p className="revision-summary-tip">正文中的浅橙色片段和编号对应下方局部修改；完整修订条款与批注默认收起，可按需展开查看。</p>
+          <p><b>{selectedDocument?.rewriteStats?.total || documentRevisions.length}</b>{t("个问题，生成")}<b>{selectedDocument?.rewriteStats?.blocks || documentRevisions.length}</b>{t("个就近修订标记")}{selectedDocument?.rewriteStats ? (t("（修订 ") + (selectedDocument.rewriteStats.modify || 0) + t(" · 新增 ") + (selectedDocument.rewriteStats.add || 0) + t(" · 删除 ") + (selectedDocument.rewriteStats.delete || 0) + "）") : ''}{selectedDocument?.rewriteStats?.groups && selectedDocument.rewriteStats.groups < (selectedDocument.rewriteStats.total || 0) ? t("，同一条款的相关问题已统一处理") : ''}</p>
+          <p className="revision-summary-tip">{t("正文中的浅橙色片段和编号对应下方局部修改；完整修订条款与批注默认收起，可按需展开查看。")}</p>
         </aside>}
       </div>
     </section>
@@ -1092,28 +1109,29 @@ function ContractRewritePage() {
 
   return <>
     <ContractWorkbenchLayout
-      className={documentOpen ? 'document-expanded' : ''}
+      className={settings.analysisPanel && documentOpen ? 'document-expanded' : ''}
       sidebarCollapsed={sidebarCollapsed}
-      hideSidebar={documentOpen}
+      hideSidebar={settings.analysisPanel && documentOpen}
       sidebar={sidebar}
       headerLeft={headerLeft}
-      title={activeThread?.title || '商业合同审查助手'}
-      subtitle="AI 生成内容仅供参考，请结合实际情况判断"
+      title={titleOf(activeThread)}
+      subtitle={t("AI 生成内容仅供参考，请结合实际情况判断")}
       conversationRef={conversationRef}
       composer={composer}
       documentPane={documentPane}
     >
         <div className="conversation-inner">
-          {activeMessages.length === 0 && <div className="assistant-turn welcome-turn"><div><p>你好，我是法飞飞合同审查助手。上传合同后，我会结合对应合同类型的优质模板和风险案例，帮你梳理风险、生成修改建议，并输出一份可继续编辑的批注稿。</p></div></div>}
+          {isSideChat && !activeMessages.length && <SideChatEmptyState />}
+          {!isSideChat && activeMessages.length === 0 && <div className="assistant-turn welcome-turn"><div><p>{t("你好，我是法飞飞合同审查助手。上传合同后，我会结合对应合同类型的优质模板和风险案例，帮你梳理风险、生成修改建议，并输出一份可继续编辑的批注稿。")}</p></div></div>}
           {activeMessages.map((message) => message.role === 'user'
             ? <div className="user-turn" key={message.id}><p>{message.content}</p>{message.files?.map((file) => <div className="attached-file" key={`${message.id}-${file.name}`}><FileText size={18} /><span>{file.name}</span><small>{Math.ceil(file.size / 1024)} KB</small></div>)}</div>
-: <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status">{!message.interrupted && <Loader2 size={15} className="spinner" />}{message.status}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{message.interrupted && <small className="message-interrupted">已被新消息打断，以上内容可能不完整。</small>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">请检查服务配置后重新发送。</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>商业合同审查批注稿</strong><small>{message.rewriteStats?.total ? `${message.rewriteStats.total} 个问题 · ${message.rewriteStats.blocks || message.revisions?.length || 0} 个就近标记 · ` : (message.revisions?.length ? `${message.revisions.length} 个修订标记 · ` : '')}点击展开文档</small></span></button>}</>}</div></div>)}
-          {loading && <div className="assistant-turn loading-turn"><div><p>{status}</p></div></div>}
+: <div className="assistant-turn result-turn" key={message.id}><div>{message.status && !message.content ? <p className="assistant-status">{!message.interrupted && <Loader2 size={15} className="spinner" />}{t(message.status)}</p> : <>{message.content && <div className="assistant-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}{message.interrupted && <small className="message-interrupted">{t("已被新消息打断，以上内容可能不完整。")}</small>}{(message.reviewRounds?.length > 0 || (loading && stage === 'review' && activeMessages[activeMessages.length - 1]?.id === message.id)) && <ReviewRoundsPanel rounds={message.reviewRounds || []} thinking={loading && stage === 'review'} />}{message.failed && <small className="message-failed">{t("请检查服务配置后重新发送。")}</small>}{message.phase === 'rewrite' && (message.revisions?.length > 0 || message.contractText || message.rewrite) && <button className="open-document-card" onClick={() => openDocument(message.id)}><FileText size={25} /><span><strong>{t("商业合同审查批注稿")}</strong><small>{message.rewriteStats?.total ? ((message.rewriteStats.total) + t(" 个问题 · ") + (message.rewriteStats.blocks || message.revisions?.length || 0) + t(" 个就近标记 · ")) : (message.revisions?.length ? ((message.revisions.length) + t(" 个修订标记 · ")) : '')}{t("点击展开文档")}</small></span></button>}</>}</div></div>)}
+          {loading && <div className="assistant-turn loading-turn"><div><p>{t(status)}</p></div></div>}
           {error && <p className="chat-error">{error}</p>}
-          {!activeMessages.length && <div className="starter-prompts"><button onClick={() => setInstruction('请从甲方视角重点审查付款、验收和违约责任。')}>从甲方视角审查付款与违约责任 <span>→</span></button><button onClick={() => setInstruction('请检查合同是否缺少核心条款。')}>检查是否缺少核心条款 <span>→</span></button></div>}
+          {!isSideChat && !activeMessages.length && <div className="starter-prompts"><button onClick={() => setInstruction('请从甲方视角重点审查付款、验收和违约责任。')}>{t("从甲方视角审查付款与违约责任")}<span>→</span></button><button onClick={() => setInstruction('请检查合同是否缺少核心条款。')}>{t("检查是否缺少核心条款")}<span>→</span></button></div>}
         </div>
     </ContractWorkbenchLayout>
-    {taskModalOpen && <div className="task-modal-backdrop" role="presentation" onMouseDown={() => setTaskModalOpen(false)}><form className="task-modal" onSubmit={createTask} onMouseDown={(event) => event.stopPropagation()}><div><strong>新审查任务</strong><button type="button" aria-label="关闭" onClick={() => setTaskModalOpen(false)}><X size={19} /></button></div><label>任务名称<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="例如：供应商年度采购合同" autoFocus /></label><label>审查要求<textarea value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} placeholder="可填写审查视角、关注条款或交付要求" /></label><p>创建后会打开独立对话，可上传合同后开始审查。</p><footer><button type="button" onClick={() => setTaskModalOpen(false)}>取消</button><button className="task-primary" type="submit">创建任务</button></footer></form></div>}
+    {taskModalOpen && <div className="task-modal-backdrop" role="presentation" onMouseDown={() => setTaskModalOpen(false)}><form className="task-modal" onSubmit={createTask} onMouseDown={(event) => event.stopPropagation()}><div><strong>{t("新审查任务")}</strong><button type="button" aria-label={t("关闭")} onClick={() => setTaskModalOpen(false)}><X size={19} /></button></div><label>{t("任务名称")}<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder={t("例如：供应商年度采购合同")} autoFocus /></label><label>{t("审查要求")}<textarea value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} placeholder={t("可填写审查视角、关注条款或交付要求")} /></label><p>{t("创建后会打开独立对话，可上传合同后开始审查。")}</p><footer><button type="button" onClick={() => setTaskModalOpen(false)}>{t("取消")}</button><button className="task-primary" type="submit">{t("创建任务")}</button></footer></form></div>}
   </>
 }
 

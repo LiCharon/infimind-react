@@ -102,6 +102,21 @@ try {
   const checkpointCount = database.prepare('SELECT COUNT(*) AS count FROM task_checkpoints WHERE task_id = ?').get(created.taskId).count
   assert.ok(checkpointCount >= 5)
 
+  const temporaryBody = new FormData()
+  temporaryBody.append('message', '侧边临时审查')
+  temporaryBody.append('threadId', 'temporary-review-thread')
+  temporaryBody.append('temporary', 'true')
+  temporaryBody.append('files', new Blob(['第一条 临时合同内容。'], { type: 'text/plain' }), '临时合同.txt')
+  const temporaryResponse = await request('/api/tasks/contract-review', { method: 'POST', body: temporaryBody })
+  assert.equal(temporaryResponse.status, 202)
+  const temporary = await temporaryResponse.json()
+  assert.equal(taskService.getTaskInput(temporary.taskId).temporary, true)
+  assert.equal((await request(`/api/tasks/${temporary.taskId}`)).status, 200, '临时会话仍可读取正在执行的任务')
+  const durableList = await (await request('/api/tasks?productId=contract-review&limit=1')).json()
+  assert.deepEqual(durableList.tasks.map((item) => item.id), [created.taskId], '临时会话必须在分页前排除，且不影响普通历史')
+  assert.equal(taskService.listTasks('user-a').some((item) => item.id === temporary.taskId), false)
+  await waitFor(() => taskService.getTask(temporary.taskId)?.status === 'succeeded')
+
   const laborBody = new FormData()
   laborBody.append('message', '请分析这份劳动合同的试用期和解除风险')
   laborBody.append('threadId', 'labor-thread-test')

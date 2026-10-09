@@ -68,7 +68,7 @@ export default function ProductSection() {
             )}
           </div>
         </div>
-        <div className="section-cta"><Link className="primary-btn" to="/tools">立即体验</Link></div>
+        <div className="section-cta"><Link className="primary-btn" to="/labor-consult">立即体验</Link></div>
       </div>
     </section>
   )

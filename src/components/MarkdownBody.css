@@ -1,0 +1,51 @@
+/*
+ * 法规引用标红。
+ *
+ * 目的：让用户能在一篇长回答里**一眼扫到**所有法规引用，人工核对时不必逐行读。
+ * 因此它是"标记"而非"告警"——引用本身通常是正确的，标红不是错误提示。
+ *
+ * 配色取舍：红字 + 极淡红底 + 同色点状下划线。
+ *  - 红字满足"标红"的直观要求；
+ *  - 淡红底保证在密集段落里也能被扫到，但透明度压到 8% 以内，避免整段泛红影响阅读；
+ *  - **下划线不是装饰**：只靠颜色传达信息对色觉障碍用户无效，
+ *    加一条同色点状线后，即使分辨不出红色也能看出"这里被标记了"。
+ */
+
+.law-cite {
+  /* 覆盖 <mark> 的浏览器默认黄底 */
+  color: #c0392b;
+  background: rgb(192 57 43 / 8%);
+  /* 内边距只给水平方向：垂直方向加内边距会在长段落里撑高行距，让排版变松 */
+  padding: 0 2px;
+  border-radius: 3px;
+  border-bottom: 1px dotted rgb(192 57 43 / 55%);
+  /* 不改变字重与字号——标红只做颜色标记，不参与排版，否则整段的行高会被带偏 */
+  font: inherit;
+}
+
+/* 深夜模式：红字在深底上对比度不足，提亮并降低底色饱和 */
+@media (prefers-color-scheme: dark) {
+  .law-cite {
+    color: #ff8a80;
+    background: rgb(255 138 128 / 14%);
+    border-bottom-color: rgb(255 138 128 / 55%);
+  }
+}
+
+/* 高对比度偏好下由系统接管配色，避免自定义色被强制覆盖后不可读 */
+@media (forced-colors: active) {
+  .law-cite {
+    color: MarkText;
+    background: Mark;
+    border-bottom: 1px solid;
+  }
+}
+
+/* 打印/导出时保留标记，否则纸质核对时标红全部丢失 */
+@media print {
+  .law-cite {
+    color: #c0392b;
+    background: transparent;
+    border-bottom: 1px solid #c0392b;
+  }
+}

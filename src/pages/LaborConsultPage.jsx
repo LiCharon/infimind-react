@@ -1,13 +1,17 @@
-import ToolAccountPanel from '../components/ToolAccountPanel'
+import { useComposerSend } from '../hooks/useComposerSend'
+import QueuedMessages from '../components/QueuedMessages'
+import SideChatEmptyState from '../components/SideChatEmptyState'
 import ToolComposerControls from '../components/ToolComposerControls'
-import ToolOverviewLink from '../components/ToolOverviewLink'
+import { useWorkspaceText, useWorkspaceLayout } from '../components/WorkspaceContext'
+import { useConversationActions } from '../hooks/useConversationActions'
+import { useSharedConversations, useSharedRequestState } from '../hooks/useSharedConversations'
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import MarkdownBody from '../components/MarkdownBody.jsx'
+import ReasoningSummary from '../components/ReasoningSummary.jsx'
 import {
   AlertTriangle,
   BookOpen,
-  Brain,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -17,7 +21,6 @@ import {
   Library,
   Loader2,
   MessageCircle,
-  PanelLeft,
   PenLine,
   Plus,
   Scale,
@@ -70,7 +73,6 @@ const createConversation = (title = DEFAULT_TITLE) => ({
   updatedAt: Date.now()
 })
 const readStorage = (key, fallback) => { try { return JSON.parse(window.localStorage.getItem(key) || '') || fallback } catch { return fallback } }
-const writeStorage = (key, value) => { try { window.localStorage.setItem(key, JSON.stringify(value)) } catch { /* 存储不可用时不影响咨询 */ } }
 /**
  * 读取本地会话。
  *
@@ -88,80 +90,9 @@ const normalizeThreads = (value) => {
       updatedAt: Number(item.updatedAt) || Date.now()
     }))
     : []
-  const isEmpty = (item) => item.messages.length === 0
+  const isEmpty = (item) => item.messages.length === 0 && !item.workspaceManaged
   const newestEmpty = threads.filter(isEmpty).sort((a, b) => b.updatedAt - a.updatedAt)[0]
   return threads.filter((item) => !isEmpty(item) || item === newestEmpty)
-}
-
-/**
- * 思考过程面板。
- *
- * 设计取向是**不喧宾夺主**：
- *  - 平时只占一行（灰底、小字、无边框），远弱于正文的视觉权重；
- *  - 流式思考期间自动展开并跟随滚动底部，把"静默等待"变成"可见进展"；
- *  - 正文一开始就自动折叠，正文始终是唯一的主体。
- *
- * ⚠️ 性能约束（老浏览器崩溃的根因之一）：单条思考可达 4.7 万字，
- * 而流式期间会更新上千次。这里的每一处实现都是为了**不强制重排**：
- *  - 滚动用 rAF 推迟到帧边界，不在 React 提交阶段读取 scrollHeight（读它 = 强制同步布局）；
- *  - 用户一旦自己往上滚就不再自动跟随（`stick`），避免与用户的滚动意图打架；
- *  - 折叠时**完全不渲染正文**，思考再长也不占 DOM/布局；
- *  - 流式期间只渲染**尾部窗口**（见 LIVE_REASONING_WINDOW）：布局开销与实际文本长度解耦。
- */
-function ReasoningPanel({ text, live, open, onToggle }) {
-  const bodyRef = useRef(null)
-  // 是否贴底跟随。用户手动上滚后置 false，滚回底部再恢复——否则每来一块内容
-  // 都会把他拽回底部，长思考下等于无法阅读。
-  const stickRef = useRef(true)
-  /**
-   * 流式期间只把尾部这么多字放进 DOM。
-   *
-   * 为什么必须做：`max-height: 260px` 只裁剪**绘制**，浏览器仍要为整个文本节点
-   * 算出行盒。4.7 万字的节点每帧重排一次，正是老 Safari 卡死的地方。
-   * 思考是"刚刚在想什么"的实时反馈，看尾部即可——完整内容在流结束后（或折叠再展开）照常可读。
-   *
-   * 2 万字的取值：实测快速档思考仅约 4.4 千字、深度档可达 4.7 万字，
-   * 取 2 万既覆盖了绝大多数正常思考（不触发截断），又把最坏情况砍掉一半以上。
-   */
-  const LIVE_REASONING_WINDOW = 20000
-  const streaming = live && open && text.length > LIVE_REASONING_WINDOW
-  const shown = streaming ? text.slice(-LIVE_REASONING_WINDOW) : text
-
-  useEffect(() => {
-    if (!live || !open) return
-    const body = bodyRef.current
-    if (!body) return
-    // 推迟到帧边界：React 提交后立刻写 scrollTop 会触发同步布局，
-    // 而这个面板每帧都可能更新。rAF 让写入与绘制对齐。
-    const handle = requestAnimationFrame(() => {
-      if (stickRef.current !== false) body.scrollTop = body.scrollHeight
-    })
-    return () => cancelAnimationFrame(handle)
-  }, [text, live, open])
-
-  const handleScroll = () => {
-    const body = bodyRef.current
-    if (!body) return
-    // 距底部 24px 内视为"仍在跟随"，容忍亚像素与字体度量误差
-    stickRef.current = body.scrollHeight - body.scrollTop - body.clientHeight < 24
-  }
-
-  return (
-    <div className={`labor-reasoning${live ? ' is-live' : ''}`}>
-      <button type="button" className="labor-reasoning-head" onClick={onToggle} aria-expanded={open}>
-        <Brain size={14} className={live ? 'reasoning-pulse' : ''} />
-        <span className="reasoning-label">{live ? '正在思考…' : '思考过程'}</span>
-        <span className="reasoning-meta">{text.length} 字</span>
-        <ChevronDown size={14} className={`reasoning-chevron${open ? ' open' : ''}`} />
-      </button>
-      {open && (
-        <div className="labor-reasoning-body" ref={bodyRef} onScroll={handleScroll}>
-          {streaming && <p className="reasoning-window-note">…已折叠前 {text.length - LIVE_REASONING_WINDOW} 字，完整思考在结束后可回看</p>}
-          {shown}
-        </div>
-      )}
-    </div>
-  )
 }
 
 /**
@@ -175,13 +106,14 @@ function ReasoningPanel({ text, live, open, onToggle }) {
 const AnswerBody = React.memo(function AnswerBody({ content }) {
   return (
     <div className="labor-answer">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <MarkdownBody content={content} />
     </div>
   )
 })
 
 /** 引用核实徽标 */
 function CitationBadge({ citation }) {
+  const t = useWorkspaceText()
   const tone = citation.ok ? 'ok' : citation.level === 'warn' ? 'warn' : 'error'
   const Icon = citation.ok ? ShieldCheck : AlertTriangle
   const article = citation.articleNo ? `第${citation.articleNo}条` : ''
@@ -192,7 +124,7 @@ function CitationBadge({ citation }) {
         <strong>《{citation.lawName}》{article}</strong>
         <span className="citation-label">{citation.label}</span>
         {citation.note && <small>{citation.note}</small>}
-        {citation.versionLabel && <small className="citation-meta">{citation.versionLabel}{citation.effectiveFrom ? ` · 自 ${citation.effectiveFrom} 起施行` : ''}</small>}
+        {citation.versionLabel && <small className="citation-meta">{citation.versionLabel}{citation.effectiveFrom ? (t(" · 自 ") + (citation.effectiveFrom) + t(" 起施行")) : ''}</small>}
       </div>
     </li>
   )
@@ -200,6 +132,7 @@ function CitationBadge({ citation }) {
 
 /** 右侧证据抽屉 */
 function EvidencePanel({ payload, baseline, status, metaLoading, metaError, onRetry }) {
+  const t = useWorkspaceText()
   const [tab, setTab] = useState('case')
   // 只展示现行有效的法规：已失效 / 已被取代的条目不在界面保留。
   // 注意：它们仍然留在服务端白名单里——引用校验需要据此把"已废止法规"判为不通过。
@@ -220,22 +153,22 @@ function EvidencePanel({ payload, baseline, status, metaLoading, metaError, onRe
     <aside className="labor-evidence">
       <header className="labor-evidence-head">
         <div>
-          <strong>证据与依据</strong>
+          <strong>{t("证据与依据")}</strong>
           <small>
             {metaError
-              ? '无法连接后端服务'
+              ? t("无法连接后端服务")
               : metaLoading
-                ? '正在读取知识库状态…'
+                ? t("正在读取知识库状态…")
                 : status
-                  ? `实务问答 ${status.kb?.entries ?? 0} 条 · 案例 ${status.cases} 条 · 法规 ${status.effectiveLaws}/${status.laws} 条现行有效`
-                  : '知识库状态未知'}
+                  ? (t("实务问答 ") + (status.kb?.entries ?? 0) + t(" 条 · 案例 ") + (status.cases) + t(" 条 · 法规 ") + (status.effectiveLaws) + "/" + (status.laws) + t(" 条现行有效"))
+                  : t("知识库状态未知")}
           </small>
         </div>
       </header>
       {metaError && (
         <div className="labor-service-error">
           <p><AlertTriangle size={14} />{metaError}</p>
-          <button type="button" onClick={onRetry}>重新连接</button>
+          <button type="button" onClick={onRetry}>{t("重新连接")}</button>
         </div>
       )}
       <nav className="labor-evidence-tabs">
@@ -256,9 +189,9 @@ function EvidencePanel({ payload, baseline, status, metaLoading, metaError, onRe
       <div className="labor-evidence-body">
         {active.key === 'kb' && (
           metaError
-            ? <p className="labor-empty">后端服务未启动或不可达，无法检索实务问答库。</p>
+            ? <p className="labor-empty">{t("后端服务未启动或不可达，无法检索实务问答库。")}</p>
             : !payload?.kbEntries?.length
-              ? <p className="labor-empty">本次未检索到实务问答条目。问答库覆盖用工模式、招聘入职、工资工时、社保、工伤、离职解除等专题。</p>
+              ? <p className="labor-empty">{t("本次未检索到实务问答条目。问答库覆盖用工模式、招聘入职、工资工时、社保、工伤、离职解除等专题。")}</p>
               : payload.kbEntries.map((item) => (
                 <article className="labor-kb-card" key={item.id}>
                   <div className="labor-card-head">
@@ -268,16 +201,16 @@ function EvidencePanel({ payload, baseline, status, metaLoading, metaError, onRe
                   <p className="labor-card-meta">{[item.book, item.chapter, item.section].filter(Boolean).join(' › ')}</p>
                   <p className="labor-card-line">{item.content}</p>
                   {item.caseRefs?.length > 0 && (
-                    <p className="labor-card-cases"><b>条目内引用案号</b>{item.caseRefs.join('、')}</p>
+                    <p className="labor-card-cases"><b>{t("条目内引用案号")}</b>{item.caseRefs.join('、')}</p>
                   )}
                 </article>
               ))
         )}
         {active.key === 'case' && (
           metaError
-            ? <p className="labor-empty">后端服务未启动或不可达。请在项目根目录另开一个终端运行 <code>npm run server</code> 后点击「重新连接」。</p>
+            ? <p className="labor-empty">{t("后端服务未启动或不可达。请在项目根目录另开一个终端运行")}<code>npm run server</code>{t("后点击「重新连接」。")}</p>
             : !payload?.cases?.length
-              ? <p className="labor-empty">本次未检索到相关案例。案例库以人社部、最高法联合发布的劳动人事争议典型案例为主。</p>
+              ? <p className="labor-empty">{t("本次未检索到相关案例。案例库以人社部、最高法联合发布的劳动人事争议典型案例为主。")}</p>
               : payload.cases.map((item) => (
                 <article className="labor-case-card" key={item.id}>
                   <div className="labor-card-head">
@@ -285,23 +218,23 @@ function EvidencePanel({ payload, baseline, status, metaLoading, metaError, onRe
                     <strong>{item.title}</strong>
                   </div>
                   <p className="labor-card-meta">
-                    {[item.caseNo, item.court, item.caseType, item.batch].filter(Boolean).join(' · ') || '来源信息未标注'}
+                    {[item.caseNo, item.court, item.caseType, item.batch].filter(Boolean).join(' · ') || t("来源信息未标注")}
                   </p>
-                  {item.disputeFocus && <p className="labor-card-line"><b>争议焦点</b>{item.disputeFocus}</p>}
-                  {item.holding && <p className="labor-card-line"><b>裁判要点</b>{item.holding}</p>}
+                  {item.disputeFocus && <p className="labor-card-line"><b>{t("争议焦点")}</b>{item.disputeFocus}</p>}
+                  {item.holding && <p className="labor-card-line"><b>{t("裁判要点")}</b>{item.holding}</p>}
                 </article>
               ))
         )}
         {active.key === 'evidence' && (
           metaError
-            ? <p className="labor-empty">后端服务未启动或不可达，无法检索知识库证据。</p>
+            ? <p className="labor-empty">{t("后端服务未启动或不可达，无法检索知识库证据。")}</p>
             : !payload?.evidence?.length
-              ? <p className="labor-empty">本次未检索到知识库证据。劳动合同范本与风险点仍在补充中。</p>
+              ? <p className="labor-empty">{t("本次未检索到知识库证据。劳动合同范本与风险点仍在补充中。")}</p>
               : payload.evidence.map((item) => (
                 <article className="labor-evidence-card" key={item.id}>
                   <div className="labor-card-head">
                     <span className="labor-tag">{item.id}</span>
-                    <strong>{item.title || item.sourceName || '知识库条款'}</strong>
+                    <strong>{item.title || item.sourceName || t("知识库条款")}</strong>
                   </div>
                   <p className="labor-card-meta">{item.sourceName}{item.category ? ` · ${item.category}` : ''}</p>
                   <p className="labor-card-line">{item.text}</p>
@@ -310,24 +243,21 @@ function EvidencePanel({ payload, baseline, status, metaLoading, metaError, onRe
         )}
         {active.key === 'law' && (
           metaError
-            ? <p className="labor-empty">后端服务未启动或不可达，无法读取法规时效基准。</p>
+            ? <p className="labor-empty">{t("后端服务未启动或不可达，无法读取法规时效基准。")}</p>
             : metaLoading
-              ? <p className="labor-empty">正在载入法规时效基准…</p>
+              ? <p className="labor-empty">{t("正在载入法规时效基准…")}</p>
               : (
                 <>
-                  <p className="labor-note">
-                    本表为服务端维护的现行有效法规清单，法条引用核实以此为准。
-                    未收录的法规会被标注“未收录，需人工核实”，不会凭模型记忆引用。
-                  </p>
+                  <p className="labor-note">{t("本表为服务端维护的现行有效法规清单，法条引用核实以此为准。 未收录的法规会被标注“未收录，需人工核实”，不会凭模型记忆引用。")}</p>
                   {activeLaws.length
                     ? activeLaws.map((item) => (
                       <article className={`labor-law-row ${item.status}`} key={item.title}>
                         <strong>《{item.title}》</strong>
-                        <span>{item.versionLabel || '版本未标注'} · 自 {item.effectiveFrom} 起施行</span>
-                        {item.reviewStatus !== 'verified' && <span className="labor-law-pending">待人工复核</span>}
+                        <span>{item.versionLabel || t("版本未标注")}{t("· 自")}{item.effectiveFrom}{t("起施行")}</span>
+                        {item.reviewStatus !== 'verified' && <span className="labor-law-pending">{t("待人工复核")}</span>}
                       </article>
                     ))
-                    : <p className="labor-empty">法规基准表为空，请运行 npm run verify:laws 检查白名单。</p>}
+                    : <p className="labor-empty">{t("法规基准表为空，请运行 npm run verify:laws 检查白名单。")}</p>}
                 </>
               )
         )}
@@ -388,27 +318,28 @@ function createMarkdownScheduler({ getContent, setMarkdown }) {
 }
 
 function LaborConsultPage() {
+  const t = useWorkspaceText()
   const inFlightRef = useRef(new Set())
   const requestRunsRef = useRef(new Map())
   const watchConversationsRef = useRef(new Set())
   const searchRef = useRef(null)
   const fileInputRef = useRef(null)
-  const [conversations, setConversations] = useState(() => {
+  const { settings, sidebarCollapsed, initialConversationId, isSideChat } = useWorkspaceLayout()
+  const [conversations, setConversations] = useSharedConversations(THREAD_STORAGE_KEY, () => {
     const saved = normalizeThreads(readStorage(THREAD_STORAGE_KEY, []))
     return saved.length ? saved : [createConversation()]
-  })
-  const [activeId, setActiveId] = useState('')
+  }, (items) => items.map((item) => ({ ...item, messages: item.messages.map((message) => typeof message.reasoning === 'string' && message.reasoning.length > MAX_PERSISTED_REASONING ? { ...message, reasoning: `${message.reasoning.slice(0, MAX_PERSISTED_REASONING)}\n\n…（思考过程过长，此处仅保留开头部分）` } : message) })), createConversation)
+  const [activeId, setActiveId] = useState(initialConversationId)
   const [question, setQuestion] = useState('')
   const [files, setFiles] = useState([])
   const [mode, setMode] = useState('thinking')
-  const [requests, setRequests] = useState({})
+  const [requests, setRequests] = useSharedRequestState(THREAD_STORAGE_KEY)
   const [baseline, setBaseline] = useState([])
   const [status, setStatus] = useState(null)
   const [metaLoading, setMetaLoading] = useState(true)
   const [metaError, setMetaError] = useState('')
   const [historyQuery, setHistoryQuery] = useState('')
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [panelOpen, setPanelOpen] = useState(true)
+  const [panelOpen, setPanelOpen] = useState(false)
   /**
    * 会话列表的相对时间基准。
    * 相对时间必须自己会走：不刷新的话「1分钟前」会一直挂在那里，用户过一小时
@@ -449,11 +380,6 @@ function LaborConsultPage() {
   )
   const activeRequest = requests[activeConversation?.id] || {}
   const isAsking = Boolean(activeRequest.loading)
-  const matchingConversations = useMemo(
-    () => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
-      .filter((item) => item.title.toLowerCase().includes(historyQuery.trim().toLowerCase())),
-    [conversations, historyQuery]
-  )
   const latestEvidence = useMemo(() => {
     const messages = [...(activeConversation?.messages || [])].reverse()
     return messages.find((message) => message.type === 'assistant' && message.evidence)?.evidence || null
@@ -485,18 +411,6 @@ function LaborConsultPage() {
   }, [])
   // 卸载时清掉挂起的节流尾调用，避免对已卸载组件 setState
   useEffect(() => () => markdownThrottleRef.current?.cancel(), [])
-  useEffect(() => {
-    // 写入前裁剪思考过程：它是全量会话里最占空间、又最不重要的一部分。
-    writeStorage(THREAD_STORAGE_KEY, conversations.map((conversation) => ({
-      ...conversation,
-      messages: conversation.messages.map((message) => (
-        typeof message.reasoning === 'string' && message.reasoning.length > MAX_PERSISTED_REASONING
-          ? { ...message, reasoning: `${message.reasoning.slice(0, MAX_PERSISTED_REASONING)}\n\n…（思考过程过长，此处仅保留开头部分）` }
-          : message
-      ))
-    })))
-  }, [conversations])
-
   // 拉取法规基准与知识库状态（用于右侧面板与提示词一致性展示）
   // 关键：接口不可达时必须给出错误态与重试入口，不能永远停在"正在载入…"。
   // 常见原因是后端未启动：需在项目根目录另开终端运行 npm run server。
@@ -672,9 +586,9 @@ function LaborConsultPage() {
     const buffer = createStreamBuffer((patch) => {
       const isFirstContent = Boolean(patch.content)
       updateMessage(conversationId, assistantId, (current) => ({
-        ...(patch.reasoning ? { reasoning: `${current.reasoning || ''}${patch.reasoning}`, reasoningOpen: !current.reasoning } : {}),
+        ...(patch.reasoning ? { reasoning: `${current.reasoning || ''}${patch.reasoning}`, ...(!current.reasoning ? { reasoningOpen: false } : {}) } : {}),
         ...(patch.content ? { content: `${current.content || ''}${patch.content}`, status: '' } : {}),
-        ...(isFirstContent && current.reasoning ? { reasoningOpen: false } : {})
+        ...(isFirstContent && !current.content && current.reasoning ? { reasoningOpen: false } : {})
       }))
       if (patch.content) markdownThrottleRef.current?.schedule(assistantId)
     })
@@ -748,9 +662,11 @@ function LaborConsultPage() {
     }
   }
 
-  const ask = async () => {
-    const content = question.trim()
-    if ((!content && !files.length) || isAsking || !activeConversation || inFlightRef.current.has(activeConversation.id)) return
+  const ask = async (snapshot = null) => {
+    const content = snapshot ? snapshot.text.trim() : question.trim()
+    const selectedFiles = snapshot ? snapshot.files : files
+    const requestMode = snapshot?.mode || mode
+    if ((!content && !selectedFiles.length) || isAsking || !activeConversation || inFlightRef.current.has(activeConversation.id)) return
     const conversationId = activeConversation.id
     const assistantId = createId('assistant')
     const history = activeConversation.messages
@@ -758,41 +674,42 @@ function LaborConsultPage() {
       .slice(-6)
       .map((message) => ({ role: message.type === 'user' ? 'user' : 'assistant', content: message.content }))
 
-    const uploadedFiles = files.map((file) => ({ name: file.name, size: file.size }))
+    const uploadedFiles = selectedFiles.map((file) => ({ name: file.name, size: file.size }))
     const displayContent = content || `请分析我上传的 ${uploadedFiles.length} 份材料涉及的劳动用工问题。`
     // 首轮判定必须在 appendMessage 之前取，追加后就再也分不出哪条是首轮了。
     const isFirstTurn = !firstQuestionOf(activeConversation)
 
     appendMessage(conversationId, { id: createId('user'), type: 'user', content: displayContent, files: uploadedFiles })
-    appendMessage(conversationId, { id: assistantId, type: 'assistant', content: '', status: files.length ? '正在读取附件…' : '正在检索法规与类案…' })
+    appendMessage(conversationId, { id: assistantId, type: 'assistant', content: '', status: selectedFiles.length ? '正在读取附件…' : '正在检索法规与类案…' })
     // 即时命名：先用本地启发式给出一个可辨识的标题（零延迟零成本），
     // 作答结束后再由 refineTitle 静默升级为 LLM 提炼版。
     // 命名依据统一走 firstQuestionOf（= 用户提问，仅附件轮则用文件名），
     // 保证"即时标题"与"LLM 提炼所用文本"始终同源，不会一个用提问、一个用合成文案。
-    const titleSource = files.length && !content ? uploadedFiles[0].name : displayContent
+    const titleSource = selectedFiles.length && !content ? uploadedFiles[0].name : displayContent
     if (isFirstTurn) {
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         title: buildConversationTitle(titleSource)
       }))
     }
-    setQuestion('')
-    setFiles([])
+    if (!snapshot) { setQuestion(''); setFiles([]) }
     inFlightRef.current.add(conversationId)
     patchRequest(conversationId, { loading: true, error: '' })
 
     // 推荐混合边界：带附件或深度思考走持久任务；快速、纯文本问题保留低延迟 SSE。
     // 任务入口会把事件与检查点写入服务端，刷新页面/短暂断线后仍可恢复。
-    const useTask = files.length > 0 || mode === 'thinking'
+    let resolveReady
+    const run = { runId: createId('request'), controller: new AbortController(), assistantId, taskId: null, ready: new Promise((resolve) => { resolveReady = resolve }) }
+    requestRunsRef.current.set(conversationId, run)
+    const useTask = selectedFiles.length > 0 || requestMode === 'thinking'
     if (useTask) {
-      const filesSnapshot = [...files]
-      const run = { runId: createId('request'), controller: new AbortController(), assistantId, taskId: null }
-      requestRunsRef.current.set(conversationId, run)
+      const filesSnapshot = [...selectedFiles]
       try {
         const body = new FormData()
         body.append('message', content)
-        body.append('mode', mode)
+        body.append('mode', requestMode)
         body.append('threadId', conversationId)
+        body.append('temporary', String(isSideChat))
         body.append('conversationId', conversationId)
         body.append('title', titleSource)
         body.append('history', JSON.stringify(history))
@@ -807,6 +724,7 @@ function LaborConsultPage() {
         if (!response.ok) throw new Error(payload.error || `劳动合同分析任务创建失败（${response.status}）`)
         if (!payload.taskId) throw new Error('任务服务未返回任务 ID。')
         run.taskId = payload.taskId
+        resolveReady()
         updateConversation(conversationId, (conversation) => ({ ...conversation, taskId: payload.taskId }))
         updateMessage(conversationId, assistantId, { taskId: payload.taskId, status: '任务已排队，准备分析…' })
         patchRequest(conversationId, { taskId: payload.taskId })
@@ -814,6 +732,7 @@ function LaborConsultPage() {
       } catch (error) {
         if (!run.controller.signal.aborted) updateMessage(conversationId, assistantId, { failed: true, status: '', error: error.message || '劳动合同分析失败。' })
       } finally {
+        resolveReady()
         requestRunsRef.current.delete(conversationId)
         inFlightRef.current.delete(conversationId)
         patchRequest(conversationId, { loading: false, taskId: null, cancelPending: false })
@@ -834,17 +753,18 @@ function LaborConsultPage() {
      * ⚠️ 必须在 try 之外创建、且 finally 里收尾：中途抛错时未提交的增量
      * 若不落盘，用户会看到"回答少了一截"或思考面板停在半途。
      */
+    resolveReady()
     const buffer = createStreamBuffer((patch) => {
       const isFirstContent = Boolean(patch.content)
       updateMessage(conversationId, assistantId, (current) => ({
         ...(patch.reasoning ? { reasoning: `${current.reasoning || ''}${patch.reasoning}` } : {}),
         ...(patch.content ? { content: `${current.content || ''}${patch.content}` } : {}),
         ...(isFirstContent ? { status: '' } : {}),
-        // 思考的**首块**自动展开，让用户看到进展
-        ...(patch.reasoning && !current.reasoning ? { reasoningOpen: true } : {}),
+        // 标准展示默认只占一行；详细展示由设置决定，用户可随时展开
+        ...(patch.reasoning && !current.reasoning ? { reasoningOpen: false } : {}),
         // 正文首块到达 = 思考结束，自动折叠思考区。
         // 只在首次折叠，之后尊重用户手动的展开/收起，避免边写边被强行收起。
-        ...(isFirstContent && current.reasoning ? { reasoningOpen: false } : {})
+        ...(isFirstContent && !current.content && current.reasoning ? { reasoningOpen: false } : {})
       }))
       if (patch.content) markdownThrottleRef.current?.schedule(assistantId)
     })
@@ -852,19 +772,20 @@ function LaborConsultPage() {
 
     try {
       // 有附件时走 multipart/form-data；无附件时保持 JSON，减少不必要的编码开销
-      const form = files.length ? new FormData() : null
+      const form = selectedFiles.length ? new FormData() : null
       if (form) {
         form.append('message', content)
-        form.append('mode', mode)
+        form.append('mode', requestMode)
         form.append('history', JSON.stringify(history))
         // 会话 id：服务端据此把附件材料归到同一次咨询，追问轮无需重新上传即可复用
         form.append('conversationId', conversationId)
-        files.forEach((file) => form.append('files', file))
+        selectedFiles.forEach((file) => form.append('files', file))
       }
       const response = await authFetch(CONSULT_ENDPOINT, {
         method: 'POST',
         headers: form ? { Accept: 'text/event-stream' } : { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: form || JSON.stringify({ message: content, mode, history, conversationId })
+        body: form || JSON.stringify({ message: content, mode: requestMode, history, conversationId }),
+        signal: run.controller.signal
       })
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}))
@@ -900,9 +821,9 @@ function LaborConsultPage() {
         if (event === 'error') {
           updateMessage(conversationId, assistantId, { failed: true, status: '', error: data.message || '咨询未完成，请稍后重试。' })
         }
-      })
+      }, run.controller.signal)
     } catch (error) {
-      updateMessage(conversationId, assistantId, { failed: true, status: '', error: error.message || '咨询未完成，请稍后重试。' })
+      if (!run.controller.signal.aborted) updateMessage(conversationId, assistantId, { failed: true, status: '', error: error.message || '咨询未完成，请稍后重试。' })
     } finally {
       // ⚠️ 顺序与"必须执行"都很关键：
       // 1) 记录缓冲里的尾部正文——必须在 flush 之前取（flush 会清空缓冲）；
@@ -918,8 +839,9 @@ function LaborConsultPage() {
         delete next[assistantId]
         return next
       })
+      requestRunsRef.current.delete(conversationId)
       inFlightRef.current.delete(conversationId)
-      patchRequest(conversationId, { loading: false })
+      patchRequest(conversationId, { loading: false, cancelPending: false })
       // 一次性命名：只对首轮触发，且不 await——标题不该拖住"作答完成"这个状态
       if (isFirstTurn) refineTitle(conversationId, titleSource)
     }
@@ -928,15 +850,27 @@ function LaborConsultPage() {
   const cancelCurrentTask = async () => {
     const conversationId = activeConversation?.id
     const run = conversationId ? requestRunsRef.current.get(conversationId) : null
-    if (!run?.taskId) return
+    if (!run || run.cancelPending) return
+    run.cancelPending = true
     patchRequest(conversationId, { cancelPending: true })
     try {
-      const response = await authFetch(`/api/tasks/${run.taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
-      if (!response.ok) throw new Error('停止请求未被接受')
+      await run.ready
+      if (requestRunsRef.current.get(conversationId) !== run) return
+      if (run.taskId) {
+        const response = await authFetch(`/api/tasks/${run.taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
+        if (!response.ok) throw new Error('停止请求未被接受')
+        // Keep watching the task: release the queue only after a terminal server event.
+      } else {
+        run.controller.abort()
+        updateMessage(conversationId, run.assistantId, { status: '', interrupted: true, completed: false })
+      }
     } catch (error) {
+      run.cancelPending = false
       patchRequest(conversationId, { cancelPending: false, error: error.message || '停止分析失败，请稍后重试。' })
     }
   }
+
+  const queuedComposer = useComposerSend({ tool: 'labor-consult', conversationId: activeConversation?.id, busy: isAsking, blocked: Boolean(activeRequest.cancelPending), capture: () => ({ text: question, files: [...files], mode }), clear: () => { setQuestion(''); setFiles([]) }, onSend: ask, onStop: cancelCurrentTask })
 
   const startConversation = () => {
     const next = createConversation()
@@ -970,16 +904,22 @@ function LaborConsultPage() {
     setRequests((items) => { const next = { ...items }; delete next[conversationId]; return next })
   }
 
+  const { visibleItems: matchingConversations, titleOf, renderTitle, historyControls, getHistoryMenuProps } = useConversationActions({
+    items: conversations, active: activeConversation, toolKey: 'labor-consult', query: historyQuery,
+    onNew: startConversation, onSelect: (item) => { setActiveId(item.id); setQuestion(''); setFiles([]) },
+    onManage: (id) => setConversations((items) => items.map((item) => item.id === id ? { ...item, workspaceManaged: true } : item))
+  })
+
   return (
-    <main className={`contract-chat labor-consult ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${panelOpen ? '' : 'panel-collapsed'}`}>
+    <main className={`contract-chat labor-consult ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${settings.analysisPanel && panelOpen ? '' : 'panel-collapsed'}`}>
       <aside className="chat-sidebar">
         <label className="sidebar-search">
           <History size={17} />
-          <input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索历史咨询" />
+          <input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={t("搜索历史咨询")} />
         </label>
-        <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>法飞飞</strong></div>
-        <button type="button" className="sidebar-action" onClick={startConversation}><PenLine size={20} />新咨询</button>
-        <p className="history-label">历史咨询</p>
+        <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>{t("法飞飞")}</strong></div>
+        <button type="button" className="sidebar-action" onClick={startConversation}><PenLine size={20} />{t("新咨询")}</button>
+        <p className="history-label">{t("历史咨询")}</p>
         <nav className="history-list">
           {matchingConversations.map((conversation) => {
             const pending = Boolean(requests[conversation.id]?.loading)
@@ -987,6 +927,7 @@ function LaborConsultPage() {
               <button
                 type="button"
                 key={conversation.id}
+                {...getHistoryMenuProps(conversation)}
                 className={`${conversation.id === activeConversation?.id ? 'selected' : ''}${pending ? ' thread-running' : ''}`}
                 onClick={() => { setActiveId(conversation.id); setQuestion('') }}
               >
@@ -994,39 +935,30 @@ function LaborConsultPage() {
                   {pending ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}
                 </span>
                 <span className="history-thread-main">
-                  <span className="history-thread-title">{conversation.title}</span>
+                  <span className="history-thread-title">{renderTitle(conversation)}</span>
                   <small className="history-thread-time">{formatRelativeTime(conversation.updatedAt, now)}</small>
                 </span>
-                <i className="history-delete" title="删除咨询" onClick={(event) => deleteConversation(event, conversation.id)}><Trash2 size={14} /></i>
+                <i className="history-delete" title={t("删除咨询")} onClick={(event) => deleteConversation(event, conversation.id)}><Trash2 size={14} /></i>
               </button>
             )
           })}
         </nav>
-        <ToolAccountPanel label="法飞飞用工咨询助手" />
+        {historyControls}
       </aside>
 
       <section className="chat-column">
         <header className="chat-header">
-          <div className="header-left">
-            <button
-              type="button"
-              className="icon-button sidebar-toggle"
-              aria-label={sidebarCollapsed ? '展开侧栏' : '折叠侧栏'}
-              onClick={() => setSidebarCollapsed((value) => !value)}
-            >
-              <PanelLeft size={21} />
-            </button>
-            <ToolOverviewLink />
-          </div>
+          <div className="header-left" />
           <div className="chat-title">
-            <strong>{activeConversation?.title || '用工咨询助手'}</strong>
-            <small>面向企业方的劳动法咨询 · 回答会经过服务端法条引用核实 · 不构成正式法律意见</small>
+            <strong>{titleOf(activeConversation)}</strong>
+            <small>{t("面向企业方的劳动法咨询 · 回答会经过服务端法条引用核实 · 不构成正式法律意见")}</small>
           </div>
           <div className="header-tools">
             <button
               type="button"
-              className="icon-button"
-              aria-label={panelOpen ? '收起证据面板' : '展开证据面板'}
+              className="icon-button labor-evidence-toggle"
+              disabled={!settings.analysisPanel}
+              aria-label={panelOpen ? t("收起证据面板") : t("展开证据面板")}
               onClick={() => setPanelOpen((value) => !value)}
             >
               {panelOpen ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
@@ -1036,10 +968,11 @@ function LaborConsultPage() {
 
         <div className="conversation">
           <div className="conversation-inner">
-            {!activeConversation?.messages?.length && (
+            {isSideChat && !activeConversation?.messages?.length && <SideChatEmptyState />}
+            {!isSideChat && !activeConversation?.messages?.length && (
               <div className="assistant-turn welcome-turn">
                 <div>
-                  <p>你好，我是法飞飞用工咨询助手。请描述你的用工场景或争议情况，也可以直接上传劳动合同、员工手册、规章制度、仲裁裁决书、考勤或工资记录等材料，我会先给出结论，再给案件分析与可执行的应对建议。</p>
+                  <p>{t("你好，我是法飞飞用工咨询助手。请描述你的用工场景或争议情况，也可以直接上传劳动合同、员工手册、规章制度、仲裁裁决书、考勤或工资记录等材料，我会先给出结论，再给案件分析与可执行的应对建议。")}</p>
                 </div>
               </div>
             )}
@@ -1058,16 +991,16 @@ function LaborConsultPage() {
               : (
                 <div className="assistant-turn result-turn" key={message.id}>
                   <div>
-                    {message.status && <p className="assistant-status"><Loader2 size={15} className="spinner" />{message.status}</p>}
+                    {message.status && <p className="assistant-status"><Loader2 size={15} className="spinner" />{t(message.status)}</p>}
                     {message.warnings?.map((warning) => (
                       <p className="labor-warning" key={warning}><AlertTriangle size={14} />{warning}</p>
                     ))}
                     {message.reasoning && (
-                      <ReasoningPanel
+                      <ReasoningSummary
                         text={message.reasoning}
-                        live={!message.content && !message.failed}
-                        open={Boolean(message.reasoningOpen)}
-                        onToggle={() => updateMessage(activeConversation.id, message.id, (current) => ({ reasoningOpen: !current.reasoningOpen }))}
+                        live={isAsking && message.id === activeConversation.messages[activeConversation.messages.length - 1]?.id && !message.content && !message.failed && !message.interrupted}
+                        open={settings.steps === 'detailed' ? message.detailedReasoningOpen !== false : Boolean(message.reasoningOpen)}
+                        onToggle={() => updateMessage(activeConversation.id, message.id, (current) => (settings.steps === 'detailed' ? { detailedReasoningOpen: current.detailedReasoningOpen === false } : { reasoningOpen: !current.reasoningOpen }))}
                       />
                     )}
                     {message.content && (
@@ -1077,27 +1010,36 @@ function LaborConsultPage() {
                     )}
                     {message.citations?.length > 0 && (
                       <section className="labor-citations">
-                        <header>
+                        <button
+                          type="button"
+                          className="labor-citations-head"
+                          aria-expanded={Boolean(message.citationsOpen)}
+                          onClick={() => updateMessage(activeConversation.id, message.id, (current) => ({ citationsOpen: !current.citationsOpen }))}
+                        >
                           <ShieldCheck size={16} />
-                          <strong>法规引用核实</strong>
+                          <strong>{t("法规引用核实")}</strong>
                           <span className={message.citationSummary?.hasProblems ? 'has-problems' : 'all-ok'}>
-                            {message.citationSummary?.ok}/{message.citationSummary?.total} 处通过
-                          </span>
-                        </header>
-                        <ul>{message.citations.map((citation, index) => <CitationBadge citation={citation} key={`${citation.raw}-${index}`} />)}</ul>
+                            {message.citationSummary?.ok}/{message.citationSummary?.total}{t("处通过")}</span>
+                          <ChevronDown size={14} className={`citations-chevron${message.citationsOpen ? ' open' : ''}`} aria-hidden="true" />
+                        </button>
+                        {message.citationsOpen && (
+                          <ul id={`labor-citations-${message.id}`}>
+                            {message.citations.map((citation, index) => <CitationBadge citation={citation} key={`${citation.raw}-${index}`} />)}
+                          </ul>
+                        )}
                       </section>
                     )}
-                    {message.failed && <small className="message-failed">{message.error || '咨询未完成，请稍后重试。'}</small>}
+                    {message.failed && <small className="message-failed">{message.error || t("咨询未完成，请稍后重试。")}</small>}
                   </div>
                 </div>
               ))}
 
             {activeRequest.error && <p className="chat-error">{activeRequest.error}</p>}
 
-            {!activeConversation?.messages?.length && (
+            {!isSideChat && !activeConversation?.messages?.length && (
               <div className="starter-prompts">
                 {starterPrompts.map((prompt) => (
-                  <button type="button" key={prompt} onClick={() => setQuestion(prompt)}>{prompt}<span>→</span></button>
+                  <button type="button" key={prompt} onClick={() => setQuestion(t(prompt))}>{t(prompt)}<span>→</span></button>
                 ))}
               </div>
             )}
@@ -1105,7 +1047,7 @@ function LaborConsultPage() {
         </div>
 
         <div className="composer-wrap">
-          <div className="composer">
+          <div className="composer"><QueuedMessages composer={queuedComposer} />
             <textarea
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
@@ -1115,31 +1057,31 @@ function LaborConsultPage() {
                   ask()
                 }
               }}
-              placeholder="描述你的用工场景或争议情况，也可上传劳动合同、员工手册、裁决书等材料…"
-              disabled={isAsking}
+              placeholder={t("描述你的用工场景或争议情况，也可上传劳动合同、员工手册、裁决书等材料…")}
+              disabled={false}
             />
             {files.length > 0 && (
               <div className="pending-files">
                 {files.map((file) => (
                   <span key={file.name} title={`${file.name} · ${formatSize(file.size)}`}>
                     <FileText size={14} />{file.name}
-                    <button type="button" aria-label={`移除 ${file.name}`} onClick={() => removeFile(file.name)}><X size={13} /></button>
+                    <button type="button" aria-label={(t("移除 ") + (file.name))} onClick={() => removeFile(file.name)}><X size={13} /></button>
                   </span>
                 ))}
               </div>
             )}
             <div className="composer-bottom">
-              <ToolComposerControls onUpload={() => fileInputRef.current?.click()} disabled={isAsking} mode={mode} onModeChange={setMode} messages={activeConversation?.messages || []} question={question} hasPendingFiles={files.length > 0} />
+              <ToolComposerControls onUpload={() => fileInputRef.current?.click()} disabled={false} modeDisabled={isAsking} mode={mode} onModeChange={setMode} messages={activeConversation?.messages || []} question={question} hasPendingFiles={files.length > 0} />
               <button
                 type="button"
-                className={`voice-send${isAsking && activeRequest.taskId ? ' stop' : ''}`}
-                aria-label={isAsking && activeRequest.taskId ? '停止分析' : '发送'}
-                onClick={isAsking && activeRequest.taskId ? cancelCurrentTask : ask}
-                disabled={isAsking ? Boolean(activeRequest.cancelPending) || !activeRequest.taskId : (!question.trim() && !files.length)}
+                className={`voice-send${isAsking && !question.trim() && !files.length ? ' stop' : ''}`}
+                aria-label={queuedComposer.label || (isAsking ? t("停止分析") : t("发送"))}
+                onClick={queuedComposer.send}
+                disabled={Boolean(activeRequest.cancelPending) || (!isAsking && !question.trim() && !files.length)}
               >
-                {isAsking && activeRequest.taskId
+                {isAsking && !question.trim() && !files.length
                   ? (activeRequest.cancelPending ? <Loader2 size={20} className="spinner" /> : <X size={19} />)
-                  : isAsking ? <Loader2 size={20} className="spinner" /> : <Send size={19} />}
+                  : <Send size={19} />}
               </button>
             </div>
             <input
@@ -1152,13 +1094,11 @@ function LaborConsultPage() {
             />
           </div>
           <p className="labor-disclaimer">
-            <BookOpen size={13} />
-            本回答为辅助分析，不构成正式法律意见；重大金额、群体性争议、工伤认定与行政处罚事项请由专业人士复核。
-          </p>
+            <BookOpen size={13} />{t("本回答为辅助分析，不构成正式法律意见；重大金额、群体性争议、工伤认定与行政处罚事项请由专业人士复核。")}</p>
         </div>
       </section>
 
-      {panelOpen && (
+      {settings.analysisPanel && panelOpen && (
         <EvidencePanel
           payload={latestEvidence}
           baseline={baseline}

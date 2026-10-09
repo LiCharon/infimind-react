@@ -1,13 +1,16 @@
-import ToolAccountPanel from '../components/ToolAccountPanel'
+import SideChatEmptyState from '../components/SideChatEmptyState'
 import './ContractRewritePage.css'
 import ToolComposerControls from '../components/ToolComposerControls'
 import { formatRelativeTime } from '../utils/relative-time.js'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
-import { ArrowRight, Brain, History, Menu, MessageCircle, PanelLeftClose, PanelLeftOpen, PenLine, Plus, Send, Trash2, Zap } from 'lucide-react'
+import { ArrowRight, Brain, History, Menu, MessageCircle, PenLine, Plus, Send, Trash2, Zap } from 'lucide-react'
 import { useAuth } from '../components/AuthProvider'
 import './ToolConversationPage.css'
-import ToolOverviewLink from '../components/ToolOverviewLink'
+import { useWorkspaceText, useWorkspaceLayout } from '../components/WorkspaceContext'
+import { useConversationActions } from '../hooks/useConversationActions'
+import { useSharedConversations } from '../hooks/useSharedConversations'
+
 
 const toolConfigs = {
   'ai-assistant': { title: '用工风险助手', intro: '描述员工关系中已经发生的情况、你掌握的材料和希望解决的问题。我会帮助你按事实、风险、处理步骤三个层次梳理，并提示还需要补充的信息。', placeholder: '描述你的用工问题和希望解决的重点…', prompts: ['员工拒绝调岗，该怎么处理？', '试用期解除需要准备什么材料？'] },
@@ -32,16 +35,16 @@ function readThreads(key, tool) {
 }
 
 function ToolConversationWorkspace({ toolId, tool }) {
+  const t = useWorkspaceText()
   const { user } = useAuth()
+  const { sidebarCollapsed, initialConversationId, isSideChat } = useWorkspaceLayout()
   const storageKey = `fafee-history-v2:${user.id}:${toolId}:threads`
-  const [threads, setThreads] = useState(() => readThreads(storageKey, tool))
-  const [activeId, setActiveId] = useState(() => threads[0].id)
+  const [threads, setThreads] = useSharedConversations(storageKey, () => readThreads(storageKey, tool), undefined, () => createThread(tool))
+  const [activeId, setActiveId] = useState(() => initialConversationId || threads[0].id)
   const [input, setInput] = useState('')
   const [historyQuery, setHistoryQuery] = useState('')
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const endRef = useRef(null)
   const activeThread = threads.find((thread) => thread.id === activeId) || threads[0]
-  useEffect(() => { window.localStorage.setItem(storageKey, JSON.stringify(threads)) }, [storageKey, threads])
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [activeThread?.messages.length])
 
   const newConversation = () => {
@@ -74,30 +77,36 @@ function ToolConversationWorkspace({ toolId, tool }) {
     setInput('')
   }
 
+  const { visibleItems: matchingThreads, renderTitle, historyControls, getHistoryMenuProps } = useConversationActions({
+    items: threads, active: activeThread, toolKey: toolId, query: historyQuery,
+    onNew: newConversation, onSelect: (item) => { setActiveId(item.id); setInput('') }
+  })
+
   return (
     <main className={`contract-chat prototype-chat ${sidebarCollapsed ? 'history-collapsed sidebar-collapsed' : ''}`}>
       <aside className="prototype-chat-sidebar chat-sidebar">
-        <label className="prototype-history-search sidebar-search"><History size={17} /><input name="history-search" autoComplete="off" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索历史对话" /><kbd>⌘ K</kbd></label>
-        <div className="prototype-brand"><img src="/logo.png" alt="" /><strong>法飞飞</strong></div>
-        <button className="prototype-new-chat" type="button" onClick={newConversation}><PenLine size={19} />新对话</button>
-        <p className="prototype-history-label">{tool.title} · 历史对话</p>
+        <label className="prototype-history-search sidebar-search"><History size={17} /><input name="history-search" autoComplete="off" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={t("搜索历史对话")} /><kbd>⌘ K</kbd></label>
+        <div className="prototype-brand"><img src="/logo.png" alt="" /><strong>{t("法飞飞")}</strong></div>
+        <button className="prototype-new-chat" type="button" onClick={newConversation}><PenLine size={19} />{t("新对话")}</button>
+        <p className="prototype-history-label">{tool.title}{t("· 历史对话")}</p>
         <nav className="prototype-thread-list history-list">
-          {threads.filter((thread) => thread.title.includes(historyQuery)).map((thread) => <div className={`prototype-thread ${thread.id === activeId ? 'selected' : ''}`} key={thread.id}><button type="button" onClick={() => setActiveId(thread.id)}><MessageCircle size={15} /><span className="history-row-copy"><span className="history-row-title">{thread.title}</span>{thread.updatedAt && <small className="history-row-time">{formatRelativeTime(thread.updatedAt)}</small>}</span></button><button className="prototype-thread-delete" type="button" aria-label={`删除对话：${thread.title}`} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={13} /></button></div>)}
+          {matchingThreads.map((thread) => <div className={`prototype-thread ${thread.id === activeId ? 'selected' : ''}`} key={thread.id}><button type="button" {...getHistoryMenuProps(thread)} onClick={() => setActiveId(thread.id)}><MessageCircle size={15} /><span className="history-row-copy"><span className="history-row-title">{renderTitle(thread)}</span>{thread.updatedAt && <small className="history-row-time">{formatRelativeTime(thread.updatedAt)}</small>}</span></button><button className="prototype-thread-delete" type="button" aria-label={`删除对话：${thread.title}`} onClick={(event) => deleteConversation(event, thread.id)}><Trash2 size={13} /></button></div>)}
         </nav>
-        <ToolAccountPanel label={`法飞飞${tool.title}${tool.title.endsWith('助手') ? '' : '助手'}`} />
+        {historyControls}
       </aside>
 
       <section className="prototype-chat-main chat-column">
-        <header className="prototype-chat-header chat-header"><div className="prototype-header-actions header-left"><button type="button" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? '展开历史会话栏' : '收起历史会话栏'} title={sidebarCollapsed ? '展开历史会话栏' : '收起历史会话栏'}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button><ToolOverviewLink /></div><div><strong>{tool.title}</strong><small>AI 生成内容仅供参考，请结合实际情况判断</small></div><span /></header>
+        <header className="prototype-chat-header chat-header"><div className="prototype-header-actions header-left"></div><div><strong>{tool.title}</strong><small>{t("AI 生成内容仅供参考，请结合实际情况判断")}</small></div><span /></header>
         <div className="prototype-messages">
           <div className="prototype-message-inner">
+            {isSideChat && !activeThread.messages.length && <SideChatEmptyState />}
             {activeThread.messages.map((message) => message.role === 'user' ? <div className="prototype-user-message" key={message.id}>{message.content}</div> : <div className="prototype-assistant-message" key={message.id}>{message.content}</div>)}
-            {activeThread.messages.length === 1 && <div className="prototype-prompts">{tool.prompts.map((prompt) => <button type="button" key={prompt} onClick={() => send(prompt)}>{prompt}<ArrowRight size={15} /></button>)}</div>}
+            {!isSideChat && activeThread.messages.length === 1 && <div className="prototype-prompts">{tool.prompts.map((prompt) => <button type="button" key={prompt} onClick={() => send(prompt)}>{prompt}<ArrowRight size={15} /></button>)}</div>}
             <div ref={endRef} />
           </div>
         </div>
         <div className="prototype-composer-wrap composer-wrap">
-          <div className="prototype-composer composer"><textarea name="tool-input" autoComplete="off" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder={tool.placeholder} /><div className="prototype-composer-bottom composer-bottom"><ToolComposerControls messages={activeThread.messages} question={input} /><button className="prototype-send voice-send" type="button" onClick={() => send()} disabled={!input.trim()} aria-label="发送消息"><Send size={19} /></button></div></div>
+          <div className="prototype-composer composer"><textarea name="tool-input" autoComplete="off" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder={tool.placeholder} /><div className="prototype-composer-bottom composer-bottom"><ToolComposerControls messages={activeThread.messages} question={input} /><button className="prototype-send voice-send" type="button" onClick={() => send()} disabled={!input.trim()} aria-label={t("发送消息")}><Send size={19} /></button></div></div>
         </div>
       </section>
     </main>
@@ -107,6 +116,6 @@ function ToolConversationWorkspace({ toolId, tool }) {
 export default function ToolConversationPage() {
   const { toolId } = useParams()
   const tool = useMemo(() => toolConfigs[toolId], [toolId])
-  if (!tool) return <Navigate to="/tools" replace />
+  if (!tool) return <Navigate to="/labor-consult" replace />
   return <ToolConversationWorkspace key={toolId} toolId={toolId} tool={tool} />
 }

@@ -7,12 +7,12 @@ import ContractDraftPage from './pages/ContractDraftPage'
 import LaborConsultPage from './pages/LaborConsultPage'
 import LaborContractAnalysisPage from './pages/LaborContractAnalysisPage'
 import LaborArbitrationPage from './pages/LaborArbitrationPage'
-import ToolHubPage from './pages/ToolHubPage'
 import AuthPage from './pages/AuthPage'
 import ToolConversationPage from './pages/ToolConversationPage'
 import CitationVerificationComparePage from './pages/CitationVerificationComparePage'
 import QRCodeModal from './components/QRCodeModal'
 import { AuthProvider, useAuth } from './components/AuthProvider'
+import WorkspaceLayout from './components/WorkspaceLayout'
 
 export const QRCodeContext = createContext()
 
@@ -52,16 +52,18 @@ function App() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/aboutus" element={<AboutPage />} />
-            <Route path="/contract-rewrite" element={<ProtectedPage><ContractRewritePage /></ProtectedPage>} />
-            <Route path="/contract-draft" element={<ProtectedPage><ContractDraftPage /></ProtectedPage>} />
-            <Route path="/labor-consult" element={<ProtectedPage><LaborConsultPage /></ProtectedPage>} />
-            <Route path="/tools" element={<ProtectedPage><ToolHubPage /></ProtectedPage>} />
-            <Route path="/tools/contract-review" element={<ProtectedPage><ContractRewritePage /></ProtectedPage>} />
-            <Route path="/tools/contract-draft" element={<ProtectedPage><ContractDraftPage /></ProtectedPage>} />
-            <Route path="/tools/labor-consult" element={<ProtectedPage><LaborConsultPage /></ProtectedPage>} />
-            <Route path="/tools/labor-contract" element={<ProtectedPage><LaborContractAnalysisPage /></ProtectedPage>} />
-            <Route path="/tools/arbitration" element={<ProtectedPage><LaborArbitrationPage /></ProtectedPage>} />
-            <Route path="/tools/:toolId" element={<ProtectedPage><ToolConversationPage /></ProtectedPage>} />
+            <Route element={<ProtectedPage><WorkspaceLayout /></ProtectedPage>}>
+              <Route path="/labor-consult" element={<LaborConsultPage />} />
+              <Route path="/contract-rewrite" element={<ContractRewritePage />} />
+              <Route path="/contract-draft" element={<ContractDraftPage />} />
+              <Route path="/tools" element={<Navigate to="/labor-consult" replace />} />
+              <Route path="/tools/contract-review" element={<ContractRewritePage />} />
+              <Route path="/tools/contract-draft" element={<ContractDraftPage />} />
+              <Route path="/tools/labor-consult" element={<LaborConsultPage />} />
+              <Route path="/tools/labor-contract" element={<LaborContractAnalysisPage />} />
+              <Route path="/tools/arbitration" element={<LaborArbitrationPage />} />
+              <Route path="/tools/:toolId" element={<ToolConversationPage />} />
+            </Route>
             <Route path="/auth" element={<AuthPage />} />
             {import.meta.env.DEV && <Route path="/__demo/citation-verification" element={<CitationVerificationComparePage />} />}
           </Routes>

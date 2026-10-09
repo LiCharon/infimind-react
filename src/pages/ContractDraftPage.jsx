@@ -1,4 +1,6 @@
-import ToolAccountPanel from '../components/ToolAccountPanel'
+import { useComposerSend } from '../hooks/useComposerSend'
+import QueuedMessages from '../components/QueuedMessages'
+import SideChatEmptyState from '../components/SideChatEmptyState'
 import ToolComposerControls from '../components/ToolComposerControls'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
@@ -15,7 +17,6 @@ import {
   History,
   Loader2,
   MessageCircle,
-  PanelLeft,
   PenLine,
   Plus,
   Square,
@@ -25,7 +26,10 @@ import {
 } from 'lucide-react'
 import './ContractRewritePage.css'
 import './ContractDraftPage.css'
-import ToolOverviewLink from '../components/ToolOverviewLink'
+import { useWorkspaceText, useWorkspaceLayout } from '../components/WorkspaceContext'
+import { useConversationActions } from '../hooks/useConversationActions'
+import { useSharedConversations, useSharedRequestState } from '../hooks/useSharedConversations'
+
 import { useAuth } from '../components/AuthProvider'
 import { authFetch } from '../utils/auth-api'
 import { formatRelativeTime } from '../utils/relative-time.js'
@@ -73,21 +77,22 @@ const normalizeThreads = (value) => Array.isArray(value) ? value.filter((item) =
 const normalizeTasks = (value) => Array.isArray(value) ? value.filter((item) => item && typeof item === 'object' && typeof item.threadId === 'string').map((item) => ({ ...item, id: typeof item.id === 'string' ? item.id : createId('task'), title: typeof item.title === 'string' ? item.title : '新起草任务', prompt: typeof item.prompt === 'string' ? item.prompt : '', status: typeof item.status === 'string' ? item.status : '', operation: typeof item.operation === 'string' ? item.operation : '', updatedAt: Number(item.updatedAt) || Number(item.createdAt) || Date.now() })) : []
 
 function DraftDocument({ draftText, pendingItems, confirmed, onConfirm }) {
-  if (!draftText) return <div className="draft-document-empty"><Loader2 size={29} className="draft-spinner" /><p>正在生成合同草稿…</p></div>
+  const t = useWorkspaceText()
+  if (!draftText) return <div className="draft-document-empty"><Loader2 size={29} className="draft-spinner" /><p>{t("正在生成合同草稿…")}</p></div>
   const contractMarkdown = draftText
     .replace(/^##\s+待确认信息\s*[\s\S]*?(?=^##\s+合同正文\s*$)/m, '')
     .replace(/^##\s+合同正文\s*$/m, '')
   return (
     <article className="draft-document">
       <aside className="draft-confirm-panel">
-        <div><ClipboardList size={18} /><strong>{confirmed ? '信息已确认' : '待确认信息'}</strong></div>
-        <p>{confirmed ? '仍请在签署前复核交易事实与授权文件。' : '以下事项会影响合同内容，请确认或补充。'}</p>
-        {(pendingItems.length ? pendingItems : ['正在识别待确认的交易信息…']).map((item) => (
+        <div><ClipboardList size={18} /><strong>{confirmed ? t("信息已确认") : t("待确认信息")}</strong></div>
+        <p>{confirmed ? t("仍请在签署前复核交易事实与授权文件。") : t("以下事项会影响合同内容，请确认或补充。")}</p>
+        {(pendingItems.length ? pendingItems : [t("正在识别待确认的交易信息…")]).map((item) => (
           <button type="button" key={item} className={confirmed ? 'confirmed' : ''} onClick={onConfirm}>
             <span>{confirmed ? <Check size={13} /> : '•'}</span>{item}
           </button>
         ))}
-        <button type="button" className="confirm-all" onClick={onConfirm}>{confirmed ? '已全部确认' : '全部确认'}</button>
+        <button type="button" className="confirm-all" onClick={onConfirm}>{confirmed ? t("已全部确认") : t("全部确认")}</button>
       </aside>
       <div className="draft-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{contractMarkdown}</ReactMarkdown></div>
     </article>
@@ -95,7 +100,9 @@ function DraftDocument({ draftText, pendingItems, confirmed, onConfirm }) {
 }
 
 function ContractDraftPage() {
+  const t = useWorkspaceText()
   const { user } = useAuth()
+  const { settings, sidebarCollapsed, initialConversationId, isSideChat } = useWorkspaceLayout()
   const inputRef = useRef(null)
   const searchRef = useRef(null)
   const inFlightRef = useRef(new Set())
@@ -104,18 +111,17 @@ function ContractDraftPage() {
   const activeIdRef = useRef('')
   const threadStorageKey = `fafee-history-v2:${user.id}:contract-draft:threads`
   const taskStorageKey = `fafee-history-v2:${user.id}:contract-draft:tasks`
-  const [conversations, setConversations] = useState(() => {
+  const [conversations, setConversations] = useSharedConversations(threadStorageKey, () => {
     const saved = normalizeThreads(readStorage(threadStorageKey, []))
     return saved.length ? saved : initialConversations
-  })
-  const [tasks, setTasks] = useState(() => normalizeTasks(readStorage(taskStorageKey, [])))
-  const [activeId, setActiveId] = useState('')
+  }, undefined, createConversation)
+  const [tasks, setTasks] = useState(() => isSideChat ? [] : normalizeTasks(readStorage(taskStorageKey, [])))
+  const [activeId, setActiveId] = useState(initialConversationId)
   const [instruction, setInstruction] = useState('')
   const [mode, setMode] = useState('thinking')
   const [files, setFiles] = useState([])
-  const [requests, setRequests] = useState({})
+  const [requests, setRequests] = useSharedRequestState(threadStorageKey)
   const [documentOpen, setDocumentOpen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
   const [historyQuery, setHistoryQuery] = useState('')
   const [taskModalOpen, setTaskModalOpen] = useState(false)
@@ -125,12 +131,10 @@ function ContractDraftPage() {
   const activeDraft = useMemo(() => [...(activeConversation?.messages || [])].reverse().find((message) => message.type === 'draft' && message.draftText), [activeConversation])
   const activeRequest = requests[activeConversation?.id] || {}
   const isGenerating = Boolean(activeRequest.loading)
-  const matchingConversations = useMemo(() => [...conversations].sort((a, b) => b.updatedAt - a.updatedAt).filter((item) => item.title.toLowerCase().includes(historyQuery.trim().toLowerCase())), [conversations, historyQuery])
 
   useEffect(() => { if (conversations.length && !conversations.some((item) => item.id === activeId)) setActiveId(conversations[0].id) }, [activeId, conversations])
   useEffect(() => { activeIdRef.current = activeConversation?.id || '' }, [activeConversation?.id])
-  useEffect(() => { writeStorage(threadStorageKey, conversations) }, [threadStorageKey, conversations])
-  useEffect(() => { writeStorage(taskStorageKey, tasks) }, [taskStorageKey, tasks])
+  useEffect(() => { if (!isSideChat) writeStorage(taskStorageKey, tasks) }, [taskStorageKey, tasks, isSideChat])
   useEffect(() => {
     const conversation = conversations.find((item) => item.id === activeId)
     const taskMessage = [...(conversation?.messages || [])].reverse().find((message) => message?.taskId)
@@ -316,18 +320,18 @@ function ContractDraftPage() {
     if (latestTask.status !== 'succeeded') throw new Error(latestTask.errorSummary || TASK_STATUS_LABELS[latestTask.status] || '合同起草未完成。')
   }
 
-  const runLegacyDraft = async ({ conversationId, assistantId, content, history, filesSnapshot, run }) => {
+  const runLegacyDraft = async ({ conversationId, assistantId, content, history, filesSnapshot, requestMode, run }) => {
     const body = filesSnapshot.length ? new FormData() : null
     if (body) {
       body.append('message', content)
       body.append('history', JSON.stringify(history))
-      body.append('mode', mode)
+      body.append('mode', requestMode)
       filesSnapshot.forEach((file) => body.append('files', file))
     }
     const response = await authFetch(DRAFT_ENDPOINT, {
       method: 'POST',
       headers: body ? { Accept: 'text/event-stream' } : { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: body || JSON.stringify({ message: content, history, mode }),
+      body: body || JSON.stringify({ message: content, history, mode: requestMode }),
       signal: run.controller.signal
     })
     if (!response.ok) {
@@ -365,9 +369,11 @@ function ContractDraftPage() {
     }
   }
 
-  const createDraft = async () => {
-    const request = instruction.trim()
-    if ((!request && !files.length) || isGenerating || !activeConversation || inFlightRef.current.has(activeConversation.id)) return
+  const createDraft = async (snapshot = null) => {
+    const request = snapshot ? snapshot.text.trim() : instruction.trim()
+    const selectedFiles = snapshot ? snapshot.files : files
+    const requestMode = snapshot?.mode || mode
+    if ((!request && !selectedFiles.length) || isGenerating || !activeConversation || inFlightRef.current.has(activeConversation.id)) return
     const conversationId = activeConversation.id
     const assistantId = createId('assistant')
     const previousDraft = [...activeConversation.messages].reverse().find((message) => message.type === 'draft' && message.draftText)
@@ -386,16 +392,17 @@ function ContractDraftPage() {
       pendingItems: previousDraft.pendingItems || [],
       contractType: previousDraft.contractType || null
     } : null
-    const uploadedFiles = files.map((file) => ({ name: file.name, size: file.size }))
-    const filesSnapshot = [...files]
+    const uploadedFiles = selectedFiles.map((file) => ({ name: file.name, size: file.size }))
+    const filesSnapshot = [...selectedFiles]
     const content = request || '请结合附件参考材料起草一份规范、可执行的合同初稿。'
     const shouldRefineTitle = activeConversation.messages.length === 0
-    const run = { runId: createId('request'), controller: new AbortController(), assistantId, taskId: null, superseded: false }
+    let resolveReady
+    const run = { runId: createId('request'), controller: new AbortController(), assistantId, taskId: null, superseded: false, ready: new Promise((resolve) => { resolveReady = resolve }) }
     appendMessage(conversationId, { id: createId('user'), type: 'user', content, files: uploadedFiles })
-    appendMessage(conversationId, { id: assistantId, type: 'assistant', content: '', draftText: '', pendingItems: [], status: files.length ? '正在读取参考文件…' : '正在理解本次需求…' })
+    appendMessage(conversationId, { id: assistantId, type: 'assistant', content: '', draftText: '', pendingItems: [], status: selectedFiles.length ? '正在读取参考文件…' : '正在理解本次需求…' })
     updateConversation(conversationId, (conversation) => ({ ...conversation, title: conversation.messages.length ? conversation.title : titleFromInstruction(request) }))
     if (shouldRefineTitle) void refineConversationTitle(conversationId, [content, ...uploadedFiles.map((file) => file.name)].join('；'))
-    resetComposer()
+    if (!snapshot) resetComposer()
     requestRunsRef.current.set(conversationId, run)
     inFlightRef.current.add(conversationId)
     patchRequest(conversationId, { loading: true, error: '', cancelPending: false })
@@ -406,9 +413,10 @@ function ContractDraftPage() {
       const taskBody = new FormData()
       taskBody.append('message', content)
       taskBody.append('threadId', conversationId)
+      taskBody.append('temporary', String(isSideChat))
       taskBody.append('title', activeConversation.title || titleFromInstruction(request))
       taskBody.append('history', JSON.stringify(history))
-      taskBody.append('mode', mode)
+      taskBody.append('mode', requestMode)
       if (previousDraft?.taskId) taskBody.append('parentTaskId', previousDraft.taskId)
       if (currentDraft) taskBody.append('currentDraft', JSON.stringify(currentDraft))
       filesSnapshot.forEach((file) => taskBody.append('files', file))
@@ -416,13 +424,15 @@ function ContractDraftPage() {
       const taskPayload = await taskResponse.json().catch(() => ({}))
       const shouldUseLegacySse = taskPayload.code === 'draft_sse_required' || taskPayload.code === 'draft_intent_clarification'
       if (shouldUseLegacySse) {
-        await runLegacyDraft({ conversationId, assistantId, content, history, filesSnapshot, run })
+        resolveReady()
+        await runLegacyDraft({ conversationId, assistantId, content, history, filesSnapshot, requestMode, run })
         return
       }
       if (!taskResponse.ok) throw new Error(taskPayload.error || `起草任务创建失败（${taskResponse.status}）`)
       const taskId = taskPayload.taskId
       if (!taskId) throw new Error('任务服务未返回任务 ID。')
       run.taskId = taskId
+      resolveReady()
       updateConversation(conversationId, (conversation) => ({ ...conversation, taskId }))
       updateMessage(conversationId, assistantId, { type: 'draft', taskId, status: TASK_STATUS_LABELS.queued })
       upsertTask(taskPayload.task, { id: taskId, threadId: conversationId, title: taskPayload.task?.title || activeConversation.title, prompt: content, operation: taskPayload.operation, status: taskPayload.status || 'queued' })
@@ -434,36 +444,46 @@ function ContractDraftPage() {
     } catch (error) {
       if (!run.superseded && !run.controller.signal.aborted) updateMessage(conversationId, assistantId, { failed: true, status: '', error: error.message || '合同起草失败' })
     } finally {
-      clearCurrentRun(conversationId, run.runId)
+      resolveReady()
+      if (!run.cancelPending) clearCurrentRun(conversationId, run.runId)
     }
   }
 
   const cancelDraft = async () => {
     const conversationId = activeConversation?.id
     const run = conversationId ? requestRunsRef.current.get(conversationId) : null
-    if (!run) return
-    run.superseded = true
-    run.controller.abort()
-    patchRequest(conversationId, { loading: true, cancelPending: Boolean(run.taskId), error: '' })
+    if (!run || run.cancelPending) return
+    run.cancelPending = true
+    patchRequest(conversationId, { loading: true, cancelPending: true, error: '' })
     try {
+      await run.ready
+      if (requestRunsRef.current.get(conversationId) !== run) return
       let task = null
       if (run.taskId) {
         const response = await authFetch(`/api/tasks/${run.taskId}/cancel`, { method: 'POST', headers: { Accept: 'application/json' } })
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(payload.error || '起草任务暂时无法停止。')
         task = payload.task || null
+        const deadline = Date.now() + 60000
+        while (!isTerminalTask(task?.status)) {
+          if (Date.now() >= deadline) throw new Error('尚未确认任务已停止，请稍后重试。')
+          await new Promise((resolve) => setTimeout(resolve, 300))
+          task = await fetchTaskDetail(run.taskId)
+        }
         upsertTask(task, { id: run.taskId, threadId: conversationId })
       }
+      run.superseded = true
+      run.controller.abort()
       if (task?.status === 'succeeded') applyDraftTask(conversationId, run.assistantId, task)
       else updateMessage(conversationId, run.assistantId, { status: TASK_STATUS_LABELS.cancelled, interrupted: true, completed: false, failed: false })
-    } catch (error) {
-      run.superseded = false
-      patchRequest(conversationId, { loading: false, cancelPending: false, error: error.message || '起草任务暂时无法停止。' })
-      return
-    } finally {
       clearCurrentRun(conversationId, run.runId)
+    } catch (error) {
+      run.cancelPending = false
+      patchRequest(conversationId, { cancelPending: false, error: error.message || '起草任务暂时无法停止。' })
     }
   }
+
+  const queuedComposer = useComposerSend({ tool: 'contract-draft', conversationId: activeConversation?.id, busy: isGenerating, blocked: Boolean(activeRequest.cancelPending), capture: () => ({ text: instruction, files: [...files], mode }), clear: resetComposer, onSend: createDraft, onStop: cancelDraft })
 
   const startConversation = () => {
     const next = createConversation()
@@ -505,37 +525,43 @@ function ContractDraftPage() {
     URL.revokeObjectURL(href)
   }
 
+  const { visibleItems: matchingConversations, titleOf, renderTitle, historyControls, getHistoryMenuProps } = useConversationActions({
+    items: conversations, active: activeConversation, toolKey: 'contract-draft', query: historyQuery,
+    onNew: startConversation, onSelect: (item) => { setActiveId(item.id); setDocumentOpen(false); resetComposer() }
+  })
+
   return (
-    <main className={`contract-chat contract-draft ${documentOpen ? 'document-expanded' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      {!documentOpen && <aside className="chat-sidebar">
-        <label className="sidebar-search"><History size={17} /><input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="搜索历史对话" /><kbd>⌘ K</kbd></label>
-        <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>法飞飞</strong></div>
-        <button type="button" className="sidebar-action" onClick={startConversation}><PenLine size={20} />新对话</button>
-        <button type="button" className="sidebar-action" onClick={() => setTaskModalOpen(true)}><FolderOpen size={20} />新起草任务</button>
-        <p className="history-label">历史对话</p>
-        <nav className="history-list">{matchingConversations.map((conversation) => <button type="button" key={conversation.id} className={`${conversation.id === activeConversation.id ? 'selected' : ''}${requests[conversation.id]?.loading ? ' thread-running' : ''}`} onClick={() => { setActiveId(conversation.id); setDocumentOpen(false); resetComposer() }}><span className="history-thread-icon">{requests[conversation.id]?.loading ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span className="history-row-copy"><span className="history-row-title">{conversation.title}</span><small className="history-row-time">{formatRelativeTime(conversation.updatedAt)}</small></span><i className="history-delete" title={requests[conversation.id]?.loading ? '处理中，暂不能删除' : '删除对话'} onClick={(event) => deleteConversation(event, conversation.id)}><Trash2 size={14} /></i></button>)}</nav>
-        {tasks.length > 0 && <><p className="history-label task-label">起草任务</p><nav className="history-list task-list">{tasks.map((task) => <button type="button" key={task.id} className={task.threadId === activeConversation?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title="删除任务" onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
-        <ToolAccountPanel label="法飞飞合同起草助手" />
+    <main className={`contract-chat contract-draft ${settings.analysisPanel && documentOpen ? 'document-expanded' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      {!(settings.analysisPanel && documentOpen) && <aside className="chat-sidebar">
+        <label className="sidebar-search"><History size={17} /><input ref={searchRef} value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={t("搜索历史对话")} /><kbd>⌘ K</kbd></label>
+        <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>{t("法飞飞")}</strong></div>
+        <button type="button" className="sidebar-action" onClick={startConversation}><PenLine size={20} />{t("新对话")}</button>
+        <button type="button" className="sidebar-action" onClick={() => setTaskModalOpen(true)}><FolderOpen size={20} />{t("新起草任务")}</button>
+        <p className="history-label">{t("历史对话")}</p>
+        <nav className="history-list">{matchingConversations.map((conversation) => <button type="button" key={conversation.id} {...getHistoryMenuProps(conversation)} className={`${conversation.id === activeConversation.id ? 'selected' : ''}${requests[conversation.id]?.loading ? ' thread-running' : ''}`} onClick={() => { setActiveId(conversation.id); setDocumentOpen(false); resetComposer() }}><span className="history-thread-icon">{requests[conversation.id]?.loading ? <Loader2 size={16} className="spinner" /> : <MessageCircle size={16} />}</span><span className="history-row-copy"><span className="history-row-title">{renderTitle(conversation)}</span><small className="history-row-time">{formatRelativeTime(conversation.updatedAt)}</small></span><i className="history-delete" title={requests[conversation.id]?.loading ? t("处理中，暂不能删除") : t("删除对话")} onClick={(event) => deleteConversation(event, conversation.id)}><Trash2 size={14} /></i></button>)}</nav>
+        {tasks.length > 0 && <><p className="history-label task-label">{t("起草任务")}</p><nav className="history-list task-list">{tasks.map((task) => <button type="button" key={task.id} className={task.threadId === activeConversation?.id ? 'selected' : ''} onClick={() => openTask(task)}><FolderOpen size={16} /><span>{task.title}</span><i className="history-delete" title={t("删除任务")} onClick={(event) => deleteTask(event, task.id)}><Trash2 size={14} /></i></button>)}</nav></>}
+        {historyControls}
       </aside>}
 
       <section className="chat-column">
         <header className="chat-header">
-          <div className="header-left">{documentOpen ? <button type="button" className="icon-button" aria-label="返回对话" onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button> : <><button type="button" className="icon-button sidebar-toggle" aria-label={sidebarCollapsed ? '展开历史对话栏' : '折叠历史对话栏'} onClick={() => setSidebarCollapsed((value) => !value)}><PanelLeft size={21} /></button><ToolOverviewLink /></>}</div>
-          <div className="chat-title"><strong>{activeConversation?.title || '合同智能起草助手'}</strong><small>AI 生成内容仅供参考，请结合实际情况判断</small></div><div className="header-tools" />
+          <div className="header-left">{settings.analysisPanel && documentOpen ? <button type="button" className="icon-button" aria-label={t("返回对话")} onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button> : null}</div>
+          <div className="chat-title"><strong>{titleOf(activeConversation)}</strong><small>{t("AI 生成内容仅供参考，请结合实际情况判断")}</small></div><div className="header-tools" />
         </header>
         <div className="conversation"><div className="conversation-inner">
-          {!activeConversation?.messages?.length && <div className="assistant-turn welcome-turn"><div><p>你好，我是法飞飞合同起草助手。请描述合同类型、合作背景和关键要求；我会为你生成可继续编辑的合同草稿，并提示需要补全的交易信息。</p></div></div>}
+          {isSideChat && !activeConversation?.messages?.length && <SideChatEmptyState />}
+          {!isSideChat && !activeConversation?.messages?.length && <div className="assistant-turn welcome-turn"><div><p>{t("你好，我是法飞飞合同起草助手。请描述合同类型、合作背景和关键要求；我会为你生成可继续编辑的合同草稿，并提示需要补全的交易信息。")}</p></div></div>}
           {activeConversation?.messages?.map((message) => message.type === 'user'
             ? <div className="user-turn" key={message.id}><p>{message.content}</p>{message.files?.map((file) => <div className="attached-file" key={`${message.id}-${file.name}`}><FileText size={18} /><span>{file.name}</span><small>{Math.ceil(file.size / 1024)} KB</small></div>)}</div>
-            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && <p className="assistant-status">{!message.interrupted && !message.failed && !message.completed && <Loader2 size={15} className="spinner" />}{message.status}</p>}{message.content && !message.draftText && <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>}{message.draftText && <p>{message.content || '合同初稿已生成。请结合右侧“待确认信息”补全交易事实后再定稿。'}</p>}{message.failed && <small className="message-failed">{message.error || '合同起草失败，请检查服务配置后重试。'}</small>}{message.draftText && <button type="button" className="open-document-card" onClick={() => setDocumentOpen(true)}><FilePenLine size={25} /><span><strong>{message.title || activeConversation.title}（初稿）</strong><small>合同初稿 · {message.pendingItems?.length || 0} 项待确认信息 · 点击展开文档</small></span></button>}</div></div>)}
+            : <div className="assistant-turn result-turn" key={message.id}><div>{message.status && <p className="assistant-status">{!message.interrupted && !message.failed && !message.completed && <Loader2 size={15} className="spinner" />}{t(message.status)}</p>}{message.content && !message.draftText && <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>}{message.draftText && <p>{message.content || t("合同初稿已生成。请结合右侧“待确认信息”补全交易事实后再定稿。")}</p>}{message.failed && <small className="message-failed">{message.error || t("合同起草失败，请检查服务配置后重试。")}</small>}{message.draftText && !settings.analysisPanel && <div className="assistant-content draft-inline-output"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.draftText}</ReactMarkdown><button type="button" className="tool-text" onClick={() => navigator.clipboard?.writeText(message.draftText)}>{t('复制')}</button></div>}{message.draftText && <button type="button" className="open-document-card" onClick={() => setDocumentOpen(true)}><FilePenLine size={25} /><span><strong>{message.title || activeConversation.title}{t("（初稿）")}</strong><small>{t("合同初稿 ·")}{message.pendingItems?.length || 0}{t("项待确认信息 · 点击展开文档")}</small></span></button>}</div></div>)}
           {activeRequest.error && <p className="chat-error">{activeRequest.error}</p>}
-          {!activeConversation?.messages?.length && <div className="starter-prompts">{starterPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => setInstruction(prompt)}>{prompt}<span>→</span></button>)}</div>}
+          {!isSideChat && !activeConversation?.messages?.length && <div className="starter-prompts">{starterPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => setInstruction(t(prompt))}>{t(prompt)}<span>→</span></button>)}</div>}
         </div></div>
-        <div className="composer-wrap"><div className="composer"><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); createDraft() } }} placeholder="上传参考文件或输入你想起草的合同要求…" disabled={isGenerating} />{files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}<div className="composer-bottom"><ToolComposerControls mode={mode} onModeChange={setMode} modeDisabled={isGenerating} onUpload={() => inputRef.current?.click()} uploadLabel="上传参考文件" disabled={isGenerating} messages={activeConversation?.messages || []} question={instruction} hasPendingFiles={files.length > 0} /><button type="button" className="voice-send" aria-label={isGenerating ? '停止起草任务' : '发送消息'} onClick={isGenerating ? cancelDraft : createDraft} disabled={!isGenerating && (!instruction.trim() && !files.length)}>{activeRequest.cancelPending ? <Loader2 size={20} className="spinner" /> : isGenerating ? <Square size={17} /> : <Send size={19} />}</button></div><input ref={inputRef} hidden type="file" multiple accept={ACCEPTED} onChange={(event) => { uploadFiles([...event.target.files]); event.target.value = '' }} /></div></div>
+        <div className="composer-wrap"><div className="composer"><QueuedMessages composer={queuedComposer} /><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); createDraft() } }} placeholder={t("上传参考文件或输入你想起草的合同要求…")} disabled={false} />{files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button type="button" aria-label={(t("移除 ") + (file.name))} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}<div className="composer-bottom"><ToolComposerControls mode={mode} onModeChange={setMode} modeDisabled={isGenerating} onUpload={() => inputRef.current?.click()} uploadLabel={t("上传参考文件")} disabled={false} messages={activeConversation?.messages || []} question={instruction} hasPendingFiles={files.length > 0} /><button type="button" className="voice-send" aria-label={queuedComposer.label || (isGenerating ? t('停止起草任务') : t('发送消息'))} onClick={queuedComposer.send} disabled={Boolean(activeRequest.cancelPending) || (!isGenerating && !instruction.trim() && !files.length)}>{activeRequest.cancelPending ? <Loader2 size={20} className="spinner" /> : isGenerating && !instruction.trim() && !files.length ? <Square size={17} /> : <Send size={19} />}</button></div><input ref={inputRef} hidden type="file" multiple accept={ACCEPTED} onChange={(event) => { uploadFiles([...event.target.files]); event.target.value = '' }} /></div></div>
       </section>
 
-      {documentOpen && <section className="document-column"><header className="document-header"><span>合同草稿</span><div><button type="button" disabled={!activeDraft?.draftText} onClick={() => navigator.clipboard?.writeText(activeDraft?.draftText || '')}><Copy size={18} />复制</button><button type="button" disabled={!activeDraft?.draftText} onClick={downloadDraft}><Download size={18} />下载 Word</button><button type="button" className="close-document" aria-label="关闭合同草稿" onClick={() => setDocumentOpen(false)}><X size={21} /></button></div></header><div className="document-scroll"><DraftDocument draftText={activeDraft?.draftText || ''} pendingItems={activeDraft?.pendingItems || []} confirmed={confirmed} onConfirm={() => setConfirmed(true)} />{activeDraft?.draftText && <aside className="draft-document-note"><strong>起草说明</strong><p>本草稿由 AI 根据当前输入生成；请在签署前核对主体、授权、金额、期限、税务与公司治理等交易事实，并视需要由专业人士复核。</p></aside>}</div></section>}
-      {taskModalOpen && <div className="task-modal-backdrop" onMouseDown={() => setTaskModalOpen(false)}><form className="task-modal" onSubmit={createTask} onMouseDown={(event) => event.stopPropagation()}><div><strong>新起草对话</strong><button type="button" aria-label="关闭" onClick={() => setTaskModalOpen(false)}><X size={19} /></button></div><label>任务名称<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="例如：年度采购框架协议" autoFocus /></label><label>起草要求<textarea value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} placeholder="可填写合同类型、交易背景、主体角色和重点条款" /></label><p>创建对话后发送要求，完整合同会进入后台任务并支持恢复。</p><footer><button type="button" onClick={() => setTaskModalOpen(false)}>取消</button><button className="task-primary" type="submit">创建对话</button></footer></form></div>}
+      {settings.analysisPanel && documentOpen && <section className="document-column"><header className="document-header"><span>{t("合同草稿")}</span><div><button type="button" disabled={!activeDraft?.draftText} onClick={() => navigator.clipboard?.writeText(activeDraft?.draftText || '')}><Copy size={18} />{t("复制")}</button><button type="button" disabled={!activeDraft?.draftText} onClick={downloadDraft}><Download size={18} />{t("下载 Word")}</button><button type="button" className="close-document" aria-label={t("关闭合同草稿")} onClick={() => setDocumentOpen(false)}><X size={21} /></button></div></header><div className="document-scroll"><DraftDocument draftText={activeDraft?.draftText || ''} pendingItems={activeDraft?.pendingItems || []} confirmed={confirmed} onConfirm={() => setConfirmed(true)} />{activeDraft?.draftText && <aside className="draft-document-note"><strong>{t("起草说明")}</strong><p>{t("本草稿由 AI 根据当前输入生成；请在签署前核对主体、授权、金额、期限、税务与公司治理等交易事实，并视需要由专业人士复核。")}</p></aside>}</div></section>}
+      {taskModalOpen && <div className="task-modal-backdrop" onMouseDown={() => setTaskModalOpen(false)}><form className="task-modal" onSubmit={createTask} onMouseDown={(event) => event.stopPropagation()}><div><strong>{t("新起草对话")}</strong><button type="button" aria-label={t("关闭")} onClick={() => setTaskModalOpen(false)}><X size={19} /></button></div><label>{t("任务名称")}<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder={t("例如：年度采购框架协议")} autoFocus /></label><label>{t("起草要求")}<textarea value={taskPrompt} onChange={(event) => setTaskPrompt(event.target.value)} placeholder={t("可填写合同类型、交易背景、主体角色和重点条款")} /></label><p>{t("创建对话后发送要求，完整合同会进入后台任务并支持恢复。")}</p><footer><button type="button" onClick={() => setTaskModalOpen(false)}>{t("取消")}</button><button className="task-primary" type="submit">{t("创建对话")}</button></footer></form></div>}
     </main>
   )
 }
