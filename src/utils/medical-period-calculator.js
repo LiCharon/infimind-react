@@ -1,6 +1,6 @@
 // Medical-period-only pure calculation. No clock, network, storage or model calls.
 // Legal uncertainties are explicit result fields, never silently chosen algorithms.
-const ALGORITHM_VERSION = 'medical-period-2026-10-09.4'
+const ALGORITHM_VERSION = 'medical-period-2026-10-09.5'
 const VERIFIED_ON = '2026-10-09'
 const SH_MONTH_WORKDAYS = 20.67
 const SH_CONVERSION_VERIFIED_FROM = '2025-10-28'
@@ -74,6 +74,78 @@ function nationalTier(total, unit) {
   return [24, 30]
 }
 const shanghaiMonths = (unit) => Math.min(24, 3 + Math.max(0, unit - 1))
+
+// Fixed-window grouping is a reference scenario, not a nationwide legal reset
+// rule. Boundary allocation, exhausted periods and ambiguous tenure stay explicit.
+function segmentedReferenceResults(input, records, quota, usage, reviewReasons) {
+  if (input.recordMode !== 'intervals' || input.leaveType !== 'segmented') return []
+  if (input.region === 'shanghai') {
+    let cumulativeCents = 0
+    let complete = true
+    return records.rows.map((row) => {
+      complete &&= row.workDays !== null
+      cumulativeCents += row.workDays === null ? 0 : Math.round(row.workDays * 100)
+      const remainingCents = quota ? Math.max(0, quota.months * 2067 - cumulativeCents) : null
+      return { ...row, cycleNumber: null, cycleStart: records.firstDay, cycleBoundary: null,
+        quotaMonths: quota?.months ?? null, accumulationMonths: null,
+        cumulativeWorkDays: complete ? cumulativeCents / 100 : null,
+        estimate: usage ? { remainingWorkDays: remainingCents / 100, remainingMonths: remainingCents / 2067 } : null,
+        issues: usage ? [] : reviewReasons.filter((item) => ['FIRST_DATE_MISSING', 'HISTORY_INCOMPLETE', 'SPECIAL_REVIEW', 'LEAP_ANNIVERSARY', 'TENURE_CHANGE', 'WORKDAYS_MISSING', 'HISTORICAL_CONVERSION', 'HISTORICAL_CONTRACT', 'RULE_DATE_UNSUPPORTED'].includes(item.code)) }
+    })
+  }
+  if (input.region !== 'national') return []
+  const common = reviewReasons.filter((item) => ['HISTORY_INCOMPLETE', 'SPECIAL_REVIEW', 'LEAP_ANNIVERSARY', 'RULE_DATE_UNSUPPORTED'].includes(item.code))
+  const totalBand = (date) => {
+    if (input.tenYearDate) return input.tenYearDate <= date ? 10 : 0
+    if (input.totalWorkYears >= 10) return 10
+    if (date === records.firstDay) return 0
+    // An integer at the first date does not reveal its anniversary. Bound the
+    // later tenure under continuing employment instead of treating it as exact.
+    const minimum = input.totalWorkYears + completedMedicalYears(records.firstDay, date)
+    return minimum >= 10 ? 10 : minimum + 1 >= 10 ? null : 0
+  }
+  let cycle = null
+  let cycleNumber = 0
+  let allocationPending = false
+  let renewalPending = false
+  const output = []
+  for (const row of records.rows) {
+    if (!cycle || (cycle.boundary && row.startDate > cycle.boundary)) {
+      if (cycle && cycle.days >= cycle.months * 30) renewalPending = true
+      const total = totalBand(row.startDate)
+      const [months, accumulationMonths] = quota && total !== null
+        ? nationalTier(total, completedMedicalYears(input.hireDate, row.startDate)) : [null, null]
+      cycle = { number: ++cycleNumber, start: row.startDate,
+        boundary: accumulationMonths ? calendarAddMonths(row.startDate, accumulationMonths) : null,
+        months, accumulationMonths, total, days: 0, issues: [...common] }
+      if (total === null) cycle.issues.push({ code: 'TOTAL_TENURE_UNKNOWN', message: '本周期累计工龄是否满10年无法由首段已满年数确定；请补充实际满10年的日期。' })
+      if (renewalPending) cycle.issues.push({ code: 'RENEWAL_REVIEW', message: '此前周期录入量已达到参考额度；是否重新享有医疗期须核对，不能自动恢复额度。' })
+      if (allocationPending) cycle.issues.push({ code: 'PERIOD_ALLOCATION', message: '此前记录涉及累计周期边界，后续周期归属需先核对。' })
+    }
+    cycle.days += row.naturalDays
+    if (cycle.boundary && row.endDate >= cycle.boundary) {
+      allocationPending = true
+      if (!cycle.issues.some((item) => item.code === 'PERIOD_BOUNDARY')) cycle.issues.push({ code: 'PERIOD_BOUNDARY', message: '本段到达或跨过参考累计周期边界，端点及跨周期分配须核对；保留实际天数，暂不试算余额。' })
+    }
+    const endTotal = totalBand(row.endDate)
+    const endMonths = endTotal === null ? null : nationalTier(endTotal, completedMedicalYears(input.hireDate, row.endDate))[0]
+    if (endMonths !== cycle.months && !cycle.issues.some((item) => item.code === 'PERIOD_TENURE_CHANGE')) cycle.issues.push({ code: 'PERIOD_TENURE_CHANGE', message: '本周期病休期间工龄跨档或满10年日期不明确，额度调整须核对。' })
+    // An earlier segment's own count remains valid; the period's conclusions
+    // must also show later-discovered boundary/tenure uncertainty.
+    for (const previous of output.filter((item) => item.cycleNumber === cycle.number)) {
+      previous.issues = [...cycle.issues]
+      if (cycle.issues.length) previous.estimate = null
+      if (cycle.issues.some((item) => ['PERIOD_BOUNDARY', 'PERIOD_ALLOCATION'].includes(item.code))) previous.cumulativeDays = null
+    }
+    const remainingDays = cycle.months === null ? null : Math.max(0, cycle.months * 30 - cycle.days)
+    output.push({ ...row, cycleNumber: cycle.number, cycleStart: cycle.start, cycleBoundary: cycle.boundary,
+      quotaMonths: cycle.months, accumulationMonths: cycle.accumulationMonths,
+      cumulativeDays: cycle.issues.some((item) => ['PERIOD_BOUNDARY', 'PERIOD_ALLOCATION'].includes(item.code)) ? null : cycle.days,
+      estimate: cycle.months !== null && !cycle.issues.length ? { remainingDays, remainingMonths: remainingDays / 30,
+        overBudgetDays: Math.max(0, cycle.days - cycle.months * 30) } : null, issues: [...cycle.issues] })
+  }
+  return output
+}
 
 // The form may omit a separate national cutoff when actual end dates exist.
 // Keep this preparation separate from strict calculation validation.
@@ -286,7 +358,8 @@ export function calculateMedicalPeriod(raw, { today } = {}) {
   return {
     ok: true, status: 'reference', schemaVersion: 1, algorithmVersion: ALGORITHM_VERSION,
     assessmentDate, input, regionLabel: REGION_LABELS[input.region], rule,
-    quota, records, usage, referenceEstimate, maturityDate: null, reviewReasons, steps
+    quota, records, usage, referenceEstimate, maturityDate: null, reviewReasons, steps,
+    segmentResults: segmentedReferenceResults(input, records, quota, usage, reviewReasons)
   }
 }
 
@@ -296,6 +369,11 @@ export function describeMedicalPeriodResult(result) {
   if (!result?.ok) return null
   const { input, quota, records, usage, referenceEstimate, reviewReasons } = result
   const shanghai = input.region === 'shanghai'
+  const segments = result.segmentResults || []
+  const segmentedNational = !shanghai && segments.length > 0
+  const lastSegment = segments.at(-1)
+  const cycleCount = new Set(segments.map((row) => row.cycleNumber)).size
+  const groupingKnown = segments.every((row) => row.accumulationMonths !== null)
   const years = quota?.referenceBasis === 'as-of' ? quota.unitYearsAtAsOf : quota?.unitYearsAtStart
   const unitYears = years === 0 ? '本单位未满1年' : `本单位已满${years}年`
   const quotaDetail = !quota ? '适用地区或日期超出当前已核对的规则范围' : shanghai
@@ -313,8 +391,9 @@ export function describeMedicalPeriodResult(result) {
     detail: usage.baseThresholdReached ? '录入工作日已达到基础额度；有延长或更长约定时需另行核对，不能据此直接判断可解除劳动合同。' : '按确认的本单位全部病休工作日，以20.67工作日折算1个月；不据此预测未来届满日期。' }
   else if (actions.length) status = { tone: 'pending', title: actions.some((item) => ['FIRST_DATE_MISSING', 'HISTORY_INCOMPLETE', 'WORKDAYS_MISSING', 'TOTAL_TENURE_DATE_MISSING'].includes(item.code)) ? '已统计记录，还需补充核对信息' : '已统计记录，适用条件需人工核对', detail: actions[0].message }
   else status = { tone: 'pending', title: '已匹配基础分档，法定余额待核对', detail: '全国基础分档和录入天数已计算。法定额度以月计，病休记录以自然日计；最终余额需核对具体适用地区的日月折算口径。' }
-  return {
+  const presentation = {
     referenceDate: quota?.referenceDate || records.firstDay,
+    quotaValue: quota?.months ?? '待核对',
     quotaLabel: quota?.referenceBasis === 'as-of' ? '基础额度对照' : '基础医疗期额度', quotaDetail,
     recordValue: shanghai ? records.workDays ?? '未提供' : records.naturalDays,
     recordUnit: shanghai ? '工作日' : '自然日',
@@ -325,7 +404,43 @@ export function describeMedicalPeriodResult(result) {
     thirdDetail: shanghai ? usage ? `对应${usage.remainingWorkDays}个病休工作日；按20.67工作日/月折算` : status.detail : quota ? `从参考起点${records.firstDay}核对；这是累计范围的长度` : '适用累计范围尚未确定',
     meaning: quota ? shanghai ? '医疗期是停工治病期间的劳动合同保护期限。上海按本单位年限设置基础额度，病休月份按工作日折算。' : `${quota.months}个月是基础医疗期额度，按${quota.accumulationMonths}个月内累计病休判断是否用满；实际需要病休多久依据医疗证明。` : '本次可以核对录入天数；基础医疗期额度需先确认适用规则。',
     referenceDetail: referenceEstimate ? `仅用于对照：假设30天/月，${quota.months}个月 × 30 = ${quota.months * 30}天；已录入${referenceEstimate.usedDays}天，参考余额${referenceEstimate.remainingDays}天，约${referenceEstimate.remainingMonths.toFixed(2)}个月${referenceEstimate.overBudgetDays ? `（录入量超出参考预算${referenceEstimate.overBudgetDays}天）` : ''}。此假设尚未作地方规则校准，非核定法定余额，不据此判断届满。` : null,
-    scope, status, actions
+    scope, status, actions, reviewReasons
+  }
+  if (segmentedNational) {
+    const issues = [...new Map(segments.flatMap((row) => row.issues).map((item) => [item.code, item])).values()]
+    Object.assign(presentation, {
+      quotaLabel: '最近一段基础额度', quotaValue: lastSegment.quotaMonths ?? '待核对',
+      quotaDetail: `按最近一段所在参考周期起点${lastSegment.cycleStart}的年限分档；各段额度见下方`,
+      thirdLabel: '参考累计周期', thirdValue: groupingKnown ? cycleCount : '待核对', thirdUnit: groupingKnown ? '个' : '',
+      thirdDetail: `${segments.length}段病休；同一周期累计，不按每段重新发放额度`,
+      meaning: '各段结果按参考累计周期分别展示，同一周期内的病休继续累计。剩余试算沿用原工具30天/月口径，具体地方口径及周期重启仍需核对。',
+      scope: groupingKnown ? `${segments.length}段病休按固定累计窗口参考方案分为${cycleCount}个周期；跨周期的总天数不直接扣减某一个周期额度。` : `${segments.length}段病休已统计；部分周期长度或归属待核对，详情见分段结果。`,
+      status: { tone: 'pending', title: issues.length ? '已分段统计，部分结果需补充核对' : '已按参考累计周期分段统计',
+        detail: issues[0]?.message || '每段已显示本段天数、周期累计量及剩余试算；参考周期和试算值不代表已核定的法定余额。' },
+      actions: issues, referenceDetail: null,
+      reviewReasons: [...new Map([...reviewReasons.filter((item) => !['WINDOW_SPAN', 'TENURE_CHANGE', 'TOTAL_TENURE_CHANGE', 'TOTAL_TENURE_DATE_MISSING', 'TENURE_BASIS_PENDING', 'COZE_REFERENCE_ONLY'].includes(item.code)),
+        { code: 'SEGMENTED_REFERENCE', message: '分段结果采用固定累计窗口的参考方案；每周期按起点工龄重新分档，同周期内累计，跨档或边界归属不明确时停止余额试算。' }, ...issues].map((item) => [item.code, item])).values()]
+    })
+  }
+  return presentation
+}
+
+export function describeMedicalSegmentResult(result, segment) {
+  const shanghai = result.input.region === 'shanghai'
+  const estimate = segment.estimate
+  return {
+    title: `第${segment.inputIndex + 1}段`, dates: `${segment.startDate} 至 ${segment.endDate}`,
+    periodLabel: shanghai ? '本单位病休累计' : segment.cycleBoundary ? `参考周期 ${segment.cycleNumber}` : '周期待核对',
+    period: shanghai ? '核对本单位全部病休工作日，分段不重置额度' : segment.cycleBoundary
+      ? `${segment.cycleStart} 至 ${segment.cycleBoundary}（${segment.accumulationMonths}个月，边界日需核对）` : '工龄或规则条件不足，累计周期待核对',
+    quota: segment.quotaMonths === null ? '待核对' : `${segment.quotaMonths}个月`,
+    recorded: shanghai ? `${segment.workDays ?? '未提供'}工作日（${segment.naturalDays}自然日）` : `${segment.naturalDays}自然日`,
+    cumulative: shanghai ? `${segment.cumulativeWorkDays ?? '未完整提供'}工作日` : segment.cumulativeDays === null ? '归属待核对' : `${segment.cumulativeDays}自然日`,
+    balanceLabel: shanghai ? '剩余额度（工作日折算）' : '剩余试算（30天/月）',
+    balance: !estimate ? '待核对' : estimate.remainingMonths > 0 && estimate.remainingMonths < 0.005
+      ? '不足0.01个月' : `约${estimate.remainingMonths.toFixed(2)}个月`,
+    balanceDetail: !estimate ? segment.issues[0]?.message || '适用额度尚未确定，保留记录统计。'
+      : shanghai ? `对应${estimate.remainingWorkDays}个病休工作日` : `参考未用量${estimate.remainingDays}天${estimate.overBudgetDays ? `；录入量超出参考预算${estimate.overBudgetDays}天` : ''}；非核定法定余额`
   }
 }
 
@@ -341,20 +456,23 @@ export function formatMedicalResult(result) {
     `累计工龄：${input.totalWorkYears === null ? '不参与本地区额度分档' : `${input.totalWorkYears}个已满年`}；满10年日期：${input.tenYearDate || '未提供'}`,
     `历史完整性：${input.historyComplete ? '已勾选，需核对材料' : '未确认'}；特殊情形：${input.specialCircumstances || input.specialNote ? '待人工核对' : '未填写'}`,
     ...(input.specialNote ? [`补充说明：${input.specialNote}`] : []),
-    `基础医疗期：${quota ? `${quota.months}个月（按${quota.referenceBasis === 'as-of' ? '计算截止日' : '最早录入病休日'}${quota.referenceDate}年限作参考）` : '适用规则尚未确定'}`,
-    `累计窗口长度：${quota?.accumulationMonths ? `${quota.accumulationMonths}个月（端点及重启待核对）` : input.region === 'shanghai' ? '核对本单位期间全部病休' : '待核对'}`,
+    `${display.quotaLabel}：${typeof display.quotaValue === 'number' ? `${display.quotaValue}个月` : display.quotaValue}；${display.quotaDetail}`,
+    `累计窗口：${result.segmentResults?.length && input.region === 'national' ? `${display.thirdValue}${display.thirdUnit}参考累计周期，各周期长度及归属见分段结果` : quota?.accumulationMonths ? `${quota.accumulationMonths}个月（端点及重启待核对）` : input.region === 'shanghai' ? '核对本单位期间全部病休' : '待核对'}`,
     `本次录入自然日：${records.naturalDays === null ? '未提供' : `${records.naturalDays}天`}；病休工作日：${records.workDays === null ? '未完整提供或不适用' : `${records.workDays}天`}`,
     `分档依据：${display.quotaDetail}`,
     `额度含义：${display.meaning}`,
     `核算范围：${display.scope}`,
     `核算状态：${display.status.title}；${display.status.detail}`,
     ...(usage ? [`已用月数（工作日折算）：${usage.usedMonths.toFixed(2)}个月；剩余${display.thirdValue === '<0.01' ? '不足0.01' : `约${display.thirdValue}`}个月，对应${usage.remainingWorkDays}个病休工作日。按20.67工作日/月折算，使用未舍入的数值比较额度。`] : ['最终法定余额：尚未核定，具体原因见核算状态及待核对事项。']),
-    ...(referenceEstimate ? [`参考折算（非核定余额）：${display.referenceDetail}`] : []),
+    ...(referenceEstimate && display.referenceDetail ? [`参考折算（非核定余额）：${display.referenceDetail}`] : []),
     '届满日期：不预测未来届满日；医疗期届满不自动构成解除劳动合同的结论。',
     '', '记录明细：',
     ...records.rows.map((row) => `原第${row.inputIndex + 1}段：${row.startDate}至${row.endDate}，含首尾${row.naturalDays}自然日，间隔${row.gapDays}日${input.region === 'shanghai' ? `，病休工作日${row.workDays === null ? '未知' : row.workDays}` : ''}`),
-    '', '计算过程：', ...result.steps.map((step) => `${step.title}：${step.detail}`),
-    '', '待核对事项：', ...result.reviewReasons.map((item) => `- ${item.message}`),
+    ...(result.segmentResults?.length ? ['', '分段测算结果（参考）：', ...result.segmentResults.map((row) => {
+      const segment = describeMedicalSegmentResult(result, row)
+      return `${segment.title}：${segment.dates}；${segment.periodLabel}，${segment.period}；基础额度${segment.quota}；本段${segment.recorded}，累计${segment.cumulative}；${segment.balanceLabel}：${segment.balance}；${segment.balanceDetail}`
+    })] : []),
+    '', '待核对事项：', ...display.reviewReasons.map((item) => `- ${item.message}`),
     '', `规则版本：${result.rule.version}；来源核对日：${result.rule.verifiedOn}；业务验收：待复核`,
     `计算版本：${result.algorithmVersion}`,
     ...result.rule.sources.map((source) => `${source.title}：${source.url}`)

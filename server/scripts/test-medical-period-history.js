@@ -142,4 +142,23 @@ test('a later successful save includes earlier unsaved in-memory records', () =>
   assert(saved.records.every((item) => item.persisted))
 })
 
+test('segmented cycle balances persist and old pre-segmentation snapshots require recalculation', () => {
+  const storage = mockStorage()
+  const record = makeRecord()
+  record.input.leaveType = 'segmented'
+  record.input.segments = [{ startDate: '2026-01-05', endDate: '2026-01-14' }, { startDate: '2026-02-02', endDate: '2026-02-09' }]
+  record.result = calculateMedicalPeriod(prepareMedicalPeriodInput(record.input), { today: '2026-10-09' })
+  assert.equal(saveMedicalRecord('a', record, { storage }).ok, true)
+  const restored = readMedicalHistory('a', { storage }).records[0]
+  assert.equal(restored.compatible, true)
+  assert.deepEqual(restored.result.segmentResults.map(row => row.estimate.remainingDays), [80, 72])
+  const key = medicalHistoryKey('a')
+  const old = JSON.parse(storage.getItem(key))
+  delete old.records[0].result.segmentResults
+  old.records[0].result.algorithmVersion = 'medical-period-2026-10-09.4'
+  storage.setItem(key, JSON.stringify(old))
+  assert.equal(readMedicalHistory('a', { storage }).records[0].compatible, false)
+  assert.equal(JSON.parse(storage.getItem(key)).records[0].input.segments.length, 2)
+})
+
 console.log(`Medical history: ${checks} cases passed.`)

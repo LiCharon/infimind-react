@@ -390,4 +390,107 @@ test('Shanghai summary provided natural days remain checked against count and kn
   }
 })
 
+const separated = () => base({ hireDate: '2022-01-01', totalWorkYears: '4', tenYearDate: '', asOf: '2025-09-17', leaveType: 'segmented', segments: [
+  { startDate: '2023-04-04', endDate: '2023-04-08' },
+  { startDate: '2024-06-06', endDate: '2024-06-13' },
+  { startDate: '2025-09-09', endDate: '2025-09-17' }
+] })
+test('three distant sick records retain 22 total days and three independent reference periods', () => {
+  const result = calc(separated())
+  assert.equal(result.records.naturalDays, 22)
+  assert.deepEqual(result.segmentResults.map((row) => row.cycleNumber), [1, 2, 3])
+  assert.deepEqual(result.segmentResults.map((row) => row.cumulativeDays), [5, 8, 9])
+  assert.deepEqual(result.segmentResults.map((row) => row.cycleBoundary), ['2023-10-04', '2024-12-06', '2026-03-09'])
+  assert.deepEqual(result.segmentResults.map((row) => row.estimate.remainingMonths.toFixed(2)), ['2.83', '2.73', '2.70'])
+  assert.equal(result.usage, null)
+  const display = describeMedicalPeriodResult(result)
+  assert.equal(display.thirdValue, 3)
+  assert.equal(display.thirdUnit, '个')
+  const receipt = formatMedicalResult(result)
+  for (const value of ['2.83', '2.73', '2.70']) assert(receipt.includes(value))
+  assert(!receipt.includes('计算过程：'))
+})
+test('several sick records in one period accumulate instead of receiving fresh quotas', () => {
+  const result = calc(base({ leaveType: 'segmented', segments: [
+    { startDate: '2026-01-05', endDate: '2026-01-14' },
+    { startDate: '2026-02-02', endDate: '2026-02-09' },
+    { startDate: '2026-03-16', endDate: '2026-03-20' }
+  ] }))
+  assert.deepEqual(result.segmentResults.map((row) => row.cycleNumber), [1, 1, 1])
+  assert.deepEqual(result.segmentResults.map((row) => row.cumulativeDays), [10, 18, 23])
+  assert.deepEqual(result.segmentResults.map((row) => row.estimate.remainingDays), [80, 72, 67])
+  assert(!formatMedicalResult(result).includes('null'))
+})
+test('exact boundary and straddling records retain counts without invented balances', () => {
+  for (const startDate of ['2026-07-31', '2026-07-30']) {
+    const result = calc(base({ asOf: '2026-08-02', leaveType: 'segmented', segments: [
+      { startDate: '2026-01-31', endDate: '2026-01-31' }, { startDate, endDate: '2026-08-02' }
+    ] }))
+    assert.equal(result.segmentResults[1].estimate, null)
+    assert.equal(result.segmentResults[1].cumulativeDays, null)
+    assert(result.segmentResults[1].issues.some((item) => item.code === 'PERIOD_BOUNDARY'))
+  }
+})
+test('previous exhausted reference budget does not promise a renewed entitlement', () => {
+  const result = calc(base({ hireDate: '2022-01-01', totalWorkYears: '4', tenYearDate: '', asOf: '2026-09-10', leaveType: 'segmented', segments: [
+    { startDate: '2026-01-01', endDate: '2026-04-01' }, { startDate: '2026-09-01', endDate: '2026-09-10' }
+  ] }))
+  assert.equal(result.segmentResults[0].estimate.remainingDays, 0)
+  assert.equal(result.segmentResults[1].estimate, null)
+  assert(result.segmentResults[1].issues.some((item) => item.code === 'RENEWAL_REVIEW'))
+})
+test('later period rechecks tenure rather than reusing first sick day tier', () => {
+  const result = calc(base({ hireDate: '2018-01-01', totalWorkYears: '12', tenYearDate: '', asOf: '2026-09-10', leaveType: 'segmented', segments: [
+    { startDate: '2022-01-01', endDate: '2022-01-05' }, { startDate: '2026-09-01', endDate: '2026-09-10' }
+  ] }))
+  assert.deepEqual(result.segmentResults.map((row) => row.quotaMonths), [6, 9])
+  assert.equal(result.segmentResults[1].estimate.remainingDays, 260)
+})
+test('unknown ten-year transition and incomplete history do not receive per-period balances', () => {
+  const unknown = calc({ ...separated(), totalWorkYears: '8' })
+  assert.equal(unknown.segmentResults[1].estimate, null)
+  assert(unknown.segmentResults[1].issues.some((item) => item.code === 'TOTAL_TENURE_UNKNOWN'))
+  const incomplete = calc({ ...separated(), historyComplete: false })
+  assert(incomplete.segmentResults.every((row) => row.estimate === null))
+})
+test('Shanghai segmented workdays accumulate across records without national period resets', () => {
+  const result = calc(shanghai({ leaveType: 'segmented', segments: [
+    { startDate: '2026-06-01', endDate: '2026-06-10', workDays: '8' },
+    { startDate: '2026-06-15', endDate: '2026-06-20', workDays: '5' }
+  ] }))
+  assert.deepEqual(result.segmentResults.map((row) => row.cumulativeWorkDays), [8, 13])
+  assert.deepEqual(result.segmentResults.map((row) => row.estimate.remainingWorkDays), [54.01, 49.01])
+  const missing = calc(shanghai({ leaveType: 'segmented', segments: [
+    { startDate: '2026-06-01', endDate: '2026-06-10' },
+    { startDate: '2026-06-15', endDate: '2026-06-20', workDays: '5' }
+  ] }))
+  assert(missing.segmentResults.every((row) => row.estimate === null))
+})
+
+test('uncertain tenure inside one cycle retracts its segment estimates and explains the issue', () => {
+  const result = calc(base({ hireDate: '2021-02-01', totalWorkYears: '8', tenYearDate: '', leaveType: 'segmented', segments: [
+    { startDate: '2026-01-05', endDate: '2026-01-10' }, { startDate: '2026-02-10', endDate: '2026-02-15' }
+  ] }))
+  assert(result.segmentResults.every((row) => row.estimate === null))
+  assert(result.segmentResults.every((row) => row.issues.some(item => item.code === 'PERIOD_TENURE_CHANGE')))
+  assert(!formatMedicalResult(result).includes('null'))
+})
+test('sorting preserves original segment labels and incomplete review reasons have unique keys', () => {
+  const input = separated()
+  input.segments.reverse()
+  input.historyComplete = false
+  const result = calc(input)
+  assert.deepEqual(result.segmentResults.map(row => row.inputIndex), [2, 1, 0])
+  const reasons = describeMedicalPeriodResult(result).reviewReasons
+  assert.equal(new Set(reasons.map(item => item.code)).size, reasons.length)
+})
+test('unsupported historical periods never announce a known reference grouping or balance', () => {
+  const result = calc(base({ hireDate: '1990-01-01', totalWorkYears: '4', tenYearDate: '', asOf: '1994-01-03', leaveType: 'segmented', segments: [
+    { startDate: '1994-01-01', endDate: '1994-01-03' }
+  ] }))
+  assert.equal(result.quota, null)
+  assert.equal(result.segmentResults[0].estimate, null)
+  assert.equal(describeMedicalPeriodResult(result).thirdValue, '待核对')
+})
+
 console.log(`Medical period: ${checks} cases passed.`)

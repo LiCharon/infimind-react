@@ -4,7 +4,7 @@ import ContractWorkbenchLayout from '../components/ContractWorkbenchLayout'
 import ToolAccountPanel from '../components/ToolAccountPanel'
 import ToolOverviewLink from '../components/ToolOverviewLink'
 import { useAuth } from '../components/AuthProvider'
-import { calculateMedicalPeriod, describeMedicalPeriodResult, formatMedicalResult, prepareMedicalPeriodInput } from '../utils/medical-period-calculator.js'
+import { calculateMedicalPeriod, describeMedicalPeriodResult, describeMedicalSegmentResult, formatMedicalResult, prepareMedicalPeriodInput } from '../utils/medical-period-calculator.js'
 import { deleteMedicalRecord, readMedicalHistory, saveMedicalRecord } from '../utils/medical-period-history.js'
 import { formatRelativeTime, RELATIVE_TIME_TICK_MS } from '../utils/relative-time.js'
 import './ContractRewritePage.css'
@@ -38,24 +38,34 @@ function Field({ name, label, help, error, required = false, children }) {
 }
 
 function Result({ result, dirty, onEdit, onCopy, copyText }) {
-  const { quota, records, usage, referenceEstimate } = result
+  const { records, usage, referenceEstimate } = result
   const display = describeMedicalPeriodResult(result)
+  const segments = result.segmentResults || []
   return <section className={`mp-result${dirty ? ' mp-result-stale' : ''}`} aria-labelledby="mp-result-title">
     <header className="mp-panel-header"><div><span className="mp-eyebrow">基础规则与记录核对</span><h2 id="mp-result-title">测算结果</h2><p>{result.regionLabel}{result.input.locality ? ` · ${result.input.locality}` : ''} · 截止 {result.input.asOf}</p></div><div className="mp-result-actions"><button type="button" className="mp-text-button" onClick={onEdit}>修改条件</button><button type="button" className="compact-button" onClick={onCopy} disabled={dirty}><Copy size={15} />复制测算单</button></div></header>
     {dirty && <p className="mp-stale-message" role="status">条件已修改，以下为上次结果。请重新计算；旧结果暂不可复制。</p>}
     <div className="mp-result-body">
       <div className="mp-metrics">
-        <div><span>{display.quotaLabel}</span><strong>{quota ? <>{quota.months}<small>个月</small></> : '待核对'}</strong><p>{display.quotaDetail}</p></div>
+        <div><span>{display.quotaLabel}</span><strong>{display.quotaValue}{typeof display.quotaValue === 'number' && <small>个月</small>}</strong><p>{display.quotaDetail}</p></div>
         <div><span>已录入病休时间</span><strong>{display.recordValue}<small>{display.recordUnit}</small></strong><p>{display.recordDetail}</p></div>
         <div><span>{display.thirdLabel}</span><strong>{display.thirdValue}<small>{display.thirdUnit}</small></strong><p>{display.thirdDetail}</p></div>
       </div>
       <p className="mp-quota-meaning">{display.meaning}</p>
       <section className={`mp-assessment mp-assessment-${display.status.tone}`} aria-label="核算状态"><h3>{display.status.title}</h3><p>{display.status.detail}</p>{display.actions.length > 1 && <ul>{display.actions.slice(1).map((item) => <li key={item.code}>{item.message}</li>)}</ul>}</section>
       <dl className="mp-result-facts"><div><dt>核算范围</dt><dd>{display.scope}</dd></div>{usage && <div><dt>已用折算</dt><dd>{records.workDays}个病休工作日 ÷ 20.67，约{usage.usedMonths.toFixed(2)}个月；比较额度时使用未舍入数值。</dd></div>}</dl>
-      {referenceEstimate && <details className="mp-reference-trial"><summary>查看30天/月参考折算（非核定余额）</summary><p className="mp-estimate-note">{display.referenceDetail}</p></details>}
-      <section className="mp-process" aria-labelledby="mp-process-title"><h3 id="mp-process-title">计算过程</h3><ol>{result.steps.map((step) => <li key={step.title}><strong>{step.title}</strong><p>{step.detail}</p></li>)}</ol></section>
+      {referenceEstimate && !segments.length && <details className="mp-reference-trial"><summary>查看30天/月参考折算（非核定余额）</summary><p className="mp-estimate-note">{display.referenceDetail}</p></details>}
+      {segments.length > 0 && <section className="mp-segment-results" aria-labelledby="mp-segment-results-title"><h3 id="mp-segment-results-title">分段测算结果 <span>共{segments.length}段</span></h3><div className="mp-segment-result-list">{segments.map((row) => {
+        const segment = describeMedicalSegmentResult(result, row)
+        return <article className="mp-segment-result" key={row.inputIndex} aria-label={`${segment.title}测算结果`}>
+          <header><h4>{segment.title}<span>{segment.dates}</span></h4><span className="mp-period-badge">{segment.periodLabel}</span></header>
+          <p className="mp-period-dates">{segment.period}</p>
+          <dl className="mp-segment-values"><div><dt>基础医疗期</dt><dd>{segment.quota}</dd></div><div><dt>本段病休</dt><dd>{segment.recorded}</dd></div><div><dt>{result.input.region === 'shanghai' ? '截至本段累计' : '截至本段周期累计'}</dt><dd>{segment.cumulative}</dd></div></dl>
+          <div className={`mp-segment-balance${row.estimate ? '' : ' mp-segment-pending'}`}><span>{segment.balanceLabel}</span><strong>{segment.balance}</strong><p>{segment.balanceDetail}</p></div>
+          {row.issues.length > 1 && <ul className="mp-segment-issues">{row.issues.slice(1).map((item) => <li key={item.code}>{item.message}</li>)}</ul>}
+        </article>
+      })}</div></section>}
       {records.rows.length > 0 ? <section className="mp-record-detail"><h3>病休记录明细</h3><div className="mp-table-wrap" tabIndex={0} aria-label="病休记录明细表"><table><thead><tr><th scope="col">原记录</th><th scope="col">开始日期</th><th scope="col">结束日期</th><th scope="col">自然日</th>{result.input.region === 'shanghai' && <th scope="col">病休工作日</th>}<th scope="col">距前段间隔</th></tr></thead><tbody>{records.rows.map((row) => <tr key={row.inputIndex}><td>第{row.inputIndex + 1}段</td><td>{row.startDate}</td><td>{row.endDate}</td><td>{row.naturalDays}天</td>{result.input.region === 'shanghai' && <td>{row.workDays === null ? '未知' : `${row.workDays}天`}</td>}<td>{row.gapDays}天</td></tr>)}</tbody></table></div></section> : <p className="mp-rule-note">当前为汇总记录，保留原始累计量，不生成不存在的病休时间线。</p>}
-      <details className="mp-review"><summary>计算口径与适用条件</summary><ul>{result.reviewReasons.filter((item) => item.code !== 'SH_MATURITY_PENDING').map((item) => <li key={item.code}>{item.message}</li>)}</ul></details>
+      <details className="mp-review"><summary>计算口径与适用条件</summary><ul>{display.reviewReasons.filter((item) => item.code !== 'SH_MATURITY_PENDING').map((item) => <li key={item.code}>{item.message}</li>)}</ul></details>
       <details className="mp-sources"><summary>查看规则依据与版本</summary><p>{result.rule.version}</p><p>来源核对：{result.rule.verifiedOn} · 地区适用及业务验收待复核</p><ul>{result.rule.sources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul></details>
       {copyText && <div className="mp-copy-fallback"><label htmlFor="mp-copy-text">自动复制不可用，可选择全文手动复制。</label><textarea id="mp-copy-text" readOnly value={copyText} rows={8} onFocus={(event) => event.target.select()} /></div>}
       <p className="mp-disclaimer">医疗期届满不自动构成解除劳动合同的结论；基础测算需结合实际材料复核。</p>
@@ -217,7 +227,7 @@ export function MedicalCalculatorWorkspace({ userId }) {
     const text = formatMedicalResult(result)
     try {
       await navigator.clipboard.writeText(text)
-      if (revision.current === version) setNotice('已复制测算条件、计算过程及待核对事项。')
+      if (revision.current === version) setNotice('已复制测算条件、结果及待核对事项。')
     } catch {
       if (revision.current === version) { setCopyText(text); setNotice('自动复制不可用，请在结果下方选择全文复制。') }
     }
@@ -315,7 +325,7 @@ export function MedicalCalculatorWorkspace({ userId }) {
               {input.region === 'national' && <div className="mp-choice" role="group" aria-label="记录资料完整程度"><button type="button" aria-pressed={input.recordMode === 'intervals'} onClick={() => setField('recordMode', 'intervals')}>有实际日期段</button><button type="button" aria-pressed={input.recordMode === 'summary'} onClick={() => setField('recordMode', 'summary')}>只有首日与累计量</button></div>}
             </div></details>
             {errors.length > 0 && <div className="mp-error-banner" role="alert"><strong>请核对以下条件，输入已保留：</strong><ul>{errors.map((item, index) => <li key={`${item.field}-${index}`}><button type="button" onClick={() => focusField(item.field)}>{item.message}</button></li>)}</ul></div>}
-            <footer className="mp-form-actions"><button type="button" className="mp-text-button" onClick={requestReset}>清空条件</button><span>{dirty ? '条件已修改，请重新计算' : '填写后查看结果与过程'}</span>{isShanghai && <button type="submit" className="mp-text-button" data-purpose="quota-only">仅核对基础额度</button>}<button type="submit" className="mp-primary"><Calculator size={17} />{dirty ? '重新计算' : '开始测算'}<ArrowRight size={16} /></button></footer>
+            <footer className="mp-form-actions"><button type="button" className="mp-text-button" onClick={requestReset}>清空条件</button><span>{dirty ? '条件已修改，请重新计算' : '填写后查看测算结果'}</span>{isShanghai && <button type="submit" className="mp-text-button" data-purpose="quota-only">仅核对基础额度</button>}<button type="submit" className="mp-primary"><Calculator size={17} />{dirty ? '重新计算' : '开始测算'}<ArrowRight size={16} /></button></footer>
           </form>
         </section>
         {notice && <p className="mp-notice" role="status"><Check size={16} />{notice}</p>}
