@@ -38,7 +38,7 @@ test('national primary conclusions expose reference days without asserting a leg
   const display = describeMedicalPeriodResult(result)
   assert.equal(display.recordValue, 5)
   assert.equal(display.recordUnit, '自然日')
-  assert.equal(display.thirdValue, 85)
+  assert.equal(display.thirdValue, 84)
   assert.equal(display.thirdLabel, '剩余医疗期（参考）')
   assert(display.quotaDetail.includes('累计工作1年'))
   assert(display.meaning.includes('6个月内累计病休'))
@@ -88,18 +88,66 @@ test('over-budget record copy explains clamping without a false subtraction equa
   assert(!formatMedicalResult(result).includes('− 92 = 0'))
 })
 
-test('user screenshot: 5 days gives 85 days / 2.83 months only under supplied 30-day reference', () => {
+test('five February sick days use the actual 89-day calendar budget', () => {
   const result = calc(prepareMedicalPeriodInput(base({ locality: '', hireDate: '2025-11-02',
     totalWorkYears: '1', tenYearDate: '', asOf: '', segments: [{ startDate: '2026-02-02', endDate: '2026-02-06' }] })))
   assert.equal(result.quota.months, 3)
   assert.equal(result.records.naturalDays, 5)
-  assert.equal(result.referenceEstimate.remainingDays, 85)
-  assert.equal(result.referenceEstimate.remainingMonths.toFixed(2), '2.83')
-  assert.equal(result.referenceEstimate.scope, 'coze-reference-only')
+  assert.equal(result.referenceEstimate.remainingDays, 84)
+  assert.equal(result.referenceEstimate.budgetDays, 89)
+  assert.equal(result.referenceEstimate.quotaBoundary, '2026-05-02')
+  assert.equal(result.referenceEstimate.scope, 'calendar-reference-only')
+  assert(!formatMedicalResult(result).includes('30天/月'))
   assert.equal(result.usage, null)
   assert.equal(result.maturityDate, null)
   assert(hasReason(result, 'LOCAL_RULE_PENDING'))
   assert(formatMedicalResult(result).includes('非核定余额'))
+})
+
+test('calendar budgets cover short months, leap February and year boundaries', () => {
+  for (const [start, boundary, days] of [
+    ['2026-01-31','2026-04-30',89], ['2026-08-31','2026-11-30',91],
+    ['2026-11-30','2027-02-28',90], ['2023-12-01','2024-03-01',91],
+    ['2024-02-29','2024-05-29',90], ['2026-02-28','2026-05-28',89]
+  ]) {
+    const result = calculateMedicalPeriod(base({ hireDate: '2022-01-01', totalWorkYears: '4', tenYearDate: '',
+      asOf: start, segments: [{ startDate: start, endDate: start }] }), { today: '2027-12-31' })
+    assert.equal(result.referenceEstimate.budgetDays, days)
+    assert.equal(result.referenceEstimate.quotaBoundary, boundary)
+    assert.equal(result.referenceEstimate.remainingDays, days - 1)
+    assert.equal(result.maturityDate, null)
+  }
+})
+test('calendar quota boundaries are not promised expiry dates and do not include the next corresponding day', () => {
+  for (const [end, remaining, excess] of [['2026-04-29',0,0], ['2026-04-30',0,1]]) {
+    const result = calc(base({ totalWorkYears: '4', tenYearDate: '', asOf: end,
+      segments: [{ startDate: '2026-01-31', endDate: end }] }))
+    assert.equal(result.referenceEstimate.budgetDays, 89)
+    assert.equal(result.referenceEstimate.remainingDays, remaining)
+    assert.equal(result.referenceEstimate.overBudgetDays, excess)
+    assert.equal(result.maturityDate, null)
+  }
+})
+test('same-cycle dates share one calendar budget and a later reference cycle uses its own calendar', () => {
+  const result = calc(base({ totalWorkYears: '4', tenYearDate: '', asOf: '2026-08-05', leaveType: 'segmented', segments: [
+    { startDate: '2026-01-31', endDate: '2026-02-01' },
+    { startDate: '2026-04-25', endDate: '2026-04-29' },
+    { startDate: '2026-08-01', endDate: '2026-08-05' }
+  ] }))
+  assert.deepEqual(result.segmentResults.map(row => row.estimate.budgetDays), [89, 89, 92])
+  assert.deepEqual(result.segmentResults.map(row => row.estimate.remainingDays), [87, 82, 87])
+  assert.deepEqual(result.segmentResults.map(row => row.cycleNumber), [1, 1, 2])
+  assert.equal(result.records.naturalDays, 12)
+})
+test('calendar exhaustion preserves the later-cycle renewal guard', () => {
+  const result = calc(base({ totalWorkYears: '4', tenYearDate: '', asOf: '2026-09-05', leaveType: 'segmented', segments: [
+    { startDate: '2026-01-31', endDate: '2026-04-29' },
+    { startDate: '2026-09-01', endDate: '2026-09-05' }
+  ] }))
+  assert.equal(result.segmentResults[0].estimate.budgetDays, 89)
+  assert.equal(result.segmentResults[0].estimate.remainingDays, 0)
+  assert.equal(result.segmentResults[1].estimate, null)
+  assert(result.segmentResults[1].issues.some(issue => issue.code === 'RENEWAL_REVIEW'))
 })
 
 test('reference arithmetic cannot bypass incomplete, exceptional, summary or cross-window records', () => {
@@ -405,13 +453,15 @@ test('three distant sick records retain 22 total days and three independent refe
   assert.deepEqual(result.segmentResults.map((row) => row.cycleNumber), [1, 2, 3])
   assert.deepEqual(result.segmentResults.map((row) => row.cumulativeDays), [5, 8, 9])
   assert.deepEqual(result.segmentResults.map((row) => row.cycleBoundary), ['2023-10-04', '2024-12-06', '2026-03-09'])
-  assert.deepEqual(result.segmentResults.map((row) => row.estimate.remainingMonths.toFixed(2)), ['2.83', '2.73', '2.70'])
+  assert.deepEqual(result.segmentResults.map((row) => row.estimate.budgetDays), [91, 92, 91])
+  assert.deepEqual(result.segmentResults.map((row) => row.estimate.remainingDays), [86, 84, 82])
   assert.equal(result.usage, null)
   const display = describeMedicalPeriodResult(result)
-  assert.equal(display.thirdValue, 81)
+  assert.equal(display.thirdValue, 82)
   assert.equal(display.thirdUnit, '天')
   const receipt = formatMedicalResult(result)
-  for (const value of ['85天（参考）', '82天（参考）', '81天（参考）']) assert(receipt.includes(value))
+  for (const value of ['86天（参考）', '84天（参考）', '82天（参考）']) assert(receipt.includes(value))
+  assert(!receipt.includes('30天/月'))
   assert(!/\d+\.\d+\s*个月/.test(receipt))
   assert(!receipt.includes('计算过程：'))
 })
@@ -449,7 +499,7 @@ test('later period rechecks tenure rather than reusing first sick day tier', () 
     { startDate: '2022-01-01', endDate: '2022-01-05' }, { startDate: '2026-09-01', endDate: '2026-09-10' }
   ] }))
   assert.deepEqual(result.segmentResults.map((row) => row.quotaMonths), [6, 9])
-  assert.equal(result.segmentResults[1].estimate.remainingDays, 260)
+  assert.equal(result.segmentResults[1].estimate.remainingDays, 263)
 })
 test('unknown ten-year transition and incomplete history do not receive per-period balances', () => {
   const unknown = calc({ ...separated(), totalWorkYears: '8' })
