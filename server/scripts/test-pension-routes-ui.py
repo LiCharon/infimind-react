@@ -77,6 +77,12 @@ try:
         elif path == '/api/auth/logout':
             state['authenticated'] = False
             route.fulfill(status=200, json={'ok': True})
+        elif path == '/api/account/balance':
+            route.fulfill(status=200, json={'balances': [], 'isAvailable': True})
+        elif path == '/api/tasks':
+            route.fulfill(status=200, json={'tasks': [], 'hasMore': False})
+        elif path in ['/api/labor/status', '/api/labor/laws']:
+            route.fulfill(status=200, json={'laws': [], 'available': True})
         else:
             unexpected_api.append(path)
             route.fulfill(status=500, json={'error': 'Unexpected test API'})
@@ -94,13 +100,13 @@ try:
         for product in ['pension-calc1', 'pension-calc2']:
             target = f'/tools/{product}?from=review'
             page.goto(url + target, wait_until='networkidle')
-            expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+            expect(page.get_by_role('button', name='登录', exact=True)).to_be_visible()
             check(f'{product}: anonymous redirect preserves target',
                   urlparse(page.url).path == '/auth' and parse_qs(urlparse(page.url).query)['redirect'] == [target])
             check(f'{product}: form protected', page.locator('.pension-calculation-page').count() == 0)
         page.get_by_placeholder('请输入用户名或邮箱').fill('pension-review')
         page.get_by_placeholder('请输入密码').fill('fictional-password-123')
-        page.get_by_role('button', name='登录并继续', exact=True).click()
+        page.get_by_role('button', name='登录', exact=True).click()
         expect(page.locator('.pension-calculation-page')).to_be_visible()
         check('login resumes flexible pension route and query',
               urlparse(page.url).path == '/tools/pension-calc2' and parse_qs(urlparse(page.url).query)['from'] == ['review'])
@@ -145,36 +151,68 @@ try:
             expect(page.locator('.pension-calculation-page')).to_be_visible()
             check(f'{product}: refresh does not restore old records',
                   page.locator('[name="currentAge"]').input_value() == '' and page.get_by_test_id('pension-result').count() == 0)
-        page.get_by_role('link', name='工具总览', exact=True).click()
-        expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
-        # Public menu consolidation is deferred until the mentor frontend merge.
-        # Both existing links remain usable in this functional-page-only batch.
-        for product in ['pension-calc1', 'pension-calc2']:
-            page.locator(f'a[href="/tools/{product}"]').click()
-            expect(page.get_by_role('heading', name='养老保险测算', exact=True)).to_be_visible()
-            check(f'hub {product} opens unified calculator')
-            page.get_by_role('link', name='工具总览', exact=True).click()
-        page.locator('a[href="/tools/medical-calculator"]').click()
+        page.get_by_role('button', name='更多功能', exact=True).click()
+        expect(page.get_by_role('menuitem', name='养老保险测算', exact=True)).to_have_attribute('aria-current', 'page')
+        check('both legacy pension routes share one active menu entry')
+        check('calculators are not forced into existing pinned navigation', page.locator('.app-workspace-tools [data-tool-path="/tools/pension-calc1"]').count() == 0)
+        page.get_by_role('menuitemcheckbox', name='固定到侧栏：养老保险测算', exact=True).click()
+        expect(page.locator('.app-workspace-tools [data-tool-path="/tools/pension-calc1"]')).to_be_visible()
+        page.get_by_role('menuitemcheckbox', name='固定到侧栏：医疗期计算器', exact=True).click()
+        check('both calculators can be pinned using mentor menu')
+        page.keyboard.press('Escape')
+        rail = page.locator('.app-workspace-tools')
+        before = rail.locator('[data-tool-path]').evaluate_all('(items) => items.map((item) => item.dataset.toolPath)')
+        pension_link = rail.locator('[data-tool-path="/tools/pension-calc1"]')
+        pension_link.focus()
+        pension_link.press('Alt+ArrowUp')
+        after = rail.locator('[data-tool-path]').evaluate_all('(items) => items.map((item) => item.dataset.toolPath)')
+        check('keyboard reorder preserves other pins', set(before) == set(after) and before != after)
+        page.reload(wait_until='networkidle')
+        check('pinned tools and order survive refresh', after == rail.locator('[data-tool-path]').evaluate_all('(items) => items.map((item) => item.dataset.toolPath)'))
+        for width in [1440, 768, 390, 320]:
+            page.set_viewport_size({'width': width, 'height': 900})
+            fill_fixture(page)
+            page.locator('button[type="submit"]').click()
+            expect(page.get_by_test_id('pension-total')).to_have_text('2,302.73元／月')
+            check(f'{width}px pension form and result have no outer overflow', page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+            check(f'{width}px pension result is reachable inside workspace scroll', page.get_by_test_id('pension-result').is_visible() and page.locator('.pension-calculation-page').evaluate('(el) => el.scrollHeight > el.clientHeight && el.scrollTop > 0'))
+        page.set_viewport_size({'width': 1440, 'height': 1000})
+        page.keyboard.press('Control+,')
+        expect(page.get_by_role('dialog', name='设置', exact=True)).to_be_visible()
+        page.get_by_role('radio', name='深色', exact=True).check()
+        page.get_by_role('button', name='关闭设置', exact=True).click()
+        expect(page.locator('.app-workspace')).to_have_attribute('data-theme', 'dark')
+        check('pension form inherits shared dark surface', page.locator('.pension-calculation-page').evaluate('(el) => getComputedStyle(el).backgroundColor') == page.locator('.app-workspace-content').evaluate('(el) => getComputedStyle(el).backgroundColor'))
+        page.screenshot(path=str(output / 'workspace-pension-dark.png'))
+        page.keyboard.press('Control+,')
+        page.get_by_role('radio', name='浅色', exact=True).check()
+        page.get_by_role('button', name='关闭设置', exact=True).click()
+        expect(page.locator('.app-workspace')).to_have_attribute('data-theme', 'light')
+        check('pension form has no history toggle, conversation options or side chat', page.locator('.app-workspace-history-toggle,.workspace-conversation-menu,.workspace-side-chat').count() == 0)
+        rail.locator('[data-tool-path="/tools/medical-calculator"]').click()
         expect(page.locator('.medical-calculator')).to_be_visible()
         check('medical entry retains independent page', page.locator('.pension-calculation-page').count() == 0)
+        check('medical form hides conversation controls', page.locator('.app-workspace-history-toggle,.workspace-conversation-menu').count() == 0)
         page.goto(f'{url}/tools/handbook', wait_until='networkidle')
         expect(page.locator('.prototype-chat-header')).to_be_visible()
         check('generic protected tool route retains fallback', page.locator('.pension-calculation-page,.medical-calculator').count() == 0)
+        check('chat pages retain mentor conversation controls', page.locator('.app-workspace-history-toggle,.workspace-conversation-menu').count() == 2)
         page.goto(f'{url}/tools/fictional-unmapped-tool', wait_until='networkidle')
-        expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
-        check('unknown tool still redirects to hub', urlparse(page.url).path == '/tools')
-        page.goto(f'{url}/tools', wait_until='networkidle')
+        expect(page.locator('.app-workspace-page-title')).to_have_text('用工咨询')
+        check('unknown tool follows mentor redirect', urlparse(page.url).path == '/labor-consult')
+        page.goto(f'{url}/tools/pension-calc1', wait_until='networkidle')
+        page.get_by_role('button', name='账户菜单', exact=True).click()
         page.get_by_role('button', name='退出登录', exact=True).click()
-        expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+        expect(page.get_by_role('button', name='登录', exact=True)).to_be_visible()
         for product in ['pension-calc1', 'pension-calc2']:
             page.goto(f'{url}/tools/{product}', wait_until='networkidle')
-            expect(page.get_by_role('button', name='登录并继续', exact=True)).to_be_visible()
+            expect(page.get_by_role('button', name='登录', exact=True)).to_be_visible()
             check(f'logout protects {product} again', page.locator('.pension-calculation-page').count() == 0)
         fixture_user['id'] = 'fictional-pension-other-user'
         fixture_user['username'] = 'another-review-user'
         page.get_by_placeholder('请输入用户名或邮箱').fill('another-review-user')
         page.get_by_placeholder('请输入密码').fill('fictional-password-456')
-        page.get_by_role('button', name='登录并继续', exact=True).click()
+        page.get_by_role('button', name='登录', exact=True).click()
         expect(page.locator('.pension-calculation-page')).to_be_visible()
         check('second account starts a blank form', page.locator('[name="accountBalance"]').input_value() == '')
         check('no unexpected API requests', not unexpected_api)
@@ -182,7 +220,7 @@ try:
         check('no unexpected HTTP failures', not http_failures)
         check('no browser exceptions', not page_errors)
         browser.close()
-    names = ['src/App.jsx', 'src/pages/ToolHubPage.jsx', 'src/pages/PensionCalculationPage.jsx', 'src/pages/PensionCalculatorContent.jsx', 'src/pages/PensionCalculationPage.css',
+    names = ['src/App.jsx', 'src/components/WorkspaceLayout.jsx', 'src/pages/PensionCalculationPage.jsx', 'src/pages/PensionCalculatorContent.jsx', 'src/pages/PensionCalculationPage.css',
              'src/utils/pension-calculator.js', 'src/utils/pension-retirement.js', 'src/utils/pension-rules.js', 'src/utils/pension-history.js']
     report = {'status': 'passed', 'checks': len(checks), 'cases': checks, 'pageErrors': page_errors,
               'unexpectedApi': unexpected_api, 'externalRequests': external_requests, 'httpFailures': http_failures,

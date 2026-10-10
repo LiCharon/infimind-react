@@ -106,7 +106,7 @@ try:
         page.goto(url,wait_until='networkidle')
         check('empty form ignores old snapshots',page.locator('[name="region"]').input_value()=='' and page.locator('.mp-result').count()==0)
         check('no history sidebar, account panel or composer',page.locator('.chat-sidebar,.mp-history-list,.composer,.account-trigger,.sidebar-toggle').count()==0)
-        check('enterprise title',page.locator('.chat-title strong').inner_text()=='员工医疗期测算')
+        check('enterprise title',page.get_by_role('heading',name='员工医疗期测算',exact=True).is_visible())
         check('form help closed by default',page.locator('.mp-form-guide').get_attribute('open') is None and page.locator('.mp-field > small:visible').count()==0)
         untouched('initial render never reads or modifies old history')
         page.screenshot(path=str(output/'desktop-empty.png'))

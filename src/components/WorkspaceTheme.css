@@ -1,0 +1,110 @@
+/* Shared tool surfaces follow the same paper and orange palette as the public pages. */
+.app-workspace .contract-chat {
+  --chat-line: var(--fafee-line);
+  --chat-soft: var(--fafee-surface-soft);
+  --chat-text: var(--fafee-ink);
+  --chat-muted: var(--fafee-ink-subtle);
+  --chat-accent: var(--fafee-brand);
+  --labor-line: var(--fafee-line);
+  --labor-soft: var(--fafee-surface-soft);
+  --labor-muted: var(--fafee-ink-subtle);
+  --labor-accent: var(--fafee-brand-ink);
+  --draft-accent: var(--fafee-brand);
+  --draft-line: var(--fafee-line);
+  --draft-soft: var(--fafee-surface-soft);
+  --draft-text: var(--fafee-ink);
+  --draft-muted: var(--fafee-ink-subtle);
+  color: var(--fafee-ink);
+  background: var(--fafee-surface);
+}
+
+.app-workspace .contract-chat :is(.chat-column, .document-column, .composer, .tool-context-popover, .arb-context-popover, .lca-context-popover, .open-document-card) { background: var(--fafee-surface); }
+.app-workspace .contract-chat :is(.chat-header, .document-header, .composer, .open-document-card) { border-color: var(--fafee-line); }
+.app-workspace .contract-chat .composer { box-shadow: 0 8px 28px rgba(var(--fafee-shadow-rgb), .09), 0 1px 4px rgba(var(--fafee-shadow-rgb), .04); }
+.app-workspace .contract-chat .composer:focus-within { border-color: #e8c6ad; }
+.app-workspace .contract-chat .composer-wrap { background: linear-gradient(transparent, var(--fafee-surface) 28%); }
+.app-workspace .contract-chat :is(.composer textarea, .sidebar-action, .chat-title strong, .prototype-chat-header strong, .user-turn > p, .lca-user-turn > span, .labor-answer, .labor-answer strong, .arb-answer, .lca-followup-answer) { color: var(--fafee-ink); }
+.app-workspace .contract-chat .composer textarea { background: transparent; caret-color: var(--fafee-brand); }
+.app-workspace .contract-chat .composer textarea::placeholder { color: var(--fafee-ink-subtle); }
+.app-workspace .contract-chat :is(.chat-title small, .prototype-chat-header small, .history-label, .history-thread-time, .history-row-time, .labor-disclaimer, .lca-history-empty, .lca-history-list small, .lca-retention-note) { color: var(--fafee-ink-subtle); }
+.app-workspace .contract-chat :is(.sidebar-search, .sidebar-search input, .sidebar-search input::placeholder, .sidebar-search kbd, .history-list svg) { color: var(--fafee-ink-subtle); }
+.app-workspace .contract-chat .history-list button { color: var(--fafee-ink-muted); }
+.app-workspace .contract-chat :is(.sidebar-action:hover, .history-list button:hover) { background: var(--fafee-fill); color: var(--fafee-ink); }
+.app-workspace .contract-chat .history-list button.selected { background: var(--fafee-brand-soft); color: var(--fafee-brand-ink); }
+.app-workspace .contract-chat .history-list button.selected .history-thread-icon > svg { color: var(--fafee-brand-ink); }
+.app-workspace .contract-chat :is(.starter-prompts button, .prototype-prompts button, .user-turn > p, .prototype-user-message, .lca-user-turn > span, .pending-files > span, .attached-file) { background: var(--fafee-surface-soft); }
+.app-workspace .contract-chat :is(.starter-prompts button, .prototype-prompts button) { color: var(--fafee-ink-muted); }
+.app-workspace .contract-chat :is(.starter-prompts button:hover, .prototype-prompts button:hover) { background: var(--fafee-brand-soft); color: var(--fafee-brand-ink); }
+.app-workspace .contract-chat :is(.attached-file, .pending-files > span) { border-color: var(--fafee-line); }
+.app-workspace .contract-chat .open-document-card > svg { color: var(--fafee-brand-ink); }
+.app-workspace .contract-chat .prototype-history-search:focus-within { box-shadow: inset 0 0 0 2px var(--fafee-brand); }
+.app-workspace .contract-chat :is(.prototype-thread.selected, .prototype-thread:hover) { background: var(--fafee-brand-soft); }
+.app-workspace .prototype-chat button:focus-visible { outline-color: var(--fafee-brand); }
+
+.app-workspace .contract-chat .voice-send:not(:disabled) { background: var(--fafee-primary); color: #fff; }
+.app-workspace .contract-chat .voice-send:not(:disabled):hover { background: var(--fafee-primary-hover); }
+.app-workspace .contract-chat .voice-send:disabled { color: var(--fafee-ink-disabled); background: var(--fafee-surface-soft); }
+.app-workspace .contract-chat .voice-send:focus-visible { outline: 2px solid var(--fafee-brand-ink); outline-offset: 3px; }
+.app-workspace .contract-chat .tool-composer-controls .tool-thinking-toggle { color: var(--fafee-ink-muted); }
+.app-workspace .contract-chat .tool-composer-controls .tool-thinking-toggle.active,
+.app-workspace .contract-chat :is(.labor-evidence-tabs, .lca-modes) button.active { color: var(--fafee-brand-ink); background: var(--fafee-brand-soft); }
+.app-workspace .contract-chat :is(.tool-context-trigger, .arb-context-trigger, .lca-context-trigger) { color: var(--fafee-ink-subtle); }
+.app-workspace .contract-chat :is(.tool-context-ring, .arb-context-ring, .lca-context-ring) { background: conic-gradient(var(--fafee-brand) var(--context-progress), var(--fafee-fill) 0); }
+.app-workspace .contract-chat :is(.tool-context-track, .arb-context-track, .lca-context-track) { background: var(--fafee-fill); }
+.app-workspace .contract-chat :is(.tool-context-track, .arb-context-track, .lca-context-track) > span { background: var(--fafee-brand); }
+.app-workspace .contract-chat :is(.tool-context-popover, .arb-context-popover, .lca-context-popover) { border-color: var(--fafee-border); color: var(--fafee-ink-muted); box-shadow: 0 10px 36px rgba(var(--fafee-shadow-rgb), .09); }
+.app-workspace .contract-chat :is(.tool-context-heading, .arb-context-heading, .lca-context-heading) strong { color: var(--fafee-ink); }
+.app-workspace .contract-chat :is(.tool-context-heading, .arb-context-heading, .lca-context-heading) small,
+.app-workspace .contract-chat :is(.tool-context-popover, .arb-context-popover, .lca-context-popover) > p { color: var(--fafee-ink-subtle); border-color: var(--fafee-line); }
+
+.app-workspace .contract-chat :is(.labor-citations, .labor-evidence, .lca-evidence-rail) { background: var(--fafee-paper); border-color: var(--fafee-line); }
+.app-workspace .contract-chat .labor-evidence-tabs button:hover { background: var(--fafee-fill); }
+.app-workspace .contract-chat :is(.labor-empty, .labor-note) { background: var(--fafee-surface-soft); color: var(--fafee-ink-muted); }
+.app-workspace .contract-chat :is(.lca-source-jump, .lca-evidence-entry a) { color: var(--fafee-brand-ink); }
+.app-workspace .contract-chat .lca-source-jump:hover { color: var(--fafee-brand-ink-hover); }
+.app-workspace .contract-chat .lca-source-document-name { background: var(--fafee-surface-soft); border-color: var(--fafee-line); color: var(--fafee-ink-muted); }
+
+/* Preferences are scoped to the workspace; the public site retains its brand theme. */
+.app-workspace { color-scheme: light; }
+.app-workspace[data-theme=dark] {
+  color-scheme: dark;
+  --fafee-shell: #24211e; --fafee-paper: #282521; --fafee-surface: #302c28;
+  --fafee-surface-soft: #38332e; --fafee-fill: #433c35;
+  --fafee-border: #51483f; --fafee-line: #463e36;
+  --fafee-ink: #f0eae3; --fafee-ink-muted: #c5bab0; --fafee-ink-subtle: #a79b8f;
+  --fafee-ink-disabled: #81776e; --fafee-shadow-rgb: 0, 0, 0;
+  --fafee-brand-ink: #ffad70; --fafee-brand-ink-hover: #ffc094; --fafee-brand-soft: #493222;
+}
+.app-workspace[data-theme=dark] .contract-chat :is(.assistant-content, .draft-paper, .revision-paper, .revision-section, .revision-document, .lca-report-card, .lca-progress-card, .lca-annotation, .lca-risk-card, .lca-evidence-entry, .lca-source-viewer, .arb-report, .arb-materials, .labor-citation-row, .labor-citation-item, .rounds-panel-body, .review-rounds-panel, .round-card, .draft-pending, .new-task-modal, .lca-delete-dialog, .labor-law-row) { color: var(--fafee-ink); background: var(--fafee-surface); border-color: var(--fafee-line); }
+.app-workspace[data-theme=dark] .contract-chat :is(.assistant-content, .document-column, .arb-answer, .lca-report) :is(p, h1, h2, h3, h4, strong, th, td, li, summary, label) { color: inherit; }
+.app-workspace[data-theme=dark] .contract-chat :is(.rounds-panel-head, .revision-document-heading, .lca-source-document, .lca-source-line, .draft-document-note, .draft-pending-item, .labor-evidence-item) { background: var(--fafee-paper); color: var(--fafee-ink-muted); border-color: var(--fafee-line); }
+.app-workspace[data-theme=dark] .contract-chat :is(.revision-section-title, .revision-item-label, .revision-contract-text, .draft-document-title, .arb-answer-title, .lca-report-title) { color: var(--fafee-ink); }
+.app-workspace[data-theme=dark] .contract-chat :is(input, select, .sidebar-search) { color: var(--fafee-ink); background: var(--fafee-surface-soft); border-color: var(--fafee-line); }
+.app-workspace[data-theme=dark] .workspace-settings .weui-switch::before { background: var(--fafee-fill); }
+.app-workspace .contract-chat :is(.user-turn > p, .lca-user-turn > span, .assistant-content, .labor-answer, .arb-answer, .lca-followup-answer, .prototype-user-message, .prototype-assistant-message) { font-size: var(--workspace-chat-font-size, 16px); }
+.app-workspace .contract-chat :is(.assistant-content, .labor-answer, .arb-answer, .lca-followup-answer) :is(p, li, td, th) { font-size: inherit; }
+.app-workspace[data-steps=compact] :is(.labor-reasoning, .review-rounds-panel) { display: none; }
+.app-workspace[data-steps=compact] .lca-progress-card { padding-block: 12px; }
+.app-workspace[data-analysis-panel=false] :is(.document-column, .labor-evidence, .lca-evidence-rail, .arb-materials, .open-document-card, .lca-open-report, .labor-evidence-toggle) { display: none !important; }
+.workspace-send-queue { padding: 6px 12px 10px; display: grid; gap: 6px; font-size: 12px; color: var(--fafee-ink-muted); }
+.workspace-send-queue > div { display: flex; align-items: center; gap: 8px; }
+.workspace-send-queue span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-send-queue button { background: transparent; border: 0; color: inherit; cursor: pointer; display: grid; place-items: center; border-radius: 5px; padding: 3px; }
+.workspace-send-queue small { color: var(--fafee-ink-subtle); }
+.app-workspace .contract-chat :is(.welcome-turn > div > p, .lca-welcome > p) { font-size: var(--workspace-chat-font-size, 16px); color: var(--fafee-ink); }
+.app-workspace[data-theme=dark] .contract-chat :is(.draft-document, .draft-markdown, .revision-contract, .revision-contract-text, .lca-source-lines, .lca-info-grid, .lca-review-summary, .lca-original-text, .labor-law-reference) { color: var(--fafee-ink); background: var(--fafee-surface); border-color: var(--fafee-line); }
+.app-workspace[data-theme=dark] .contract-chat :is(.draft-confirm-panel, .confirm-all, .lca-info-card, .lca-risk-item, .lca-check-item, .labor-citations li) { color: var(--fafee-ink); background: var(--fafee-paper); border-color: var(--fafee-line); }
+.app-workspace[data-theme=dark] .contract-chat :is(.draft-document, .draft-markdown, .draft-confirm-panel, .lca-info-grid, .lca-risk-item) :is(h1, h2, h3, p, strong, button, span) { color: inherit; }
+.app-workspace[data-theme=dark] .contract-chat :is(.draft-markdown blockquote, .labor-answer blockquote) { background: var(--fafee-surface-soft); color: var(--fafee-ink-muted); border-color: var(--fafee-border); }
+.app-workspace[data-theme=dark] .contract-chat :is(.tool-context-ring, .arb-context-ring, .lca-context-ring)::after { background: var(--fafee-surface); }
+.app-workspace[data-theme=dark] .task-modal { background: var(--fafee-surface); color: var(--fafee-ink); }
+
+.app-workspace[data-theme=dark] .contract-chat :is(.citation-item, .labor-card, .lca-score, .lca-result-section, .lca-result-warnings, .lca-topic-card, .lca-conclusion, .lca-review-check, .lca-authority, .revision-local, .revision-full, .revision-annotations, .lca-review-original-document) { background: var(--fafee-paper); color: var(--fafee-ink); border-color: var(--fafee-line); }
+.app-workspace[data-theme=dark] .contract-chat :is(.citation-item, .labor-citations, .labor-evidence, .lca-result, .revision-local, .revision-full, .revision-annotations) :is(h2, h3, h4, strong, summary, .citation-name, .revision-head) { color: var(--fafee-ink); }
+.app-workspace[data-theme=dark] .contract-chat :is(.citation-item, .labor-card, .lca-score, .lca-result-section, .lca-topic-card, .lca-conclusion, .lca-review-check) :is(p, small, label, dt, dd) { color: var(--fafee-ink-muted); }
+.app-workspace[data-theme=dark] .contract-chat .lca-dispatch-perspective { color: var(--fafee-ink-muted) !important; }
+.app-workspace[data-theme=dark] .contract-chat :is(.document-header button, .draft-confirm-panel button, .arb-result-actions button, .labor-evidence .icon-button) { color: var(--fafee-ink-muted); }
+.app-workspace[data-theme=dark] .contract-chat .labor-warning,
+.app-workspace[data-theme=dark] .contract-chat .lca-review-note.lca-scope-note { color: #e8c187; background: #48391f; }
+.app-workspace[data-theme=dark] .contract-chat :is(.chat-error, .lca-failed-card, .draft-error) { color: #ffaf9c; background: #4b2b24; }
+.app-workspace[data-theme=dark] .contract-chat .lca-review-note { color: var(--fafee-ink-muted); background: var(--fafee-surface-soft); }

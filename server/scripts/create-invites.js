@@ -1,5 +1,8 @@
+import dotenv from 'dotenv'
 import { createBusinessDatabase } from '../services/business-db.js'
 import { createAuthService } from '../services/auth-service.js'
+
+dotenv.config({ path: new URL('../../.env.local', import.meta.url), quiet: true })
 
 const countArgIndex = process.argv.findIndex((argument) => argument === '--count')
 const count = countArgIndex >= 0 ? Number(process.argv[countArgIndex + 1]) : 1

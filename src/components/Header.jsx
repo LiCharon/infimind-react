@@ -12,7 +12,7 @@ import {
   FilePenLine
 } from 'lucide-react'
 import './Header.css'
-import { useAuth } from './AuthProvider'
+import WorkspaceEntryLink from './WorkspaceEntryLink'
 
 const Header = () => {
   const location = useLocation()
@@ -21,7 +21,6 @@ const Header = () => {
   const [activeDropdown, setActiveDropdown] = useState(null)
   const [pendingScrollTarget, setPendingScrollTarget] = useState(null)
   const [shouldScrollToTop, setShouldScrollToTop] = useState(false)
-  const { user } = useAuth()
 
   const toggleMobileMenu = () => {
     setIsMobileMenuOpen(!isMobileMenuOpen)
@@ -339,14 +338,11 @@ const Header = () => {
               <li className="nav-item">
                 <a className="nav-link" href="#clients" onClick={(e) => handleNavClick(e, 'clients')}>客户案例</a>
               </li>
-              {user && <li className="nav-item">
-                <Link className="nav-link workspace-entry-link" to="/tools" onClick={() => setIsMobileMenuOpen(false)}>进入工具台</Link>
-              </li>}
             </ul>
           </nav>
           
           <div className="navbar-right">
-            <Link className="auth-nav-link" to="/auth?mode=login">登录 / 注册</Link>
+            <WorkspaceEntryLink onClick={() => setIsMobileMenuOpen(false)} />
           </div>
           
           <div 

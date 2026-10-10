@@ -66,45 +66,6 @@
 .task-modal footer button { padding: 8px 13px; border: 0; border-radius: 8px; color: #555; background: #f3f3f4; font: 14px inherit; cursor: pointer; }
 .task-modal footer .task-primary { color: #fff; background: #202024; }
 
-/* API 余额入口：固定在侧栏底部，读取由服务端代理，前端不接触 API Key。 */
-.sidebar-footer-wrap { position: relative; width: 100%; margin-top: auto; padding-top: 12px; border-top: 1px solid #ededed; }
-.sidebar-footer.account-trigger { width: 100%; min-height: 66px; margin: 0; padding: 0 16px; box-sizing: border-box; border: 0; border-radius: 16px; background: #f0f1f2; cursor: pointer; text-align: left; }
-.sidebar-footer.account-trigger:hover { background: #e9eaec; }
-.account-trigger > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-label { display: grid; gap: 2px; }
-.account-label strong { overflow: hidden; color: #2e2e31; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.account-label small { overflow: hidden; color: #8b8b90; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.account-logout-button { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; color: #777; border: 0; border-radius: 7px; background: transparent; font: 12px inherit; cursor: pointer; }
-.account-logout-button:hover { color: #b42318; background: #fff1f0; }
-.balance-chevron { color: #8c8c90; transition: transform .18s ease; }
-.balance-chevron.open { transform: rotate(180deg); }
-.balance-popover { position: absolute; z-index: 12; right: 0; bottom: calc(100% + 12px); width: 100%; max-width: calc(100vw - 32px); box-sizing: border-box; padding: 18px; color: #202024; background: rgb(255 255 255 / 98%); border: 1px solid #dcdcdf; border-radius: 20px; box-shadow: 0 16px 40px rgb(0 0 0 / 15%); backdrop-filter: blur(12px); }
-.balance-popover header { display: flex; align-items: center; gap: 9px; padding-bottom: 13px; border-bottom: 1px solid #ececef; font-size: 15px; }
-.balance-popover header .footer-avatar { width: 30px; height: 30px; background: #182a47; }
-.balance-popover header strong { flex: 1; }
-.balance-popover header button, .balance-refresh { display: grid; place-items: center; padding: 5px; color: #68686d; border: 0; background: transparent; cursor: pointer; border-radius: 7px; }
-.balance-popover header button:hover, .balance-refresh:hover:not(:disabled) { background: #f2f2f3; }
-.balance-title { display: flex; align-items: center; gap: 8px; margin: 16px 0 11px; font-size: 16px; }
-.balance-title svg { color: #53606d; }
-.balance-refresh { margin-left: auto; }
-.balance-refresh:disabled { color: #aaa; cursor: wait; }
-.balance-state, .balance-error { display: inline-flex; align-items: center; gap: 7px; margin: 8px 0; color: #76767b; font-size: 13px; line-height: 1.5; }
-.balance-error { color: #b42318; }
-.balance-summary { padding: 13px; background: #f6f7f8; border-radius: 13px; }
-.balance-summary-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; color: #4e4e53; font-size: 13px; font-weight: 600; }
-.balance-list { display: grid; gap: 2px; }
-.balance-item { padding: 10px 0; }
-.balance-item + .balance-item { border-top: 1px solid #e2e3e5; }
-.balance-item > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
-.balance-item span { color: #67676c; font-size: 13px; }
-.balance-item b { color: #202024; font-size: 20px; font-weight: 650; letter-spacing: -.25px; }
-.balance-item p { margin: 5px 0 0; color: #8b8b90; font-size: 11px; }
-.balance-popover > small { display: block; margin-top: 10px; font-size: 12px; }
-.balance-available { color: #198754; }.balance-unavailable { color: #c05b00; }
-.balance-top-up { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; box-sizing: border-box; margin-top: 14px; padding: 10px 12px; color: #fff; background: #202024; border-radius: 10px; font-size: 13px; font-weight: 600; text-decoration: none; transition: background .15s ease; }
-.balance-top-up:hover { color: #fff; background: #000; }
-.balance-popover footer { margin-top: 13px; color: #9b9ba0; font-size: 11px; }
-
 /* === 修订稿：局部编号批注 === */
 .revision-stack { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 18px 22px; }
 .local-edit-card { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 10px 13px 10px 10px; color: #3a302a; background: #fffaf6; border: 1px solid #f2ded0; border-radius: 10px; box-shadow: 0 2px 8px rgb(77 42 20 / 4%); }

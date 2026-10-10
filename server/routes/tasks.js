@@ -204,6 +204,7 @@ export function createTaskRouter({
         mode,
         input: {
           schemaVersion: 1,
+          temporary: req.body?.temporary === 'true' || req.body?.temporary === true,
           threadId: threadId || null,
           history,
           fileRefs: storedFiles.map((file) => ({
@@ -404,6 +405,7 @@ export function createTaskRouter({
         workflowVersion: 'labor-contract-analysis-v3',
         input: {
           schemaVersion: 3, action, focus, message, mode, fileRefs,
+          temporary: req.body?.temporary === 'true' || req.body?.temporary === true,
           analysisType, reviewPerspective, fileRoles, documentTypes, sourceTaskId, reportTaskId, retentionPolicy
         },
         files: storedFiles
@@ -468,6 +470,7 @@ export function createTaskRouter({
         workflowVersion: 'labor-consult-v1',
         input: {
           schemaVersion: 1,
+          temporary: req.body?.temporary === 'true' || req.body?.temporary === true,
           message,
           mode,
           region,
@@ -572,7 +575,7 @@ export function createTaskRouter({
         prompt: message,
         mode,
         workflowVersion: 'labor-arbitration-v2',
-        input: { schemaVersion: 2, action, message, mode, history: [], historyDroppedMessages: 0, fileRefs, retentionPolicy: TASK_RETENTION_POLICY },
+        input: { schemaVersion: 2, action, message, mode, temporary: req.body?.temporary === 'true' || req.body?.temporary === true, history: [], historyDroppedMessages: 0, fileRefs, retentionPolicy: TASK_RETENTION_POLICY },
         files: storedFiles
       })
       await taskQueue.enqueue(taskId)
@@ -695,6 +698,7 @@ export function createTaskRouter({
       }))
       const taskInput = {
         schemaVersion: 1,
+        temporary: req.body?.temporary === 'true' || req.body?.temporary === true,
         operation: intent.operation,
         threadId,
         parentTaskId: parentTaskId || null,

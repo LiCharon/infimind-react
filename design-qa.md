@@ -1,39 +1,53 @@
-# Design QA — 商业合同审查助手
+# 动态摘要条设计核对
 
-- Source visual truth: `/Users/ypc/Desktop/截屏2026-07-13 16.30.18.png`（默认对话态）和 `/Users/ypc/Desktop/截屏2026-07-13 16.30.29.png`（文档展开态）
-- Implementation route: `http://127.0.0.1:5175/contract-rewrite`
-- Intended viewport: desktop browser
-- States checked: 默认对话、展开文档、展开批注
+final result: passed
 
-## Comparison history
+## 证据
 
-### Pass 1
+- 视觉来源：`/Users/ypc/.codex/generated_images/01a11acc-ee98-7050-b2d8-18d021e375bb/exec-ec977ebe-1312-48be-8eb2-c7781fd65c11.png`，用户选择的第三个方案。
+- 实现截图：`/tmp/fafee-reasoning-desktop-final.png`。
+- 整体并排比较：`/tmp/fafee-reasoning-comparison-final.png`。
+- 组件细节并排比较：`/tmp/fafee-reasoning-detail-comparison.png`。
+- 手机浅色／深色：`/tmp/fafee-reasoning-mobile-final.png`、`/tmp/fafee-reasoning-mobile-dark.png`。
+- 桌面 CSS 视口 960×640，截图 960×640，devicePixelRatio 1。来源 1536×1024 等比缩小至 960×640 后并排比较。手机 CSS 视口 390×844，截图 390×844。
+- 比较状态：上方默认收起、下方展开、分析进行中。临时检查页使用实际 ReasoningSummary 组件及真实品牌／工作区主题 CSS，样例文本只用于 UI 验证。
 
-- Layout target: 默认状态采用左侧历史栏 + 单一对话主栏；展开后隐藏历史栏，保留左侧对话并在右侧显示大幅文档内容。
-- Implementation evidence: Browser DOM confirms default state includes `历史对话`、对话输入器和 `查看批注稿`；点击后确认存在合同文档、下载操作与批注开关；再次点击确认显示 `3 处待确认`。
-- Primary interactions tested: 打开批注稿、切换批注显示。
-- Console health: local application had no console errors or warnings.
+## 五项检查
 
-### Pass 2
+- 字体：沿用原生系统字体；桌面标题 14px，手机标题 12px，分析正文 14px／1.8 行高。正文比正式回答弱一级，长片段单行省略。没有把概念图中的展示说明写入正式页面。
+- 布局：44px 高的摘要条、10px 圆角、图标及标题细分隔；展开内容直接放在页面，用左侧细线区分。正文独立滚动，上限 260px。390px 视口未出现横向溢出。
+- 配色：使用项目暖白／暖灰／品牌橙变量；深色模式自动使用同一组工作区主题变量，文字及分隔线可辨认。
+- 图像与图标：概念中没有独立位图资产。使用现有 Lucide PenLine 和 ChevronDown，保持矢量清晰度；没有手工 SVG 或绘制图标。
+- 文案：进行中为“正在分析”，静止为“分析记录”。片段直接摘取实际分析内容，不使用概念图中的固定摘要或伪造完成状态。
 
-- User-directed fix: moved document opening into the conversation result and removed message avatars.
-- User-directed fix: made the composer position relative to `.chat-column`; browser layout metrics confirm its center matches the chat-column center.
-- Browser DOM evidence: no assistant-avatar node remains; the document card is rendered only when the streamed `rewrite` state is present, and opens the same document state on click.
-- Console health: local application had no console errors or warnings.
+## 比较历史
 
-## Fidelity review
+- 第一次细节对照发现图标与标题之间少一个分隔、标题较小且图标呼吸透明度过低。已补充细分隔，标题调至 14px，呼吸最低透明度调至 0.65。
+- 修改后再次捕获、并排查看完整视图及组件细节。没有剩余可执行的 P0/P1/P2 设计问题。
+- 有意保留：组件比概念图略紧凑；示例用户消息继续遵循本项目右侧对齐；摘录文字来自实际内容；完成后的图标降为次要色。概念图中的两份交互状态仅用于检查，不复制到正式会话。
 
-- Typography: 使用系统无衬线字体、轻量小号工具栏文字和更大的文档标题，匹配参考图的层级。
-- Spacing and layout: 默认页保留侧栏和居中的长对话列；文档页将聊天收窄到左侧，正文在右侧留出宽松阅读空间。
-- Colors and tokens: 采用白底、浅灰分割线和小范围橙色品牌强调，避免仪表盘式的多色状态。
-- Image and asset fidelity: 参考图不包含需要复用的业务图片；界面图标使用项目现有图标库。
-- Copy and content: 文案改为合同审查、风险建议和批注稿，不复用参考图中的业务文本。
+## 交互验证
 
-## Blocking evidence
+- Enter 展开、Space 收起；底部收起按钮把焦点返回摘要条。
+- 收起时没有分析正文 DOM。41,400 字的进行中分析只渲染尾部 20,000 字及提示，高度 260px。
+- 用户按 Home 向上阅读后，新流式片段到达仍保持 scrollTop 0；摘录随实际片段更新。
+- 停止流式后能回看完整文本，标签变为“分析记录”，呼吸动画清理。
+- 中文／English、浅色／深色切换通过；简洁展示隐藏组件。
+- 组件检查页控制台没有 error 或 warn。
+- npm run build 通过；新组件 ESLint 无错误／警告；原咨询页仍有 3 个已有警告。
 
-- Browser-rendered implementation screenshot: unavailable. The in-app Browser screenshot API produced a fully blank 1280px-wide image despite a populated DOM and successful interactions. Therefore an image-to-image visual comparison with the supplied screenshots could not be completed.
-- Focused-region comparison: blocked for the same screenshot capture issue.
+## 适用范围
 
-## Final result
+本次验证覆盖组件渲染和浏览器交互，未发起收费模型请求。正式页已接入同一组件，现有流式缓冲、任务接口、历史保存逻辑继续使用。标准展示默认收起；详细展示仍按用户设置展开。回答首次开始后收起一次，之后尊重手动展开。
 
-blocked
+## 实施清单
+
+- [x] 替换原思考过程组件及样式
+- [x] 保留长文本限量渲染、rAF 滚动及手动阅读行为
+- [x] 接入主题、语言及展示偏好
+- [x] 完成键盘、流式、长文本、手机与视觉对照
+- [x] 构建通过
+
+## 后续微调
+
+无阻断项。真实模型的文字片段可能比示例更长，摘要条使用单行省略；完整内容通过展开查看。

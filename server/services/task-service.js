@@ -333,6 +333,7 @@ export function createTaskService(database, {
 
   const listTasks = (userId, limit = 20, { productId = '', offset = 0 } = {}) => taskList(database.prepare(`
     SELECT * FROM tasks WHERE user_id = ? AND (? = '' OR product_id = ?)
+      AND COALESCE(json_extract(input_json, '$.temporary'), 0) != 1
     ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
   `).all(userId, productId, productId, Math.min(Math.max(Math.floor(Number(limit) || 20), 1), 100), Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(Number(offset) || 0)))), false)
 

@@ -1,10 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { ArrowRight, Calculator, Check, Copy, Plus, Trash2, X } from 'lucide-react'
-import ContractWorkbenchLayout from '../components/ContractWorkbenchLayout'
-import ToolOverviewLink from '../components/ToolOverviewLink'
 import { useAuth } from '../components/AuthProvider'
 import { calculateMedicalPeriod, describeMedicalPeriodResult, describeMedicalSegmentResult, formatMedicalResult, prepareMedicalPeriodInput } from '../utils/medical-period-calculator.js'
-import './ContractRewritePage.css'
 import './MedicalCalculatorPage.css'
 
 const emptySegment = () => ({ startDate: '', endDate: '', workDays: '' })
@@ -182,7 +179,8 @@ export function MedicalCalculatorWorkspace() {
   }
 
   return <>
-    <ContractWorkbenchLayout className="medical-calculator" hideSidebar title="员工医疗期测算" headerLeft={<ToolOverviewLink />} headerTools={<button type="button" className="mp-text-button" onClick={requestReset}>新建测算</button>}>
+    <main className="medical-calculator">
+      <header className="mp-page-heading"><h1>员工医疗期测算</h1><button type="button" className="mp-text-button" onClick={requestReset}>新建测算</button></header>
       <div className="mp-page">
         <section className="mp-parameters" aria-labelledby="mp-parameter-title">
           <header className="mp-panel-header"><div><h2 id="mp-parameter-title">测算条件</h2></div>{collapsed && <button type="button" className="mp-text-button" onClick={edit}>编辑条件</button>}</header>
@@ -240,7 +238,7 @@ export function MedicalCalculatorWorkspace() {
         {notice && <p className="mp-notice" role="status"><Check size={16} />{notice}</p>}
         {result && <div ref={resultRef} tabIndex={-1} className="mp-result-container"><Result key={revision.current} result={result} dirty={dirty} onEdit={edit} onCopy={copy} copyText={copyText} /></div>}
       </div>
-    </ContractWorkbenchLayout>
+    </main>
     <dialog ref={resetRef} className="mp-reset-dialog" aria-labelledby="mp-reset-title"><div><h2 id="mp-reset-title">清空当前测算条件？</h2><button type="button" className="icon-button" aria-label="关闭清空确认" onClick={() => resetRef.current?.close()}><X size={18} /></button></div><p>当前填写的条件和测算结果将清空。</p><footer><button type="button" className="compact-button" onClick={() => resetRef.current?.close()}>取消</button><button type="button" className="mp-primary" onClick={reset}>清空条件</button></footer></dialog>
   </>
 }

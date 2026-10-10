@@ -21,8 +21,6 @@
 .labor-consult .history-list button:hover .history-thread-time,
 .labor-consult .history-list button.selected .history-thread-time { color: #9a9a9f; }
 
-/* 侧栏底部沿用两个合同工作台的余额查询 UI（.sidebar-footer-wrap / .balance-* 来自 ContractRewritePage.css）。 */
-
 /* 对话区 */
 .labor-consult .conversation-inner { width: min(820px, calc(100% - 56px)); }
 .labor-welcome-note { margin-top: 10px !important; padding: 10px 12px; color: #6a6a70 !important; border-left: 3px solid #d7e3ef; background: #f6f9fc; border-radius: 0 8px 8px 0; font-size: 13px !important; line-height: 1.75 !important; }
@@ -40,60 +38,25 @@
 
 .labor-warning { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; padding: 8px 11px; color: #8a5a00; border-radius: 8px; background: #fff8e8; font-size: 12.5px; }
 
-/* 思考过程：刻意做弱——灰底小字、无重边框，目标是"可见但不抢正文"。
-   展开时给一个高度上限 + 内部滚动，否则数万字的思考会把正文挤出屏幕。 */
-.labor-reasoning { margin: 0 0 10px; border-radius: 8px; background: #f7f7f8; }
-.labor-reasoning-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 10px; color: #7c7c83; border: 0; background: none; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
-.labor-reasoning-head:hover { color: #55555c; }
-.labor-reasoning-head:focus-visible { outline: 2px solid var(--labor-accent); outline-offset: -2px; border-radius: 8px; }
-.labor-reasoning .reasoning-label { font-weight: 500; }
-.labor-reasoning .reasoning-meta { margin-left: auto; color: #a5a5ab; font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.labor-reasoning .reasoning-chevron { transition: transform .18s ease; }
-.labor-reasoning .reasoning-chevron.open { transform: rotate(180deg); }
-.labor-reasoning.is-live { background: #f4f7fa; }
-.labor-reasoning.is-live .labor-reasoning-head { color: #4c6b87; }
-.labor-reasoning.is-live .reasoning-pulse { animation: reasoning-pulse 1.5s ease-in-out infinite; }
-@keyframes reasoning-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
-/*
- * 思考正文：老浏览器崩溃的另一个根因在这里。
- *
- * 单条思考可达 4.7 万字，而流式期间这个节点每帧都被重写并变长。
- *  - `overflow-anchor: none`：关闭滚动锚定。浏览器默认会为"内容变长"做锚定补偿，
- *    与我们的自动跟随滚动方向相反，两者互相拉扯会让长思考下滚动疯狂抖动。
- *  - `contain: content`：把布局与绘制限制在这个盒子内。没有它，盒子每变长一次，
- *    祖先链（会话滚动容器、整页）都要重新布局——这正是老 Safari 卡死的地方。
- *  - `contain-intrinsic-size` 不需要：max-height 已固定盒子高度上限，布局代价可控。
- */
-.labor-reasoning-body {
-  max-height: 260px;
-  overflow-y: auto;
-  overflow-anchor: none;
-  contain: content;
-  padding: 2px 12px 10px;
-  color: #6c6c73;
-  font-size: 12.5px;
-  line-height: 1.75;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* 流式期间的"已折叠前 N 字"提示：低调，不干扰思考正文的阅读节奏 */
-.labor-reasoning .reasoning-window-note { margin: 4px 0 6px; color: #a5a5ab; font-size: 11.5px; font-style: normal; }
-/* 流式期间淡出底部，暗示"还在继续" */
-.labor-reasoning.is-live .labor-reasoning-body { mask-image: linear-gradient(to bottom, #000 88%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 88%, transparent); }
-@media (prefers-reduced-motion: reduce) {
-  .labor-reasoning.is-live .reasoning-pulse { animation: none; }
-  .labor-reasoning .reasoning-chevron { transition: none; }
-}
-
 /* 引用核实面板 */
 .labor-citations { margin-top: 16px; padding: 13px 15px; border: 1px solid #e4e9ef; border-radius: 12px; background: #fbfcfd; }
-.labor-citations header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: #2b2b30; }
-.labor-citations header svg { color: var(--labor-accent); }
-.labor-citations header strong { font-size: 13.5px; }
-.labor-citations header span { margin-left: auto; padding: 3px 8px; border-radius: 999px; font-size: 11.5px; }
-.labor-citations header span.all-ok { color: #10693a; background: #e8f6ee; }
-.labor-citations header span.has-problems { color: #a4362c; background: #fdecea; }
-.labor-citations ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.labor-citations-head { display: flex; align-items: center; gap: 8px; width: 100%; margin: 0; padding: 0; color: #2b2b30; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+.labor-citations-head:hover strong { color: #123f6b; }
+.labor-citations-head:focus-visible { outline: 2px solid var(--labor-accent); outline-offset: 3px; border-radius: 6px; }
+.labor-citations-head svg { color: var(--labor-accent); }
+.labor-citations-head strong { font-size: 13.5px; transition: color .15s ease; }
+.labor-citations-head span { margin-left: auto; padding: 3px 8px; border-radius: 999px; font-size: 11.5px; }
+.labor-citations-head span.all-ok { color: #10693a; background: #e8f6ee; }
+.labor-citations-head span.has-problems { color: #a4362c; background: #fdecea; }
+.labor-citations-head .citations-chevron { color: #9b9ba1; transition: transform .18s ease; }
+.labor-citations-head .citations-chevron.open { transform: rotate(180deg); }
+.labor-citations ul { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; animation: citations-in .18s ease; }
+@keyframes citations-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .labor-citations ul { animation: none; }
+  .labor-citations-head strong,
+  .labor-citations-head .citations-chevron { transition: none; }
+}
 .citation-item { display: flex; gap: 9px; padding: 9px 11px; border-radius: 9px; background: #fff; border: 1px solid #ececef; }
 .citation-item > svg { flex: 0 0 auto; margin-top: 2px; }
 .citation-item.ok > svg { color: #17914f; }
