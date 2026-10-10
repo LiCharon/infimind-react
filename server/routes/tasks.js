@@ -16,6 +16,7 @@ import { extractText } from '../services/file-parser.js'
 import { classifyLaborContractDocument, classifyLaborContractDocumentsWithLlm } from '../workflows/labor-contract-document-classifier.js'
 import { CONTEXT_WINDOW_TOKENS, OUTPUT_RESERVE_TOKENS, CONTEXT_SAFETY_TOKENS, selectHistoryByTokens } from '../../src/utils/context-budget.js'
 import { refineConversationTitle, isTitleRefineEnabled, toClientResult } from '../services/title-refiner.js'
+import { createHandbookTaskRouter } from './handbook-tasks.js'
 
 const MAX_FILES = 6
 const MAX_FILE_SIZE = 80 * 1024 * 1024
@@ -119,6 +120,8 @@ export function createTaskRouter({
       return jsonError(res, 500, '会话删除未完成，请重试', 'thread_delete_failed')
     } finally { deletingThreads.delete(key) }
   }
+
+  router.use(createHandbookTaskRouter({ taskService, taskQueue, fileStore, deleteThread, creatingThreads, deletingThreads, deletionKey }))
 
   router.post('/tasks/labor-contract-analysis/classify', upload.array('files', MAX_FILES), async (req, res) => {
     const files = Array.isArray(req.files) ? req.files : []
