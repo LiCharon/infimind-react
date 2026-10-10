@@ -1,126 +1,91 @@
-.pension-calculation-page button, .pension-calculation-page input, .pension-calculation-page select { font-family: inherit; }
-.pension-calculation-page .chat-header { min-width: 0; }
-.pension-content { width: min(940px, calc(100% - 64px)); margin: 0 auto; padding: 24px 0 48px; }
-.pension-tool-navigation { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
-.pension-tool-navigation a { padding: 8px 12px; color: #68686d; background: #f7f7f8; border: 1px solid transparent; border-radius: 9px; font-size: 13px; text-decoration: none; }
-.pension-tool-navigation a[aria-current="page"] { color: #b95000; border-color: #f7d9bf; background: #fff4ea; }
-.pension-intro { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 22px; }
-.pension-intro h1 { margin: 0 0 7px; font-size: 22px; font-weight: 650; line-height: 1.4; }
-.pension-intro p, .pension-section-heading p { margin: 0; color: #77777d; font-size: 12px; line-height: 1.7; }
-.pension-reference-year { padding: 6px 10px; color: #77777d; background: #f7f7f8; border-radius: 7px; font-size: 12px; white-space: nowrap; }
-.pension-form-section { margin-bottom: 16px; padding: 20px 22px; border: 1px solid #e4e5e8; border-radius: 12px; background: #fff; }
-.pension-section-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 18px; }
-.pension-section-heading h2 { margin: 0 0 3px; color: #202024; font-size: 16px; font-weight: 650; }
-.pension-section-icon { display: grid; flex: 0 0 auto; width: 34px; height: 34px; place-items: center; color: #bd590a; background: #fff1e5; border-radius: 9px; }
-.pension-section-blue { border-top: 3px solid #bcd0e7; }
-.pension-section-blue .pension-section-icon { color: #38688f; background: #edf3f9; }
-.pension-section-green { border-top: 3px solid #bcddce; }
-.pension-section-green .pension-section-icon { color: #348363; background: #edf7f1; }
-.pension-section-purple { border-top: 3px solid #d4cbe8; }
-.pension-section-purple .pension-section-icon { color: #77629a; background: #f3eff9; }
-.pension-section-orange { border-top: 3px solid #f4cfad; }
-.pension-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 22px; }
-.pension-section-blue .pension-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.pension-section-blue .pension-fields > .pension-field:first-child { grid-column: 1 / -1; max-width: 100%; }
-.pension-section-blue .pension-fields > .pension-field:first-child .pension-input-wrap { max-width: 280px; }
+.pension-calculation-page { min-height: 100vh; background: #fff; }
+.pension-page-header { display: flex; align-items: center; gap: 14px; width: min(900px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 20px; }
+.pension-page-header h1 { margin: 0; color: #202024; font-size: 24px; font-weight: 650; }
+.pension-content { width: min(900px, calc(100% - 48px)); margin: 0 auto; padding-bottom: 48px; color: #34343b; }
+.pension-content button, .pension-content input, .pension-content select { font-family: inherit; }
+.pension-type-selector { margin: 0 0 28px; padding: 0; border: 0; }
+.pension-type-selector legend { margin-bottom: 10px; font-size: 14px; font-weight: 500; }
+.pension-type-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.pension-type-options button { min-height: 44px; padding: 10px 16px; border: 1px solid #d9dce2; border-radius: 8px; background: #fff; color: #68686d; font-size: 14px; cursor: pointer; }
+.pension-type-options button[aria-pressed="true"] { border-color: #fd7002; background: #fff4ea; color: #b95000; }
+.pension-form-section { margin: 0 0 26px; padding-top: 20px; border-top: 1px solid #e4e5e8; }
+.pension-section-heading { margin-bottom: 16px; }
+.pension-section-heading h2, .pension-result-heading h2 { margin: 0; color: #202024; font-size: 17px; font-weight: 650; }
+.pension-section-heading p { margin: 5px 0 0; color: #68686d; font-size: 13px; line-height: 1.7; }
+.pension-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; }
 .pension-duration { min-width: 0; margin: 0; padding: 0; border: 0; }
-.pension-duration legend { padding: 0; margin-bottom: 8px; color: #34343b; font-size: 14px; font-weight: 500; line-height: 1.5; }
-.pension-duration-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(88px, .8fr); gap: 8px; }
-.pension-duration .pension-field label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-.pension-duration > small, .pension-grade-help > small { display: block; margin-top: 6px; color: #666b73; font-size: 12px; line-height: 1.65; }
-.pension-inline-help { grid-column: 1 / -1; margin: 0; }
-.pension-inline-help p { margin: 4px 0 0; }
-.pension-grade-help > span { display: block; margin-bottom: 8px; color: #34343b; font-size: 14px; }
-.pension-grade-help > div { display: flex; flex-wrap: wrap; gap: 6px; }
-.pension-grade-help button { min-height: 44px; padding: 9px 12px; border: 1px solid #d9dce2; border-radius: 8px; color: #57575d; background: #f8f9fb; font-size: 13px; cursor: pointer; }
-.pension-grade-help button[aria-pressed="true"] { color: #b95000; border-color: #f2cdaa; background: #fff4ea; }
-.pension-result-note { color: #666b73; font-size: 12px; line-height: 1.7; }
-.pension-section-green .pension-fields > .pension-field:last-child { grid-column: 1 / -1; }
+.pension-duration legend, .pension-field label { margin-bottom: 8px; padding: 0; color: #34343b; font-size: 14px; font-weight: 500; line-height: 1.5; }
+.pension-field label { display: block; }
+.pension-duration-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(88px, .65fr); gap: 8px; }
+.pension-duration .pension-field label, .pension-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .pension-field { min-width: 0; }
-.pension-field label { display: block; margin-bottom: 8px; color: #34343b; font-size: 14px; font-weight: 500; line-height: 1.5; }
 .pension-input-wrap { display: flex; min-width: 0; min-height: 44px; align-items: center; border: 1px solid #d9dce2; border-radius: 8px; background: #f8f9fb; }
 .pension-input-wrap:focus-within { border-color: #fd7002; background: #fff; box-shadow: 0 0 0 3px rgb(253 112 2 / 9%); }
 .pension-input-wrap input, .pension-input-wrap select { width: 100%; min-width: 0; min-height: 42px; border: 0; border-radius: 8px; outline: none; background: transparent; color: #202024; font-size: 14px; padding: 10px 11px; }
-.pension-input-wrap input::placeholder { color: #a0a3aa; }
+.pension-input-wrap input::placeholder { color: #878b94; }
 .pension-input-wrap input[aria-invalid="true"], .pension-input-wrap select[aria-invalid="true"] { box-shadow: inset 0 0 0 1px #b42318; }
-.pension-unit { flex: 0 0 auto; padding-right: 11px; color: #858992; font-size: 12px; }
-.pension-field > small { display: block; margin-top: 6px; color: #666b73; font-size: 12px; line-height: 1.65; }
-.pension-field > .pension-field-error { color: #b42318; }
-.pension-submit-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 5px 0 0; }
-.pension-submit { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 12px 22px; color: #fff; background: #fd7002; border: 0; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.pension-unit { flex: 0 0 auto; padding-right: 11px; color: #68686d; font-size: 12px; }
+.pension-field-help { margin-top: 6px; color: #68686d; font-size: 12px; line-height: 1.7; }
+.pension-field-help summary { width: fit-content; cursor: pointer; }
+.pension-field-help p { margin: 6px 0 0; }
+.pension-field-error { display: block; margin-top: 6px; color: #b42318; font-size: 12px; line-height: 1.65; }
+.pension-inline-help { grid-column: 1 / -1; }
+.pension-inline-help p { margin: 4px 0 0; }
+.pension-grade-help > span { display: block; margin-bottom: 8px; font-size: 14px; }
+.pension-grade-help > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.pension-grade-help button { min-height: 44px; padding: 9px 12px; border: 1px solid #d9dce2; border-radius: 8px; color: #57575d; background: #fff; font-size: 13px; cursor: pointer; }
+.pension-grade-help button[aria-pressed="true"] { color: #b95000; border-color: #fd7002; background: #fff4ea; }
+.pension-grade-help > small { display: block; margin-top: 6px; color: #68686d; font-size: 12px; line-height: 1.65; }
+.pension-submit-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.pension-submit, .pension-reset { min-height: 44px; padding: 11px 22px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+.pension-submit { color: #fff; background: #fd7002; border: 1px solid #fd7002; font-weight: 600; }
 .pension-submit:hover { background: #e86600; }
-.pension-submit-row p, .pension-form-footnote { margin: 0; color: #8c8c92; font-size: 12px; line-height: 1.75; }
-.pension-form-footnote { margin-top: 14px; }
-.pension-notice { margin: 16px 0; padding: 12px 15px; border: 1px solid #f1dec5; border-radius: 9px; color: #985600; background: #fff8ee; font-size: 13px; line-height: 1.7; }
+.pension-reset { color: #57575d; background: #fff; border: 1px solid #d9dce2; }
+.pension-submit-row p, .pension-form-footnote { margin: 0; color: #68686d; font-size: 12px; line-height: 1.75; }
+.pension-form-footnote { margin-top: 16px; }
+.pension-notice { margin: 16px 0; padding: 12px 15px; border: 1px solid #f1dec5; border-radius: 8px; color: #985600; background: #fff8ee; font-size: 13px; line-height: 1.7; }
+.pension-fields > .pension-inline-help { margin: 0; }
 .pension-notice ul { margin: 6px 0 0; padding-left: 20px; }
 .pension-error { color: #b42318; border-color: #efcfca; background: #fff4f2; }
 .pension-error button { border: 0; padding: 0; color: inherit; background: transparent; font-size: 13px; line-height: 1.8; text-align: left; cursor: pointer; }
-.pension-result { margin: 24px 0 0; padding: 22px; border: 1px solid #f2cdaa; border-radius: 12px; scroll-margin-top: 24px; }
+.pension-result { margin-top: 32px; padding-top: 24px; border-top: 1px solid #e4e5e8; scroll-margin-top: 24px; }
 .pension-result:focus { outline: none; }
-.pension-status { margin-left: auto; flex: 0 0 auto; padding: 5px 8px; color: #985600; background: #fff4ea; border-radius: 6px; font-size: 11px; }
-.pension-total { display: grid; gap: 8px; padding: 18px; border-radius: 10px; color: #b95000; background: #fff4ea; }
-.pension-total > span { font-size: 13px; }
-.pension-total strong { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.pension-total > small { color: #a46c43; font-size: 12px; line-height: 1.7; }
-.pension-result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
-.pension-result-grid > div { padding: 15px; border-radius: 9px; background: #f7f8fa; }
-.pension-result-grid span { display: block; color: #77777d; font-size: 12px; }
-.pension-result-grid strong { display: block; margin-top: 9px; color: #202024; font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.pension-result-grid strong small, .pension-total strong small { margin-left: 6px; color: #8c8c92; font-size: 11px; font-weight: 400; }
-.pension-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
-.pension-facts dt { margin-bottom: 6px; color: #8c8c92; font-size: 12px; }
-.pension-facts dd { margin: 0; color: #45454a; font-size: 13px; }
-.pension-details { padding: 15px 0; border-top: 1px solid #ececec; color: #68686d; font-size: 13px; line-height: 1.8; }
-.pension-details summary { width: fit-content; color: #45454a; font-size: 13px; font-weight: 600; cursor: pointer; }
-.pension-details p { margin-top: 10px; overflow-wrap: anywhere; }
+.pension-result-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.pension-status { color: #68686d; font-size: 12px; }
+.pension-total { display: grid; gap: 8px; padding: 18px 20px; border-radius: 8px; color: #b95000; background: #fff4ea; }
+.pension-total > span { font-size: 14px; }
+.pension-total strong { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pension-total > small { color: #80512d; font-size: 12px; line-height: 1.7; }
+.pension-result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.pension-result-grid span { display: block; color: #68686d; font-size: 13px; }
+.pension-result-grid strong { display: block; margin-top: 6px; color: #202024; font-size: 23px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pension-result-grid strong small, .pension-total strong small { margin-left: 6px; color: #68686d; font-size: 12px; font-weight: 400; }
+.pension-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 20px 0 12px; }
+.pension-facts dt { margin-bottom: 6px; color: #68686d; font-size: 12px; }
+.pension-facts dd { margin: 0; font-size: 13px; }
+.pension-result-note { margin: 0 0 18px; color: #68686d; font-size: 12px; line-height: 1.7; }
+.pension-details { padding: 15px 0; border-top: 1px solid #e4e5e8; color: #57575d; font-size: 13px; line-height: 1.8; }
+.pension-details summary { width: fit-content; color: #34343b; font-weight: 600; cursor: pointer; }
+.pension-details h3 { margin-top: 18px; font-size: 14px; }
+.pension-details p { margin-top: 8px; overflow-wrap: anywhere; }
 .pension-process, .pension-assumptions, .pension-sources { display: grid; gap: 10px; margin-top: 12px; padding-left: 20px; }
 .pension-process p { margin: 5px 0 0; }
 .pension-sources a { color: #38688f; text-decoration: underline; text-underline-offset: 3px; }
 .pension-table-wrap { width: 100%; margin: 12px 0; overflow-x: auto; }
 .pension-table-wrap table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.7; }
-.pension-table-wrap th, .pension-table-wrap td { padding: 10px 12px; color: #57575d; border-bottom: 1px solid #ececec; text-align: right; white-space: nowrap; }
+.pension-table-wrap th, .pension-table-wrap td { padding: 10px 12px; color: #57575d; border-bottom: 1px solid #e4e5e8; text-align: right; white-space: nowrap; }
 .pension-table-wrap th:first-child { text-align: left; }
-.pension-table-wrap thead { background: #f7f7f8; }
+.pension-table-wrap thead { background: #f8f9fb; }
 .pension-selected-row { background: #fff4ea; }
-.pension-history-row { display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; border-radius: 10px; }
-.pension-history-row.selected, .pension-history-row:hover { background: #fff; }
-.pension-history-row > button:first-child { width: 100%; }
-.pension-history-row .pension-history-delete { display: grid; place-items: center; width: 24px; height: 26px; padding: 0; color: #999; opacity: 0; }
-.pension-history-row:hover .pension-history-delete, .pension-history-row.selected .pension-history-delete, .pension-history-delete:focus-visible { opacity: 1; }
-.pension-history-row .pension-history-delete:hover { color: #b42318; background: #fff1f0; }
-.pension-history-empty { padding: 12px; color: #a3a3a6; font-size: 12px; line-height: 1.7; }
-.pension-history-local { margin: 12px 8px 0; color: #aaa; font-size: 11px; }
-.pension-history-backdrop { display: none; }
-.pension-calculation-page button:focus-visible, .pension-calculation-page a:focus-visible, .pension-calculation-page summary:focus-visible { outline: 2px solid #fd7002; outline-offset: 3px; }
-.pension-sidebar .sidebar-search:focus-within { box-shadow: inset 0 0 0 2px #8ea2ba; }
-.pension-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-@media (max-width: 1000px) {
-  .pension-content { width: calc(100% - 40px); }
-  .pension-calculation-page .chat-header { grid-template-columns: auto minmax(0, 1fr) auto; padding: 0 16px; gap: 12px; }
-  .pension-calculation-page .chat-title strong { font-size: 14px; }
-}
-@media (max-width: 760px) {
-  .pension-calculation-page .chat-header { flex-basis: auto; height: auto; min-height: 76px; padding: 12px; }
-  .pension-calculation-page .chat-title { text-align: left; }
-  .pension-calculation-page .chat-title small { font-size: 10px; }
-  .pension-calculation-page .header-tools { display: none; }
-  .pension-calculation-page .header-left .tool-overview-link span { display: none; }
-  .pension-calculation-page:not(.sidebar-collapsed) .chat-sidebar { display: flex; position: absolute; top: 0; bottom: 0; left: 0; width: min(268px, calc(100vw - 48px)); z-index: 20; box-shadow: 12px 0 24px rgb(0 0 0 / 10%); }
-  .pension-history-backdrop { position: fixed; display: block; inset: 0; left: min(268px, calc(100vw - 48px)); z-index: 15; border: 0; background: rgb(0 0 0 / 18%); }
-  .pension-content { width: calc(100% - 28px); padding-top: 18px; }
-  .pension-tool-navigation { gap: 6px; margin-bottom: 18px; }
-  .pension-tool-navigation a { padding: 7px 9px; font-size: 12px; }
-  .pension-intro h1 { font-size: 19px; }
-  .pension-intro { gap: 10px; align-items: flex-start; }
-  .pension-reference-year { font-size: 10px; }
-  .pension-form-section, .pension-result { padding: 18px 15px; }
-  .pension-fields, .pension-section-blue .pension-fields { grid-template-columns: minmax(0, 1fr); }
-  .pension-result-grid { grid-template-columns: minmax(0, 1fr); }
+.pension-content button:focus-visible, .pension-content a:focus-visible, .pension-content summary:focus-visible { outline: 2px solid #fd7002; outline-offset: 3px; }
+@media (max-width: 600px) {
+  .pension-page-header, .pension-content { width: calc(100% - 32px); }
+  .pension-page-header { padding-top: 20px; }
+  .pension-page-header h1 { font-size: 21px; }
+  .pension-type-options { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .pension-fields, .pension-result-grid { grid-template-columns: minmax(0, 1fr); }
   .pension-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .pension-section-heading { align-items: flex-start; }
-  .pension-status { max-width: 82px; text-align: center; }
   .pension-submit-row p { width: 100%; }
   .pension-submit { flex: 1; }
-  .pension-history-row .pension-history-delete { opacity: 1; }
 }
-@media (prefers-reduced-motion: reduce) { .pension-calculation-page * { transition: none; scroll-behavior: auto; } }
+@media (prefers-reduced-motion: reduce) { .pension-content * { transition: none; scroll-behavior: auto; } }

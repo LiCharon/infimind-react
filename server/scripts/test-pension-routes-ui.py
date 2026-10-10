@@ -104,65 +104,62 @@ try:
         expect(page.locator('.pension-calculation-page')).to_be_visible()
         check('login resumes flexible pension route and query',
               urlparse(page.url).path == '/tools/pension-calc2' and parse_qs(urlparse(page.url).query)['from'] == ['review'])
-        for product, title in [('pension-calc2', '个体工商户／灵活就业者养老保险测算'), ('pension-calc1', '企业职工养老保险测算')]:
-            if product == 'pension-calc1':
-                page.get_by_role('link', name='企业职工养老', exact=True).click()
-            expect(page.locator('.chat-title')).to_contain_text(title)
-            check(f'{product}: empty simple form and no chat', page.locator('[name="currentAge"]').input_value() == '' and page.locator('.prototype-chat,textarea,.composer').count() == 0)
-            check(f'{product}: sidebar uses shared brand and account styles', page.locator('.chat-sidebar .sidebar-brand').is_visible() and page.locator('.account-trigger').is_visible())
-            check(f'{product}: professional policy selectors removed', page.locator('[name="region"],[name="indexMethod"],[name="policyFrom"]').count() == 0)
+        for product, initial_type in [('pension-calc2', '个体工商户／灵活就业人员'), ('pension-calc1', '企业职工')]:
+            page.goto(f'{url}/tools/{product}', wait_until='networkidle')
+            expect(page.get_by_role('heading', name='养老保险测算', exact=True)).to_be_visible()
+            expect(page.get_by_role('button', name=initial_type, exact=True)).to_have_attribute('aria-pressed', 'true')
+            check(f'{product}: legacy URL selects expected type in unified page')
+            check(f'{product}: empty form without chat or history',
+                  page.locator('[name="currentAge"]').input_value() == '' and
+                  page.locator('.chat-sidebar,.pension-history-row,[name="history-search"],textarea,.composer').count() == 0)
+            history_keys = [f'fafee-history-v2:{fixture_user["id"]}:{tool}:calculations' for tool in ['pension-calc1', 'pension-calc2']]
+            saved_value = '[{"id":"legacy-record","title":"preserved history"}]'
+            page.evaluate('({keys,value}) => { for (const key of keys) localStorage.setItem(key,value) }', {'keys': history_keys, 'value': saved_value})
             fill_fixture(page)
-            before = len(requests)
             page.locator('button[type="submit"]').click()
             expect(page.get_by_test_id('pension-total')).to_have_text('2,302.73元／月')
-            check(f'{product}: actual App matches independently calculated fixture', len(requests) == before)
-            page.get_by_test_id('pension-result').scroll_into_view_if_needed()
-            page.screenshot(path=str(output / f'{product}-protected-result.png'))
+            check(f'{product}: actual App computes expected pension')
+            other_type = '企业职工' if product == 'pension-calc2' else '个体工商户／灵活就业人员'
+            original_url = page.url
+            page.get_by_role('button', name=other_type, exact=True).click()
+            expect(page.get_by_test_id('pension-result')).to_have_count(0)
+            check(f'{product}: in-page switch keeps common inputs and invalidates result',
+                  page.url == original_url and page.locator('[name="accountBalance"]').input_value() == '90000')
+            fill_fixture(page)
+            page.locator('button[type="submit"]').click()
+            expect(page.get_by_test_id('pension-total')).to_have_text('2,302.73元／月')
+            expected_cost = '640.00' if other_type == '企业职工' else '1,600.00'
+            expect(page.locator('.pension-result-grid')).to_contain_text(expected_cost)
+            check(f'{product}: switched type uses its own contribution rule')
             page.locator('[name="accountBalance"]').fill('100000')
             expect(page.get_by_test_id('pension-result')).to_have_count(0)
-            check(f'{product}: edit clears old result', page.get_by_role('button', name='重新计算', exact=True).is_visible())
             page.locator('button[type="submit"]').click()
-            expect(page.get_by_test_id('pension-total')).not_to_have_text('2,302.73元／月')
-            check(f'{product}: recalculation updates total')
-            expect(page.locator('.pension-history-row')).to_have_count(1)
-            check(f'{product}: recalculation updates active record without duplicates')
+            expect(page.get_by_test_id('pension-total')).to_have_text('2,374.68元／月')
+            check(f'{product}: input edits require recalculation')
+            page.get_by_role('button', name='重置条件', exact=True).click()
+            expect(page.get_by_test_id('pension-result')).to_have_count(0)
+            check(f'{product}: reset clears inputs without removing legacy history',
+                  page.locator('[name="currentAge"]').input_value() == '' and
+                  page.evaluate('(keys) => keys.map((key) => localStorage.getItem(key))', history_keys) == [saved_value, saved_value])
             page.reload(wait_until='networkidle')
             expect(page.locator('.pension-calculation-page')).to_be_visible()
-            check(f'{product}: refresh preserves history and starts empty form', page.locator('[name="currentAge"]').input_value() == '' and page.locator('.pension-history-row').count() == 1)
-            page.locator('.pension-history-row > button:first-child').click()
-            expect(page.get_by_test_id('pension-total')).to_have_text('2,374.68元／月')
-            check(f'{product}: history restores conditions and result', page.locator('[name="accountBalance"]').input_value() == '100000')
-            page.get_by_role('button', name='新建测算', exact=True).click()
-            expect(page.get_by_test_id('pension-result')).to_have_count(0)
-            check(f'{product}: new calculation resets input but preserves saved record', page.locator('[name="currentAge"]').input_value() == '' and page.locator('.pension-history-row').count() == 1)
-        # Storage quota failures must not turn a successfully calculated result
-        # into an error, or overwrite the previous saved input snapshot.
-        fill_fixture(page)
-        page.evaluate("() => { window.__pensionSetItem = Storage.prototype.setItem; Storage.prototype.setItem = function(key, value) { if (key.endsWith(':calculations')) throw new DOMException('test quota', 'QuotaExceededError'); return window.__pensionSetItem.call(this, key, value) } }")
-        page.locator('button[type="submit"]').click()
-        expect(page.get_by_test_id('pension-total')).to_have_text('2,302.73元／月')
-        expect(page.get_by_role('status').filter(has_text='未能保存')).to_be_visible()
-        check('storage quota failure preserves visible calculation and reports save failure')
-        page.evaluate('() => { Storage.prototype.setItem = window.__pensionSetItem }')
-        page.reload(wait_until='networkidle')
-        expect(page.locator('.pension-history-row')).to_have_count(1)
-        page.locator('.pension-history-row > button:first-child').click()
-        expect(page.get_by_test_id('pension-total')).to_have_text('2,374.68元／月')
-        check('failed save leaves prior persisted record intact')
+            check(f'{product}: refresh does not restore old records',
+                  page.locator('[name="currentAge"]').input_value() == '' and page.get_by_test_id('pension-result').count() == 0)
         page.get_by_role('link', name='工具总览', exact=True).click()
         expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
-        check('flexible hub entry names pension insurance explicitly', '个体工商户／灵活就业者养老保险测算' in page.locator('a[href="/tools/pension-calc2"]').inner_text())
+        # Public menu consolidation is deferred until the mentor frontend merge.
+        # Both existing links remain usable in this functional-page-only batch.
         for product in ['pension-calc1', 'pension-calc2']:
             page.locator(f'a[href="/tools/{product}"]').click()
-            expect(page.locator('.pension-calculation-page')).to_be_visible()
-            check(f'hub {product} opens dedicated form')
+            expect(page.get_by_role('heading', name='养老保险测算', exact=True)).to_be_visible()
+            check(f'hub {product} opens unified calculator')
             page.get_by_role('link', name='工具总览', exact=True).click()
         page.locator('a[href="/tools/medical-calculator"]').click()
         expect(page.locator('.medical-calculator')).to_be_visible()
-        check('medical entry retains independent medical page', page.locator('.pension-calculation-page').count() == 0)
+        check('medical entry retains independent page', page.locator('.pension-calculation-page').count() == 0)
         page.goto(f'{url}/tools/handbook', wait_until='networkidle')
         expect(page.locator('.prototype-chat-header')).to_be_visible()
-        check('generic protected tool route retains existing fallback', page.locator('.pension-calculation-page,.medical-calculator').count() == 0)
+        check('generic protected tool route retains fallback', page.locator('.pension-calculation-page,.medical-calculator').count() == 0)
         page.goto(f'{url}/tools/fictional-unmapped-tool', wait_until='networkidle')
         expect(page.get_by_role('heading', name='今天要处理什么？', exact=True)).to_be_visible()
         check('unknown tool still redirects to hub', urlparse(page.url).path == '/tools')
@@ -179,16 +176,13 @@ try:
         page.get_by_placeholder('请输入密码').fill('fictional-password-456')
         page.get_by_role('button', name='登录并继续', exact=True).click()
         expect(page.locator('.pension-calculation-page')).to_be_visible()
-        check('second account cannot see flexible history from first account', page.locator('.pension-history-row').count() == 0)
-        page.get_by_role('link', name='企业职工养老', exact=True).click()
-        expect(page.locator('[name="currentMonthlyWage"]')).to_be_visible()
-        check('second account cannot see employee history or input', page.locator('.pension-history-row').count() == 0 and page.locator('[name="accountBalance"]').input_value() == '')
+        check('second account starts a blank form', page.locator('[name="accountBalance"]').input_value() == '')
         check('no unexpected API requests', not unexpected_api)
         check('no external resources requested', not external_requests)
         check('no unexpected HTTP failures', not http_failures)
         check('no browser exceptions', not page_errors)
         browser.close()
-    names = ['src/App.jsx', 'src/pages/ToolHubPage.jsx', 'src/pages/PensionCalculationPage.jsx', 'src/pages/PensionCalculationPage.css',
+    names = ['src/App.jsx', 'src/pages/ToolHubPage.jsx', 'src/pages/PensionCalculationPage.jsx', 'src/pages/PensionCalculatorContent.jsx', 'src/pages/PensionCalculationPage.css',
              'src/utils/pension-calculator.js', 'src/utils/pension-retirement.js', 'src/utils/pension-rules.js', 'src/utils/pension-history.js']
     report = {'status': 'passed', 'checks': len(checks), 'cases': checks, 'pageErrors': page_errors,
               'unexpectedApi': unexpected_api, 'externalRequests': external_requests, 'httpFailures': http_failures,
