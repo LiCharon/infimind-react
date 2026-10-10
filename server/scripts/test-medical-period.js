@@ -7,7 +7,8 @@ import {
   formatMedicalResult,
   prepareMedicalPeriodInput,
   describeMedicalPeriodResult,
-  describeMedicalSegmentResult
+  describeMedicalSegmentResult,
+  describeMedicalInputGuidance
 } from '../../src/utils/medical-period-calculator.js'
 
 // Fictional inputs. Expected counts/tier values are hand-derived from A1–A13
@@ -536,6 +537,53 @@ test('Shanghai exact hundredth, fractional and zero balances never become monthl
     assert(receipt.includes(`${remaining}工作日`))
     assert(!/\d+\.\d+\s*个月/.test(receipt))
   }
+})
+
+test('ordinary remarks do not suppress national or Shanghai balances', () => {
+  for (const input of [base(), shanghai()]) {
+    const plain = calc(input)
+    const note = '  考勤已复核，供公司内部核对\n保留原备注格式  '
+    const remarked = calc({ ...input, specialNote: note })
+    assert.equal(remarked.ok, true)
+    assert.deepEqual(remarked.usage, plain.usage)
+    assert.deepEqual(remarked.referenceEstimate, plain.referenceEstimate)
+    assert(!hasReason(remarked, 'SPECIAL_REVIEW'))
+    const receipt = formatMedicalResult(remarked)
+    assert(receipt.includes('特殊情况：未勾选'))
+    assert.equal(remarked.input.specialNote, note)
+    assert(receipt.includes(`备注：${note}`))
+    const special = calc({ ...input, specialNote: '同一备注', specialCircumstances: true })
+    assert.equal(special.usage, null)
+    assert.equal(special.referenceEstimate, null)
+    assert(hasReason(special, 'SPECIAL_REVIEW'))
+    assert(formatMedicalResult(special).includes('特殊情况：已勾选，待人工核对'))
+  }
+})
+test('ten-year prompt distinguishes total-tenure uncertainty from unit-tenure changes', () => {
+  assert(describeMedicalInputGuidance(calc(base({ totalWorkYears: '9', tenYearDate: '' }))).needsTenYearDate)
+  assert(describeMedicalInputGuidance(calc({ ...separated(), totalWorkYears: '8' })).needsTenYearDate)
+  assert(!describeMedicalInputGuidance(calc(separated())).needsTenYearDate)
+  const unitOnly = calc(base({ hireDate: '2021-02-01', totalWorkYears: '8', tenYearDate: '', leaveType: 'segmented', segments: [
+    { startDate: '2026-01-05', endDate: '2026-01-10' }, { startDate: '2026-02-10', endDate: '2026-02-15' }
+  ] }))
+  assert(hasReason(unitOnly, 'TENURE_CHANGE'))
+  assert(!describeMedicalInputGuidance(unitOnly).needsTenYearDate)
+  assert(unitOnly.segmentResults.every(row => !describeMedicalSegmentResult(unitOnly, row).balanceDetail.includes('满10年日期')))
+  assert(!describeMedicalInputGuidance(calc(shanghai())).needsTenYearDate)
+})
+test('supplement targets identify missing records, dates and each actual workday count', () => {
+  assert.equal(describeMedicalInputGuidance(calc(base({ historyComplete: false }))).fields[0].field, 'historyComplete')
+  const dates = calc(shanghai({ recordMode: 'summary', summary: { workDays: '8' } }))
+  assert(describeMedicalInputGuidance(dates).fields.some(item => item.field === 'summary.firstDate'))
+  const partial = calc(shanghai({ leaveType: 'segmented', segments: [
+    { startDate: '2026-06-01', endDate: '2026-06-10', workDays: '8' },
+    { startDate: '2026-06-15', endDate: '2026-06-20', workDays: '' }
+  ] }))
+  assert.equal(partial.usage, null)
+  assert.equal(describeMedicalPeriodResult(partial).recordValue, 8)
+  assert.equal(describeMedicalPeriodResult(partial).recordUnit, '工作日（部分）')
+  assert(describeMedicalInputGuidance(partial).fields.some(item => item.field === 'segments.1.workDays'))
+  assert(formatMedicalResult(partial).includes('8工作日（部分）'))
 })
 
 console.log(`Medical period: ${checks} cases passed.`)

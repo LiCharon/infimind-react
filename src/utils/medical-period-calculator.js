@@ -1,6 +1,6 @@
 // Medical-period-only pure calculation. No clock, network, storage or model calls.
 // Legal uncertainties are explicit result fields, never silently chosen algorithms.
-const ALGORITHM_VERSION = 'medical-period-2026-10-09.5'
+const ALGORITHM_VERSION = 'medical-period-2026-10-10.1'
 const VERIFIED_ON = '2026-10-09'
 const SH_MONTH_WORKDAYS = 20.67
 const SH_CONVERSION_VERIFIED_FROM = '2025-10-28'
@@ -75,6 +75,16 @@ function nationalTier(total, unit) {
 }
 const shanghaiMonths = (unit) => Math.min(24, 3 + Math.max(0, unit - 1))
 
+function nationalTotalTenureBand(input, firstDay, date) {
+  if (input.tenYearDate) return input.tenYearDate <= date ? 10 : 0
+  if (input.totalWorkYears >= 10) return 10
+  if (date === firstDay) return 0
+  // An integer at the first date does not reveal its anniversary. Bound the
+  // later tenure under continuing employment instead of treating it as exact.
+  const minimum = input.totalWorkYears + completedMedicalYears(firstDay, date)
+  return minimum >= 10 ? 10 : minimum + 1 >= 10 ? null : 0
+}
+
 // Fixed-window grouping is a reference scenario, not a nationwide legal reset
 // rule. Boundary allocation, exhausted periods and ambiguous tenure stay explicit.
 function segmentedReferenceResults(input, records, quota, usage, reviewReasons) {
@@ -95,15 +105,7 @@ function segmentedReferenceResults(input, records, quota, usage, reviewReasons) 
   }
   if (input.region !== 'national') return []
   const common = reviewReasons.filter((item) => ['HISTORY_INCOMPLETE', 'SPECIAL_REVIEW', 'LEAP_ANNIVERSARY', 'RULE_DATE_UNSUPPORTED'].includes(item.code))
-  const totalBand = (date) => {
-    if (input.tenYearDate) return input.tenYearDate <= date ? 10 : 0
-    if (input.totalWorkYears >= 10) return 10
-    if (date === records.firstDay) return 0
-    // An integer at the first date does not reveal its anniversary. Bound the
-    // later tenure under continuing employment instead of treating it as exact.
-    const minimum = input.totalWorkYears + completedMedicalYears(records.firstDay, date)
-    return minimum >= 10 ? 10 : minimum + 1 >= 10 ? null : 0
-  }
+  const totalBand = (date) => nationalTotalTenureBand(input, records.firstDay, date)
   let cycle = null
   let cycleNumber = 0
   let allocationPending = false
@@ -186,7 +188,7 @@ export function calculateMedicalPeriod(raw, { today } = {}) {
     asOf: date(raw.asOf, 'asOf'), hireDate: date(raw.hireDate, 'hireDate'),
     recordMode: raw.recordMode || 'intervals', leaveType: raw.leaveType || 'continuous',
     historyComplete: raw.historyComplete === true, specialCircumstances: raw.specialCircumstances === true,
-    specialNote: typeof raw.specialNote === 'string' ? raw.specialNote.trim().slice(0, 1000) : '',
+    specialNote: typeof raw.specialNote === 'string' ? raw.specialNote.slice(0, 1000) : '',
     totalWorkYears: null, tenYearDate: null, segments: [], summary: null
   }
   const assessmentDate = today === undefined ? null : date(today, 'assessmentDate')
@@ -226,7 +228,7 @@ export function calculateMedicalPeriod(raw, { today } = {}) {
     if (!(optionalDetails && blank(source.naturalDays)) && (days === null || days < 1 || (horizon !== null && days > horizon))) error('summary.naturalDays', '请填写正整数累计自然日数，不能超过已知日期范围。')
     const maximumWorkDays = days === null ? horizon : horizon === null ? days : Math.min(days, horizon)
     const workDays = optionalDetails ? workdays(source.workDays, 'summary.workDays', maximumWorkDays) : null
-    if (optionalDetails && workDays === null && !firstDate && days === null) error('summary.workDays', '请填写实际累计病休工作日；未知不能按0处理。')
+    if (optionalDetails && workDays === null && !firstDate && days === null) error('summary.workDays', '请提供首次病休日期或实际累计病休工作日；未知不要填0。')
     input.summary = { firstDate, naturalDays: days, workDays }
     firstDay = firstDate
     naturalDays = days
@@ -294,7 +296,7 @@ export function calculateMedicalPeriod(raw, { today } = {}) {
   const referenceYears = firstDay ? unitYearsAtStart : unitYearsAtAsOf
   if (shanghai && !firstDay) reason('FIRST_DATE_MISSING', '尚未提供首个病休日，基础额度仅按计算截止日年限作对照；补充首日及完整历史后再核对余额。')
   if (!input.historyComplete) reason('HISTORY_INCOMPLETE', shanghai ? '尚未确认本单位期间的全部病休历史，录入量不能当作全部已用医疗期。' : '尚未确认相关累计范围内的全部病休历史。')
-  if (input.specialCircumstances || input.specialNote) reason('SPECIAL_REVIEW', '特殊疾病、鉴定、延长审批或更长约定需要人工核对；基础额度不代表最终额度。')
+  if (input.specialCircumstances) reason('SPECIAL_REVIEW', '特殊疾病、鉴定、延长审批或更长约定需要人工核对；基础额度不代表最终额度。')
   if (input.recordMode === 'summary') reason('DISTRIBUTION_UNKNOWN', '当前为累计量，无法判断病休分布、重叠与窗口归属，不生成实际日期段。')
   if (input.hireDate.endsWith('-02-29')) reason('LEAP_ANNIVERSARY', '2月29日入职在平年的周年归属需要核定；本次年限仅按日历截断作对照。')
   const supportedDates = referenceDate >= rule.effectiveFrom && (!rule.effectiveThrough || input.asOf <= rule.effectiveThrough)
@@ -374,6 +376,7 @@ export function describeMedicalPeriodResult(result) {
   const lastSegment = segments.at(-1)
   const cycleCount = new Set(segments.map((row) => row.cycleNumber)).size
   const groupingKnown = segments.every((row) => row.accumulationMonths !== null)
+  const anyWorkDaysKnown = records.workDays !== null || records.rows.some((row) => row.workDays !== null)
   const years = quota?.referenceBasis === 'as-of' ? quota.unitYearsAtAsOf : quota?.unitYearsAtStart
   const unitYears = years === 0 ? '本单位未满1年' : `本单位已满${years}年`
   const quotaDetail = !quota ? '适用地区或日期超出当前已核对的规则范围' : shanghai
@@ -395,8 +398,8 @@ export function describeMedicalPeriodResult(result) {
     referenceDate: quota?.referenceDate || records.firstDay,
     quotaValue: quota?.months ?? '待核对',
     quotaLabel: quota?.referenceBasis === 'as-of' ? '基础额度对照' : '基础医疗期额度', quotaDetail,
-    recordValue: shanghai ? records.workDays ?? '未提供' : records.naturalDays,
-    recordUnit: shanghai ? '工作日' : '自然日',
+    recordValue: shanghai ? records.workDays ?? (anyWorkDaysKnown ? records.knownWorkDays : '未提供') : records.naturalDays,
+    recordUnit: shanghai ? records.workDays === null && anyWorkDaysKnown ? '工作日（部分）' : '工作日' : '自然日',
     recordDetail: shanghai ? `${records.naturalDays === null ? '自然日总量未提供' : `日期范围合计${records.naturalDays}个自然日`}；月数按病休工作日折算` : records.precision === 'summary' ? '仅有汇总量，日期分布未知' : '各段包含首尾日期，未病休的间隔不计入',
     thirdLabel: shanghai ? '剩余医疗期' : '剩余医疗期（参考）',
     thirdValue: shanghai ? usage?.remainingWorkDays ?? '待核对' : referenceEstimate?.remainingDays ?? '待核对',
@@ -425,6 +428,33 @@ export function describeMedicalPeriodResult(result) {
   return presentation
 }
 
+// UI guidance reuses the same tenure bounds, without changing eligibility or
+// requiring unknown inputs to be fabricated. Targets are existing form fields.
+export function describeMedicalInputGuidance(result) {
+  if (!result?.ok) return { needsTenYearDate: false, fields: [] }
+  const { input, records } = result
+  const display = describeMedicalPeriodResult(result)
+  const undecided = { ...input, tenYearDate: null }
+  const needsTenYearDate = input.region === 'national' && input.totalWorkYears < 10 && Boolean(records.firstDay) && (
+    input.totalWorkYears === 9 && input.asOf > records.firstDay ||
+    input.leaveType === 'segmented' && records.rows.some((row) => [row.startDate, row.endDate].some((date) => nationalTotalTenureBand(undecided, records.firstDay, date) === null))
+  )
+  const fields = []
+  const add = (field, code) => {
+    if (!fields.some((item) => item.field === field)) fields.push({ field, message: medicalBalanceReason({ code }) })
+  }
+  for (const item of display.actions) {
+    if (item.code === 'FIRST_DATE_MISSING') add('summary.firstDate', item.code)
+    if (item.code === 'HISTORY_INCOMPLETE') add('historyComplete', item.code)
+    if (item.code === 'WORKDAYS_MISSING') {
+      if (input.recordMode === 'summary') add('summary.workDays', item.code)
+      else input.segments.forEach((row, index) => { if (row.workDays === null) add(`segments.${index}.workDays`, item.code) })
+    }
+  }
+  if (needsTenYearDate && !input.tenYearDate) add('tenYearDate', 'TOTAL_TENURE_DATE_MISSING')
+  return { needsTenYearDate, fields }
+}
+
 // Short actionable wording is shared by result cards and the copied receipt.
 function medicalBalanceReason(issue) {
   const messages = {
@@ -436,7 +466,7 @@ function medicalBalanceReason(issue) {
     SPECIAL_REVIEW: '特殊情况或延长约定需人工核对',
     TENURE_CHANGE: '病休期间工龄跨档，需核对额度调整',
     TOTAL_TENURE_CHANGE: '病休期间累计工龄满10年，需核对额度调整',
-    PERIOD_TENURE_CHANGE: '请核对本周期工龄跨档及满10年日期',
+    PERIOD_TENURE_CHANGE: '请核对本周期工龄跨档及额度调整',
     WINDOW_SPAN: '病休跨累计周期，需核对周期归属',
     PERIOD_BOUNDARY: '病休到达或跨周期边界，需核对归属',
     PERIOD_ALLOCATION: '请先核对此前跨周期病休的归属',
@@ -478,12 +508,12 @@ export function formatMedicalResult(result) {
     `统计截止日：${input.asOf}；本单位入职日：${input.hireDate}`,
     `最早录入病休日：${records.firstDay || '未提供'}；记录方式：${records.precision === 'summary' ? '汇总量，日期分布未知' : '实际日期段'}`,
     `累计工龄：${input.totalWorkYears === null ? '不参与本地区额度分档' : `${input.totalWorkYears}个已满年`}；满10年日期：${input.tenYearDate || '未提供'}`,
-    `历史完整性：${input.historyComplete ? '已勾选，需核对材料' : '未确认'}；特殊情形：${input.specialCircumstances || input.specialNote ? '待人工核对' : '未填写'}`,
-    ...(input.specialNote ? [`补充说明：${input.specialNote}`] : []),
+    `历史完整性：${input.historyComplete ? '已勾选，需核对材料' : '未确认'}；特殊情况：${input.specialCircumstances ? '已勾选，待人工核对' : '未勾选'}`,
+    ...(input.specialNote ? [`备注：${input.specialNote}`] : []),
     `${display.quotaLabel}：${typeof display.quotaValue === 'number' ? `${display.quotaValue}个月` : display.quotaValue}；${display.quotaDetail}`,
     `累计窗口：${result.segmentResults?.length && input.region === 'national' ? '各参考周期见分段结果' : quota?.accumulationMonths ? `${quota.accumulationMonths}个月（端点及重启待核对）` : input.region === 'shanghai' ? '核对本单位期间全部病休' : '待核对'}`,
     `本次录入自然日：${records.naturalDays === null ? '未提供' : `${records.naturalDays}天`}；病休工作日：${records.workDays === null ? '未完整提供或不适用' : `${records.workDays}天`}`,
-    `分档依据：${display.quotaDetail}`,
+    `已录入病休：${display.recordValue}${display.recordUnit}`,
     `额度含义：${display.meaning}`,
     `核算范围：${display.scope}`,
     `核算状态：${display.status.title}；${display.status.detail}`,

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { ArrowRight, Calculator, Check, Copy, Plus, Trash2, X } from 'lucide-react'
 import { useAuth } from '../components/AuthProvider'
-import { calculateMedicalPeriod, describeMedicalPeriodResult, describeMedicalSegmentResult, formatMedicalResult, prepareMedicalPeriodInput } from '../utils/medical-period-calculator.js'
+import { calculateMedicalPeriod, describeMedicalPeriodResult, describeMedicalSegmentResult, describeMedicalInputGuidance, formatMedicalResult, prepareMedicalPeriodInput } from '../utils/medical-period-calculator.js'
 import './MedicalCalculatorPage.css'
 
 const emptySegment = () => ({ startDate: '', endDate: '', workDays: '' })
@@ -22,19 +22,20 @@ const regionNotes = {
   other: '适用规则暂不明确时，可核对病休记录；不会借用其他地区额度。'
 }
 
-function Field({ name, label, help, error, required = false, children }) {
+function Field({ name, label, help, error, required = false, balanceNeeded = false, children }) {
   return <div className="mp-field">
-    <label htmlFor={fieldId(name)}>{label}{required ? <span className="mp-required"> *</span> : <span className="mp-optional">选填</span>}</label>
+    <label htmlFor={fieldId(name)}>{label}{required ? <span className="mp-required"> *</span> : <span className="mp-optional">{balanceNeeded ? '核对余额需要' : '选填'}</span>}</label>
     {children}
     <span className="mp-sr-only" id={`${fieldId(name)}-help`}>{help}</span>
     {error && <p id={`${fieldId(name)}-error`} className="mp-field-error">{error}</p>}
   </div>
 }
 
-function Result({ result, dirty, onEdit, onCopy, copyText }) {
+function Result({ result, dirty, onEdit, onCopy, onSupplement, copyText }) {
   const display = describeMedicalPeriodResult(result)
   const segments = result.segmentResults || []
   const pending = display.thirdValue === '待核对'
+  const guidance = describeMedicalInputGuidance(result)
   return <section className={`mp-result${dirty ? ' mp-result-stale' : ''}`} aria-labelledby="mp-result-title">
     <header className="mp-panel-header"><h2 id="mp-result-title">测算结果</h2><div className="mp-result-actions"><button type="button" className="mp-text-button" onClick={onEdit}>修改条件</button><button type="button" className="compact-button" onClick={onCopy} disabled={dirty}><Copy size={15} />复制测算单</button></div></header>
     {dirty && <p className="mp-stale-message" role="status">条件已修改，请重新计算。上次结果暂不可复制。</p>}
@@ -42,8 +43,9 @@ function Result({ result, dirty, onEdit, onCopy, copyText }) {
       <div className="mp-metrics">
         <div className={`mp-balance${pending ? ' mp-balance-pending' : ''}`}><span>{display.thirdLabel}</span><strong>{display.thirdValue}<small>{display.thirdUnit}</small></strong><p>{display.thirdDetail}</p></div>
         <div><span>{display.quotaLabel}</span><strong>{display.quotaValue}{typeof display.quotaValue === 'number' && <small>个月</small>}</strong></div>
-        <div><span>{segments.length ? '全部录入病休' : '累计已休'}</span><strong>{display.recordValue}<small>{display.recordUnit}</small></strong></div>
+        <div><span>{!result.input.historyComplete || result.records.workDays === null && result.input.region === 'shanghai' ? '已录入病休' : segments.length ? '全部录入病休' : '累计已休'}</span><strong>{display.recordValue}<small>{display.recordUnit}</small></strong>{result.input.region === 'shanghai' && result.records.workDays === null && result.records.naturalDays !== null && <p>已录入{result.records.naturalDays}自然日，病休工作日未齐</p>}</div>
       </div>
+      {pending && !dirty && guidance.fields.length > 0 && <button type="button" className="mp-text-button" onClick={() => onSupplement(guidance.fields[0].field)}>补充信息</button>}
       {segments.length > 0 && <section className="mp-segment-results" aria-labelledby="mp-segment-results-title"><h3 id="mp-segment-results-title">分段结果</h3><div className="mp-segment-result-list">{segments.map((row) => {
         const segment = describeMedicalSegmentResult(result, row)
         return <article className="mp-segment-result" key={row.inputIndex} aria-label={`${segment.title}测算结果`}>
@@ -82,9 +84,15 @@ export function MedicalCalculatorWorkspace() {
   const isShanghai = input.region === 'shanghai'
   const hasSupplementary = Boolean(input.locality || input.tenYearDate || input.specialCircumstances || input.specialNote || (isShanghai && input.recordMode === 'summary' && input.summary.naturalDays) || (!isShanghai && input.recordMode === 'intervals' && input.asOf))
   const errorFor = (field) => errors.find((item) => item.field === field)?.message
-  const scopePreview = useMemo(() => {
-    const candidate = calculateMedicalPeriod(prepareMedicalPeriodInput(input), { today })
-    return candidate.ok ? describeMedicalPeriodResult(candidate) : null
+  const { scopePreview, needsTenYearDate } = useMemo(() => {
+    const prepared = prepareMedicalPeriodInput(input)
+    const candidate = calculateMedicalPeriod(prepared, { today })
+    // Keep the promoted date field in place while entering or correcting its
+    // value; requirement detection does not depend on that value being valid.
+    const requirements = input.region === 'national' && input.tenYearDate
+      ? calculateMedicalPeriod({ ...prepared, tenYearDate: '' }, { today }) : candidate
+    return { scopePreview: candidate.ok ? describeMedicalPeriodResult(candidate) : null,
+      needsTenYearDate: describeMedicalInputGuidance(requirements).needsTenYearDate }
   }, [input, today])
 
   const change = (next) => {
@@ -102,7 +110,7 @@ export function MedicalCalculatorWorkspace() {
   const inputProps = (name, value, onChange, type = 'date') => ({
     name, id: fieldId(name), value, onChange: (event) => onChange(event.target.value),
     ...(type !== 'select' && type !== 'text' ? { type } : {}),
-    'aria-required': ['region', 'hireDate', 'totalWorkYears', 'summary.firstDate'].includes(name) || name === 'asOf' && (isShanghai || input.recordMode === 'summary') || name === 'summary.naturalDays' && !isShanghai || name === 'summary.workDays' && isShanghai || /^segments\.\d+\.(startDate|endDate)$/.test(name) || isShanghai && /^segments\.\d+\.workDays$/.test(name),
+    'aria-required': ['region', 'hireDate', 'totalWorkYears'].includes(name) || name === 'summary.firstDate' && !isShanghai || name === 'asOf' && (isShanghai || input.recordMode === 'summary') || name === 'summary.naturalDays' && !isShanghai || /^segments\.\d+\.(startDate|endDate)$/.test(name),
     'aria-invalid': Boolean(errorFor(name)),
     'aria-describedby': `${fieldId(name)}-help${errorFor(name) ? ` ${fieldId(name)}-error` : ''}`,
     ...(type === 'date' ? { min: '1900-01-01', max: name === 'tenYearDate' ? '2100-12-31' : today } : {})
@@ -116,27 +124,13 @@ export function MedicalCalculatorWorkspace() {
         parent = parent.parentElement
       }
       element.focus()
+      element.scrollIntoView({ block: 'center' })
     }
     else formRef.current?.scrollIntoView({ block: 'start' })
   }
   const calculate = (event) => {
     event.preventDefault()
-    const quotaOnly = event.nativeEvent.submitter?.dataset.purpose === 'quota-only'
     const next = calculateMedicalPeriod(prepareMedicalPeriodInput(input), { today })
-    if (isShanghai && !quotaOnly) {
-      const requiredErrors = []
-      const missing = (value) => value === undefined || value === null || String(value).trim() === ''
-      if (input.recordMode === 'summary' && !input.summary.firstDate) requiredErrors.push({ field: 'summary.firstDate', message: '核对已用与剩余医疗期，需要填写首个病休日；日期未知可先核对基础额度。' })
-      if (input.recordMode === 'summary' && missing(input.summary.workDays)) requiredErrors.push({ field: 'summary.workDays', message: '核对余额需要实际累计病休工作日，未知不能按0处理。' })
-      if (input.recordMode === 'intervals') input.segments.forEach((row, index) => {
-        if (missing(row.workDays)) requiredErrors.push({ field: `segments.${index}.workDays`, message: '核对余额需要每段实际病休工作日；考勤未知可先核对基础额度。' })
-      })
-      if (!input.historyComplete) requiredErrors.push({ field: 'historyComplete', message: '核对余额前，请确认已提供本单位期间的全部病休记录；资料未齐可先核对基础额度。' })
-      if (requiredErrors.length) {
-        if (next.ok) { next.ok = false; next.errors = requiredErrors }
-        else next.errors.push(...requiredErrors)
-      }
-    }
     setNotice('')
     setCopyText('')
     if (!next.ok) {
@@ -166,6 +160,7 @@ export function MedicalCalculatorWorkspace() {
     else resetRef.current?.showModal()
   }
   const edit = () => { setCollapsed(false); requestAnimationFrame(() => formRef.current?.elements.namedItem('region')?.focus()) }
+  const supplement = (field) => { setCollapsed(false); requestAnimationFrame(() => focusField(field)) }
   const copy = async () => {
     if (!result || dirty) return
     const version = revision.current
@@ -193,21 +188,22 @@ export function MedicalCalculatorWorkspace() {
             <fieldset className="mp-basic-fields"><legend>工作年限</legend><div className="mp-field-grid">
               <Field name="hireDate" label="本单位入职日期" help="填写本单位工作年限的起点。" error={errorFor('hireDate')} required><input {...inputProps('hireDate', input.hireDate, (value) => setField('hireDate', value))} /></Field>
               {input.region === 'national' && <Field name="totalWorkYears" label="累计工龄（最早病休开始日）" help={`按最早一段病休开始日填写，含以前单位工作年限${scopePreview ? `；参考起点${scopePreview.referenceDate || '待核对'}` : ''}。`} error={errorFor('totalWorkYears')} required><div className="mp-unit-input"><input {...inputProps('totalWorkYears', input.totalWorkYears, (value) => setField('totalWorkYears', value), 'number')} min="0" max="80" step="1" placeholder="已满年数" /><span>年</span></div></Field>}
+              {input.region === 'national' && needsTenYearDate && <Field name="tenYearDate" label="累计工龄满10年的日期" help="病休期间可能跨10年，核对余额需要具体日期；未知仍可统计已休天数。" error={errorFor('tenYearDate')} balanceNeeded><input {...inputProps('tenYearDate', input.tenYearDate, (value) => setField('tenYearDate', value))} /></Field>}
               {(isShanghai || input.recordMode === 'summary') && <Field name="asOf" label="计算截止日期" help="填写要统计到哪一天。" error={errorFor('asOf')} required><input {...inputProps('asOf', input.asOf, (value) => setField('asOf', value))} /></Field>}
             </div></fieldset>
             <fieldset className={`mp-record-fields${isShanghai && input.recordMode === 'summary' ? ' mp-record-summary' : ''}`}>
               <legend>病休记录</legend>
               {isShanghai && input.recordMode === 'summary' && <div className="mp-field-grid">
-                {isShanghai && input.recordMode === 'summary' && <Field name="summary.workDays" label="累计病休工作日" help="按本单位实际考勤累计，未知不要填0。" error={errorFor('summary.workDays')} required><div className="mp-unit-input"><input {...inputProps('summary.workDays', input.summary.workDays, (value) => setSummary('workDays', value), 'number')} min="0" step="0.01" placeholder="例如：20" /><span>天</span></div></Field>}
-              {isShanghai && input.recordMode === 'summary' && <Field name="summary.firstDate" label="本单位首次病休日期" help="核对首次病休时的年限；未知可先核对基础额度。" error={errorFor('summary.firstDate')} required><input {...inputProps('summary.firstDate', input.summary.firstDate, (value) => setSummary('firstDate', value))} /></Field>}
+                {isShanghai && input.recordMode === 'summary' && <Field name="summary.workDays" label="累计病休工作日" help="按本单位实际考勤累计，未知不要填0。" error={errorFor('summary.workDays')} balanceNeeded><div className="mp-unit-input"><input {...inputProps('summary.workDays', input.summary.workDays, (value) => setSummary('workDays', value), 'number')} min="0" step="0.01" placeholder="例如：20" /><span>天</span></div></Field>}
+              {isShanghai && input.recordMode === 'summary' && <Field name="summary.firstDate" label="本单位首次病休日期" help="核对首次病休时的年限；未知仍可统计已提供的工作日，暂不给余额。" error={errorFor('summary.firstDate')} balanceNeeded><input {...inputProps('summary.firstDate', input.summary.firstDate, (value) => setSummary('firstDate', value))} /></Field>}
               </div>}
-              {isShanghai && <div className="mp-record-heading"><span>{input.recordMode === 'summary' ? '需要逐段核对？' : '有考勤汇总量？'}</span><button type="button" className="mp-text-button" onClick={() => setField('recordMode', input.recordMode === 'summary' ? 'intervals' : 'summary')}>{input.recordMode === 'summary' ? '填写实际日期段' : '填写累计病休天数'}</button></div>}
+              {isShanghai && <div className="mp-record-heading"><span>{input.recordMode === 'summary' ? '需要逐段核对？' : '有考勤汇总量？'}</span><button type="button" className="mp-text-button" onClick={() => setField('recordMode', input.recordMode === 'summary' ? 'intervals' : 'summary')}>{input.recordMode === 'summary' ? '填写实际日期段' : '填写累计工作日'}</button></div>}
               {input.recordMode === 'intervals' ? <>
                 <div className="mp-choice mp-choice-secondary" role="group" aria-label="病休类型"><button type="button" aria-pressed={input.leaveType === 'continuous'} disabled={input.segments.length > 1} onClick={() => setField('leaveType', 'continuous')}>连续病休</button><button type="button" aria-pressed={input.leaveType === 'segmented'} onClick={() => setField('leaveType', 'segmented')}>非连续分段</button></div>
                 {input.segments.map((row, index) => <div className={`mp-segment${input.leaveType === 'continuous' ? ' mp-segment-single' : ''}`} key={index}>{input.leaveType === 'segmented' && <div className="mp-segment-heading"><strong>第{index + 1}段病休</strong>{input.segments.length > 1 && <button type="button" className="mp-text-button" aria-label={`移除第${index + 1}段病休`} onClick={() => change((previous) => ({ ...previous, segments: previous.segments.filter((_, rowIndex) => rowIndex !== index) }))}><Trash2 size={14} />移除此段</button>}</div>}<div className={`mp-field-grid${isShanghai ? ' mp-three-fields' : ''}`}>
                   <Field name={`segments.${index}.startDate`} label="开始日期" help="本段实际病休的第一天，包含当天。" error={errorFor(`segments.${index}.startDate`)} required><input {...inputProps(`segments.${index}.startDate`, row.startDate, (value) => setSegment(index, 'startDate', value))} /></Field>
                   <Field name={`segments.${index}.endDate`} label="结束日期" help="本段实际病休的最后一天。" error={errorFor(`segments.${index}.endDate`)} required><input {...inputProps(`segments.${index}.endDate`, row.endDate, (value) => setSegment(index, 'endDate', value))} /></Field>
-                  {isShanghai && <Field name={`segments.${index}.workDays`} label="实际病休工作日" help="按考勤填写；核对余额必填，未知可先核对基础额度。" error={errorFor(`segments.${index}.workDays`)} required><div className="mp-unit-input"><input {...inputProps(`segments.${index}.workDays`, row.workDays, (value) => setSegment(index, 'workDays', value), 'number')} min="0" step="0.01" placeholder="考勤天数" /><span>天</span></div></Field>}
+                  {isShanghai && <Field name={`segments.${index}.workDays`} label="实际病休工作日" help="按考勤填写；未知保留自然日统计，暂不给工作日余额。" error={errorFor(`segments.${index}.workDays`)} balanceNeeded><div className="mp-unit-input"><input {...inputProps(`segments.${index}.workDays`, row.workDays, (value) => setSegment(index, 'workDays', value), 'number')} min="0" step="0.01" placeholder="考勤天数" /><span>天</span></div></Field>}
                 </div></div>)}
                 {input.leaveType === 'segmented' && <button type="button" className="mp-add-button" onClick={() => change((previous) => ({ ...previous, segments: [...previous.segments, emptySegment()] }))}><Plus size={16} />添加一段病休</button>}
               </> : !isShanghai && <><p className="mp-field-help">仅记录汇总量，不补成连续病休。</p><div className="mp-field-grid">
@@ -215,28 +211,29 @@ export function MedicalCalculatorWorkspace() {
                 <Field name="summary.naturalDays" label="累计病休自然日" help="填写原始资料中的实际累计量，不包括中间未病休的日期。" error={errorFor('summary.naturalDays')} required><div className="mp-unit-input"><input {...inputProps('summary.naturalDays', input.summary.naturalDays, (value) => setSummary('naturalDays', value), 'number')} min="1" step="1" /><span>天</span></div></Field>
               </div></>}
               {errorFor('segments') && <p className="mp-field-error">{errorFor('segments')}</p>}
-              <label className="mp-check"><input type="checkbox" name="historyComplete" checked={input.historyComplete} aria-invalid={Boolean(errorFor('historyComplete'))} aria-describedby="mp-history-complete-help" onChange={(event) => setField('historyComplete', event.target.checked)} /><span>{isShanghai ? '已包含本单位期间的全部病休工作日' : '已录入核算范围内的全部病休'}<small className="mp-sr-only" id="mp-history-complete-help">{isShanghai ? '累计工作日应包含以前病休；资料未齐可先核对基础额度。' : '如果此前还有影响本次核算的病休，请补充日期；不确定是否齐全时先不勾选。'}</small></span></label>
+              <label className="mp-check"><input type="checkbox" name="historyComplete" checked={input.historyComplete} aria-invalid={Boolean(errorFor('historyComplete'))} aria-describedby="mp-history-complete-help" onChange={(event) => setField('historyComplete', event.target.checked)} /><span>{isShanghai ? '已包含本单位期间的全部病休工作日' : '已录入核算范围内的全部病休'}<small className="mp-sr-only" id="mp-history-complete-help">{isShanghai ? '累计工作日应包含以前病休；未勾选时仍统计已录入量，不给余额。' : '如果此前还有影响本次核算的病休，请补充日期；不确定是否齐全时先不勾选。'}</small></span></label>
               {errorFor('historyComplete') && <p className="mp-field-error">{errorFor('historyComplete')}</p>}
             </fieldset>
-            <details className="mp-supplementary"><summary>补充核对信息<span>{hasSupplementary ? '已补充' : '选填'}</span></summary><div>
+            <details className="mp-supplementary"><summary>补充核对信息<span>{hasSupplementary ? '已补充' : ''}</span></summary><div>
               <div className="mp-field-grid">
                 {input.region === 'national' && <Field name="locality" label="具体省市（备注）" help="仅作为地区备注，不会自动切换地方计算规则。"><input {...inputProps('locality', input.locality, (value) => setField('locality', value), 'text')} maxLength={100} placeholder="例如：浙江省杭州市" /></Field>}
                 {!isShanghai && input.recordMode === 'intervals' && <Field name="asOf" label="病休统计截止日" help="默认取最晚一段结束日，需要其他统计日期再填写。" error={errorFor('asOf')}><input {...inputProps('asOf', input.asOf, (value) => setField('asOf', value))} /></Field>}
-                {input.region === 'national' && <Field name="tenYearDate" label="累计工龄满10年的日期" help="用于核对病休期间跨档，未知可留空。" error={errorFor('tenYearDate')}><input {...inputProps('tenYearDate', input.tenYearDate, (value) => setField('tenYearDate', value))} /></Field>}
+                {input.region === 'national' && !needsTenYearDate && <Field name="tenYearDate" label="累计工龄满10年的日期" help="用于核对病休期间跨档，未知可留空。" error={errorFor('tenYearDate')}><input {...inputProps('tenYearDate', input.tenYearDate, (value) => setField('tenYearDate', value))} /></Field>}
                 {isShanghai && input.recordMode === 'summary' && <>
                   <Field name="summary.naturalDays" label="累计病休自然日" help="有自然日汇总资料再填，不用工作日倒推。" error={errorFor('summary.naturalDays')}><div className="mp-unit-input"><input {...inputProps('summary.naturalDays', input.summary.naturalDays, (value) => setSummary('naturalDays', value), 'number')} min="1" step="1" /><span>天</span></div></Field>
                 </>}
               </div>
-              <details className="mp-exceptions"><summary>特殊情形与更长约定</summary><div><label className="mp-check"><input type="checkbox" name="specialCircumstances" checked={input.specialCircumstances} onChange={(event) => setField('specialCircumstances', event.target.checked)} /><span>涉及特殊疾病、劳动能力鉴定、延长审批或更长约定<small>只展示基础参考与记录统计，延长期限交人工核对。</small></span></label><Field name="specialNote" label="补充说明" help="记录待核对事项，无需填写姓名、联系方式或诊断隐私。"><textarea {...inputProps('specialNote', input.specialNote, (value) => setField('specialNote', value), 'text')} rows={2} maxLength={1000} /></Field><p className="mp-field-help">因工负伤、职业病涉及其他规则，请另行核对。</p></div></details>
+              <details className="mp-exceptions"><summary>特殊情况与延长约定</summary><div><label className="mp-check"><input type="checkbox" name="specialCircumstances" checked={input.specialCircumstances} onChange={(event) => setField('specialCircumstances', event.target.checked)} /><span>涉及特殊疾病、劳动能力鉴定、延长审批或更长约定<small>只展示基础参考与记录统计，延长期限交人工核对。</small></span></label><p className="mp-field-help">因工负伤、职业病涉及其他规则，请另行核对。</p></div></details>
+              <Field name="specialNote" label="备注（不影响计算）" help="仅记录备注，不改变计算；特殊情况需单独勾选，无需填写姓名、联系方式或诊断隐私。"><textarea {...inputProps('specialNote', input.specialNote, (value) => setField('specialNote', value), 'text')} rows={2} maxLength={1000} /></Field>
               {input.region === 'national' && <div className="mp-choice" role="group" aria-label="记录资料完整程度"><button type="button" aria-pressed={input.recordMode === 'intervals'} onClick={() => setField('recordMode', 'intervals')}>有实际日期段</button><button type="button" aria-pressed={input.recordMode === 'summary'} onClick={() => setField('recordMode', 'summary')}>只有首日与累计量</button></div>}
             </div></details>
-            <details className="mp-form-guide"><summary>填写说明</summary><p>{regionNotes[input.region] || '选择员工劳动关系适用地区，填写本单位入职日期与病休记录。'}</p>{scopePreview && <p>{scopePreview.scope}</p>}<p>累计工龄包含以前单位工作年限，按最早病休开始日已满年数填写。截止日默认取最晚病休结束日，可在补充信息中另填。</p><p>医疗期是停工治病期间的劳动合同保护期限。全国剩余量暂按30天/月参考；上海按20.67工作日/月折算。实际病休以医疗证明为准。</p></details>
+            <details className="mp-form-guide"><summary>填写说明</summary><p>{regionNotes[input.region] || '选择员工劳动关系适用地区，填写本单位入职日期与病休记录。'}</p>{scopePreview && <p>{scopePreview.scope}</p>}{isShanghai ? <><p>累计工作日来自本单位考勤，包括此前病休。首次病休日期和统计截止日用于核对年限与记录范围，不表示员工在这期间连续病休。</p><p>填写实际日期段时，每段工作日仍需按考勤提供；不能从自然日或仅扣除周末推算。余额按20.67工作日/月折算。</p></> : input.region === 'national' ? <><p>累计工龄包含以前单位工作年限，按最早病休开始日已满年数填写，不能用今天的工龄代替。</p><p>{input.recordMode === 'intervals' ? '统计截止日默认取最晚病休结束日，需要其他日期可在补充信息中填写。' : '汇总录入需填写统计截止日；没有实际日期段时，不能判断病休所属累计周期。'}全国剩余量暂按30天/月参考。</p></> : null}<p>记录完整性未确认时只展示已录入量，不给余额。医疗期是停工治病期间的劳动合同保护期限，实际病休以医疗证明为准。</p></details>
             {errors.length > 0 && <div className="mp-error-banner" role="alert"><strong>请核对以下条件，输入已保留：</strong><ul>{errors.map((item, index) => <li key={`${item.field}-${index}`}><button type="button" onClick={() => focusField(item.field)}>{item.message}</button></li>)}</ul></div>}
-            <footer className="mp-form-actions"><button type="button" className="mp-text-button" onClick={requestReset}>清空条件</button><span>{dirty ? '条件已修改，请重新计算' : ''}</span>{isShanghai && <button type="submit" className="mp-text-button" data-purpose="quota-only">仅核对基础额度</button>}<button type="submit" className="mp-primary"><Calculator size={17} />{dirty ? '重新计算' : '开始测算'}<ArrowRight size={16} /></button></footer>
+            <footer className="mp-form-actions"><button type="button" className="mp-text-button" onClick={requestReset}>清空条件</button><span>{dirty ? '条件已修改，请重新计算' : ''}</span><button type="submit" className="mp-primary"><Calculator size={17} />{dirty ? '重新计算' : '开始测算'}<ArrowRight size={16} /></button></footer>
           </form>
         </section>
         {notice && <p className="mp-notice" role="status"><Check size={16} />{notice}</p>}
-        {result && <div ref={resultRef} tabIndex={-1} className="mp-result-container"><Result key={revision.current} result={result} dirty={dirty} onEdit={edit} onCopy={copy} copyText={copyText} /></div>}
+        {result && <div ref={resultRef} tabIndex={-1} className="mp-result-container"><Result key={revision.current} result={result} dirty={dirty} onEdit={edit} onCopy={copy} onSupplement={supplement} copyText={copyText} /></div>}
       </div>
     </main>
     <dialog ref={resetRef} className="mp-reset-dialog" aria-labelledby="mp-reset-title"><div><h2 id="mp-reset-title">清空当前测算条件？</h2><button type="button" className="icon-button" aria-label="关闭清空确认" onClick={() => resetRef.current?.close()}><X size={18} /></button></div><p>当前填写的条件和测算结果将清空。</p><footer><button type="button" className="compact-button" onClick={() => resetRef.current?.close()}>取消</button><button type="button" className="mp-primary" onClick={reset}>清空条件</button></footer></dialog>
