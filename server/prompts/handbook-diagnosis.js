@@ -18,15 +18,19 @@ relatedSections仅填原文明确引用或语义上需要联系的章节标题�
 
 export const REVIEW_PROMPT = `${HANDBOOK_RULES}
 检查当前正文块的制度内容、定义和条件、执行流程、奖惩与解除、信息处理等问题。只输出需要处理的事项。背景未知但有疑点的事项status为pending。
+问题至少引用一处当前chunk的原文；context仅帮助理解当前条款，不能用两处context替代当前chunk审查。当前块只是封面或目录、没有具体条款时，findings应为空。
 不要因为当前块没有其他章节就声称整本手册缺项。程序事项另有清单，此处仅分析原文中实际陈述的程序条款。
-返回{complete:true,findings:[{kind:"clause",topic,title,level:"high|medium|low",status:"risk|pending",explanation,conditions:[],evidence:[{chunkId,quote}],authorities:[{title,article,reason}],recommendation,suggestedClause,relatedChanges:[]}],questions:[]}。
+返回{complete:true,findings:[{kind:"clause|conflict",topic,title,level:"high|medium|low",status:"risk|pending",explanation,conditions:[],evidence:[{chunkId,quote}],authorities:[{title,article,reason}],recommendation,suggestedClause,relatedChanges:[]}],questions:[]}。
+若当前块与提供的关联原文存在矛盾，kind必须为conflict并同时引用两个不同块，不把跨章节矛盾塞进单处clause问题。条款合法性和执行条件没有核实依据时，即使风险级别较高，status仍为pending。relatedChanges用可读章节名称，不输出内部标识。
 同一条款的相关理由可合并。没有可靠引用的条款问题不能伪装成已确认风险。`
 
 export const RELATION_PROMPT = `${HANDBOOK_RULES}
 核对提供的两处原文是否存在定义、条件、处罚或执行流程冲突，以及修改一处是否影响另一处。
 只有检索关联不证明有冲突；重复内容或不同适用对象不能直接认定矛盾。回看两处原文及各自条件，避免重复已有问题。
+仅当已有kind为conflict的问题已经准确覆盖同一矛盾并引用这两个块时，才省略重复冲突。普通clause问题提到关联不代表冲突核对已完成；仍须明确kind为conflict并给出两处引文。
 返回与逐块检查相同的{complete:true,findings:[],questions:[]}格式。
-新增冲突问题kind为conflict，evidence必须同时引用提供的两个不同块。建议指出关联修改，不能引用未提供内容。`
+新增冲突问题kind为conflict，evidence必须同时引用提供的两个不同块。建议指出关联修改，不能引用未提供内容。
+本阶段还须归并已有冲突：同一矛盾有多个标题时，返回一个保留全部条件和改法的conflict，并在supersedesFindingIds数组列出被归并的已有finding.id。已有clause问题或同一对正文中的不同矛盾不得合并。仅使用当前提供的已有ID，不虚构；程序会核验引用范围。`
 
 export const FOLLOWUP_PROMPT = `${HANDBOOK_RULES}
 结合本次报告和检索出的上传原文回答追问。报告只能帮助导航，不能代替原文。引用的chunkId必须来自当前提供块。
