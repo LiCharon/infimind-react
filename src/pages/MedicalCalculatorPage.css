@@ -5,34 +5,36 @@
 .medical-calculator button:disabled { cursor: not-allowed; opacity: .5; }
 .medical-calculator :focus-visible, .mp-reset-dialog :focus-visible { outline: 2px solid var(--fafee-brand, #315e9b); outline-offset: 3px; }
 .medical-calculator { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.medical-calculator .mp-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: min(820px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 0; }
+.medical-calculator .mp-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: min(900px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 20px; }
 .medical-calculator .mp-page-heading h1 { margin: 0; }
 .medical-calculator .compact-button, .mp-reset-dialog .compact-button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--mp-line, var(--fafee-border, #cbd5e1)); border-radius: 8px; background: var(--fafee-surface, #fff); color: var(--mp-text, var(--fafee-ink, #111827)); font: inherit; font-size: 13px; }
 .mp-reset-dialog .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; color: inherit; background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
-.medical-calculator .mp-page { width: min(820px, calc(100% - 64px)); margin: 0 auto; padding: 28px 0 48px; }
+.medical-calculator .mp-page { width: min(900px, calc(100% - 48px)); margin: 0 auto; padding: 0 0 48px; }
 .medical-calculator .mp-welcome { margin-bottom: 20px; }
 .medical-calculator .mp-eyebrow { display: block; margin-bottom: 8px; color: var(--mp-muted); font-size: 12px; }
-.medical-calculator h1 { margin: 0 0 10px; font-size: 25px; font-weight: 650; line-height: 1.4; letter-spacing: -.5px; }
+.medical-calculator h1 { margin: 0 0 10px; font-size: 24px; font-weight: 650; line-height: 1.6; }
 .medical-calculator .mp-welcome > p { margin: 0; color: var(--mp-muted); font-size: 14px; line-height: 1.7; }
 .medical-calculator .mp-intro { margin: -8px 0 20px; color: var(--fafee-ink, #334155); font-size: 13px; line-height: 1.8; }
-.medical-calculator .mp-parameters, .medical-calculator .mp-result { overflow: hidden; border: 1px solid var(--mp-line); border-radius: 14px; background: var(--fafee-surface, #fff); }
-.medical-calculator .mp-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; border-bottom: 1px solid var(--mp-line); background: var(--fafee-surface-soft, #f1f5f9); }
-.medical-calculator h2 { margin: 0; font-size: 18px; line-height: 1.5; }
+.medical-calculator .mp-parameters { background: var(--fafee-surface, #fff); }
+.medical-calculator .mp-result { overflow: hidden; border: 1px solid var(--mp-line); border-radius: 8px; background: var(--fafee-surface, #fff); }
+.medical-calculator .mp-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; border-bottom: 1px solid var(--mp-line); background: var(--fafee-surface, #fff); }
+.medical-calculator .mp-parameters > .mp-panel-header { padding: 0 0 16px; border: 0; }
+.medical-calculator h2 { margin: 0; font-size: 17px; font-weight: 650; line-height: 1.6; }
 .medical-calculator .mp-panel-header p { margin: 5px 0 0; color: var(--mp-muted); font-size: 12px; line-height: 1.6; }
 .medical-calculator form[hidden] { display: none; }
-.medical-calculator fieldset { min-width: 0; margin: 0; padding: 20px 24px; border: 0; border-bottom: 1px solid var(--mp-line); }
-.medical-calculator legend { float: left; width: 100%; margin: 0 0 16px; padding: 0 0 0 10px; border-left: 3px solid var(--fafee-brand, #315e9b); font-size: 14px; font-weight: 650; line-height: 1.3; }
+.medical-calculator fieldset { min-width: 0; margin: 0 0 26px; padding: 20px 0 0; border: 0; border-top: 1px solid var(--fafee-line, #e4e5e8); }
+.medical-calculator legend { float: left; width: 100%; margin: 0 0 16px; padding: 0; font-size: 17px; font-weight: 650; line-height: 1.6; }
 .medical-calculator legend + * { clear: both; }
-.medical-calculator .mp-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.medical-calculator .mp-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; }
 .medical-calculator .mp-field { min-width: 0; }
-.medical-calculator .mp-field > label { display: block; margin: 0 0 8px; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.medical-calculator .mp-field > label { display: block; margin: 0 0 8px; font-size: 14px; font-weight: 500; line-height: 1.5; }
 .medical-calculator .mp-required { color: #cf622b; }
 .medical-calculator .mp-optional { margin-left: 7px; color: var(--mp-muted); font-size: 11px; }
-.medical-calculator .mp-field input:not([type='checkbox']), .medical-calculator .mp-field select, .medical-calculator .mp-field textarea { display: block; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--fafee-ink-muted, #64748b); border-radius: 8px; color: var(--mp-text); background: var(--fafee-surface, #fff); font-size: 14px; }
-.medical-calculator .mp-field input::placeholder, .medical-calculator .mp-field textarea::placeholder { color: var(--fafee-ink-muted, #64748b); opacity: 1; }
-.medical-calculator .mp-field input:focus, .medical-calculator .mp-field select:focus, .medical-calculator .mp-field textarea:focus { background: var(--fafee-surface, #fff); border-color: var(--fafee-brand, #315e9b); }
-.medical-calculator .mp-region-fields { background: var(--fafee-surface-soft, #f4f7fb); }
-.medical-calculator .mp-region-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: center; }
+.medical-calculator .mp-field input:not([type='checkbox']), .medical-calculator .mp-field select, .medical-calculator .mp-field textarea { display: block; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--fafee-border, #d9dce2); border-radius: 8px; color: var(--mp-text); background: var(--fafee-surface-soft, #f8f9fb); font-size: 14px; line-height: 20px; }
+.medical-calculator .mp-field input::placeholder, .medical-calculator .mp-field textarea::placeholder { color: var(--fafee-ink-subtle, #878b94); opacity: 1; }
+.medical-calculator .mp-field input:focus, .medical-calculator .mp-field select:focus, .medical-calculator .mp-field textarea:focus { background: var(--fafee-surface, #fff); border-color: var(--fafee-brand, #fd7002); box-shadow: 0 0 0 3px rgb(253 112 2 / 9%); }
+.medical-calculator .mp-region-fields { background: transparent; }
+.medical-calculator .mp-region-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; align-items: center; }
 .medical-calculator .mp-region-hint { margin: 0; color: var(--fafee-ink-muted, #52647d); font-size: 12px; line-height: 1.8; }
 .medical-calculator .mp-field textarea { resize: vertical; }
 .medical-calculator .mp-field input[aria-invalid='true'], .medical-calculator .mp-field select[aria-invalid='true'] { border-color: var(--mp-error); }
@@ -42,18 +44,17 @@
 .medical-calculator .mp-unit-input input { padding-right: 35px !important; }
 .medical-calculator .mp-unit-input > span { position: absolute; right: 12px; top: 13px; color: var(--mp-muted); font-size: 12px; pointer-events: none; }
 .medical-calculator .mp-rule-note { margin: 16px 0 0; padding: 11px 13px; border-radius: 7px; background: var(--mp-soft); color: var(--fafee-ink-muted, #61656c); font-size: 12px; line-height: 1.75; }
-.medical-calculator .mp-choice { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-radius: 9px; background: var(--fafee-fill, #f1f2f4); }
-.medical-calculator .mp-choice button { padding: 8px 12px; border: 0; border-radius: 6px; color: var(--fafee-ink, #334155); background: transparent; font-size: 13px; }
-.medical-calculator .mp-choice button[aria-pressed='true'] { color: #fff; background: var(--fafee-brand-ink, #1d4ed8); font-weight: 600; }
-.medical-calculator .mp-choice-secondary { display: flex; width: fit-content; margin-top: 14px; background: transparent; padding: 0; border: 1px solid var(--mp-line); }
-.medical-calculator .mp-choice-secondary button[aria-pressed='true'] { background: var(--fafee-brand-ink, #1d4ed8); color: var(--fafee-surface, #fff); font-weight: 600; }
+.medical-calculator .mp-choice { display: inline-flex; flex-wrap: wrap; gap: 8px; padding: 0; background: transparent; }
+.medical-calculator .mp-choice button { min-height: 44px; padding: 10px 16px; border: 1px solid var(--fafee-border, #d9dce2); border-radius: 8px; color: var(--fafee-ink-muted, #68686d); background: var(--fafee-surface, #fff); font-size: 14px; }
+.medical-calculator .mp-choice button[aria-pressed='true'] { color: var(--fafee-brand-ink, #b95000); border-color: var(--fafee-brand, #fd7002); background: var(--fafee-brand-soft, #fff4ea); }
+.medical-calculator .mp-choice-secondary { display: flex; width: fit-content; margin-top: 14px; }
 .medical-calculator .mp-segment { margin-top: 18px; padding: 16px; border: 1px solid var(--mp-line); border-radius: 10px; }
 .medical-calculator .mp-segment-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; font-size: 12px; }
 .medical-calculator .mp-segment-single { border: 0; padding: 0; border-radius: 0; }
 .medical-calculator .mp-record-fields .mp-choice-secondary { margin-top: 0; }
 .medical-calculator .mp-record-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--mp-muted); font-size: 12px; }
 .medical-calculator .mp-record-summary { padding-top: 12px; padding-bottom: 12px; }
-.medical-calculator .mp-supplementary { padding: 16px 24px; font-size: 13px; }
+.medical-calculator .mp-supplementary { padding: 16px 0; border-top: 1px solid var(--fafee-line, #e4e5e8); font-size: 13px; }
 .medical-calculator .mp-supplementary > summary > span { margin-left: 10px; color: var(--mp-muted); font-size: 11px; }
 .medical-calculator .mp-supplementary > div { margin-top: 18px; }
 .medical-calculator .mp-supplementary .mp-exceptions { padding: 18px 0; }
@@ -68,12 +69,13 @@
 .medical-calculator summary { cursor: pointer; line-height: 1.6; }
 .medical-calculator .mp-exceptions > div { margin-top: 14px; }
 .medical-calculator .mp-exceptions .mp-field { margin-top: 14px; }
-.medical-calculator .mp-form-actions { display: flex; align-items: center; gap: 16px; padding: 18px 24px; border-top: 1px solid var(--mp-line); }
+.medical-calculator .mp-form-actions { display: flex; align-items: center; gap: 16px; padding: 20px 0 0; border-top: 1px solid var(--fafee-line, #e4e5e8); }
 .medical-calculator .mp-form-actions > span { flex: 1; text-align: right; color: var(--mp-muted); font-size: 11px; }
-.medical-calculator .mp-primary, .mp-reset-dialog .mp-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 16px; color: #fff; background: var(--fafee-brand-ink, #202124); border: 1px solid var(--fafee-brand-ink, #202124); border-radius: 8px; font-size: 13px; cursor: pointer; }
+.medical-calculator .mp-primary, .mp-reset-dialog .mp-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 11px 22px; color: #fff; background: var(--fafee-brand, #fd7002); border: 1px solid var(--fafee-brand, #fd7002); border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .medical-calculator .mp-text-button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 0; border: 0; color: var(--fafee-brand-ink, #1d4ed8); background: transparent; font-size: 13px; font-weight: 500; }
-.medical-calculator .mp-condition-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 18px 24px; color: var(--fafee-ink, #334155); font-size: 13px; line-height: 1.6; }
-.medical-calculator .mp-error-banner { margin: 0 24px 16px; padding: 14px; color: var(--mp-error); background: #fff5f3; border-radius: 8px; font-size: 12px; }
+.medical-calculator .mp-primary:hover, .mp-reset-dialog .mp-primary:hover { background: var(--fafee-brand-hover, #e86600); }
+.medical-calculator .mp-condition-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 16px 0; color: var(--fafee-ink, #334155); font-size: 13px; line-height: 1.6; }
+.medical-calculator .mp-error-banner { margin: 0 0 16px; padding: 14px; color: var(--mp-error); background: #fff5f3; border-radius: 8px; font-size: 12px; }
 .medical-calculator .mp-error-banner ul { padding-left: 18px; margin: 8px 0 0; }
 .medical-calculator .mp-error-banner button { padding: 3px 0; border: 0; background: transparent; color: inherit; text-align: left; line-height: 1.6; }
 .medical-calculator .mp-result-container { margin-top: 24px; scroll-margin-top: 20px; }
@@ -147,21 +149,18 @@
 .mp-reset-dialog h2 { margin: 0; font-size: 17px; }
 .mp-reset-dialog p { margin: 16px 0 24px; color: var(--fafee-ink-muted, #787b82); font-size: 13px; line-height: 1.8; }
 .mp-reset-dialog footer { display: flex; justify-content: flex-end; gap: 10px; }
-@media (max-width: 1100px) { .medical-calculator .mp-page { width: calc(100% - 40px); } .medical-calculator .mp-three-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .medical-calculator .mp-three-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) {
-  .medical-calculator .mp-page { width: calc(100% - 28px); padding-top: 24px; }
   .medical-calculator .chat-title strong { font-size: 14px; }
   .medical-calculator .chat-title small { font-size: 10px; }
   .medical-calculator .chat-header { grid-template-columns: 40px 1fr 64px; padding: 0 12px; }
-  .medical-calculator h1 { font-size: 21px; }
   .medical-calculator .mp-welcome > p { font-size: 12px; }
-  .medical-calculator .mp-panel-header, .medical-calculator fieldset, .medical-calculator .mp-result-body, .medical-calculator .mp-condition-summary { padding: 18px 16px; }
+  .medical-calculator .mp-result > .mp-panel-header, .medical-calculator .mp-result-body { padding: 18px 16px; }
   .medical-calculator .mp-field-grid, .medical-calculator .mp-three-fields, .medical-calculator .mp-region-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .medical-calculator .mp-segment { padding: 13px; }
   .medical-calculator .mp-exceptions { padding: 16px; }
-  .medical-calculator .mp-supplementary { padding: 16px; }
   .medical-calculator .mp-segment-single { padding: 0; }
-  .medical-calculator .mp-form-actions { flex-wrap: wrap; padding: 16px; gap: 12px; }
+  .medical-calculator .mp-form-actions { flex-wrap: wrap; gap: 12px; }
   .medical-calculator .mp-form-actions > span { display: none; }
   .medical-calculator .mp-form-actions .mp-primary { margin-left: auto; }
   .medical-calculator .mp-result > .mp-panel-header { align-items: flex-start; flex-direction: column; gap: 12px; }
@@ -174,12 +173,11 @@
   .medical-calculator .mp-segment-values dd { margin: 0; text-align: right; }
   .medical-calculator .mp-segment-result h4 > span { display: block; margin-left: 0; }
   .medical-calculator .mp-stale-message { padding: 12px 16px; }
-  .medical-calculator .mp-error-banner { margin: 0 16px 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .medical-calculator *, .medical-calculator *::before, .medical-calculator *::after { scroll-behavior: auto; transition: none; animation: none; } }
 .medical-calculator .mp-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .medical-calculator .mp-region-grid { grid-template-columns: minmax(0, 1fr); }
-.medical-calculator .mp-form-guide { padding: 16px 24px; border-top: 1px solid var(--mp-line); }
+.medical-calculator .mp-form-guide { padding: 16px 0; border-top: 1px solid var(--fafee-line, #e4e5e8); }
 .medical-calculator .mp-result-guide { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--mp-line); }
 .medical-calculator .mp-form-guide, .medical-calculator .mp-result-guide { font-size: 13px; line-height: 1.8; color: var(--fafee-ink, #334155); }
 .medical-calculator summary { cursor: pointer; font-weight: 600; }
@@ -195,12 +193,11 @@
 @media (max-width: 760px) {
   .medical-calculator .mp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .medical-calculator .mp-balance { grid-column: 1 / -1; }
-  .medical-calculator .mp-form-guide { padding: 16px; }
   .medical-calculator .header-tools .mp-text-button { font-size: 12px; }
   .medical-calculator .mp-segment-values { gap: 8px; }
 }
 
-@media (max-width: 600px) { .medical-calculator .mp-page-heading, .medical-calculator .mp-page { width: calc(100% - 32px); } .medical-calculator .mp-page-heading h1 { font-size: 21px; } }
+@media (max-width: 600px) { .medical-calculator .mp-page-heading, .medical-calculator .mp-page { width: calc(100% - 32px); } .medical-calculator .mp-page-heading { padding-top: 20px; } .medical-calculator .mp-page-heading h1 { font-size: 21px; } }
 
 .app-workspace[data-theme="dark"] .medical-calculator { --mp-error: #ffa99b; }
 .app-workspace[data-theme="dark"] :is(.medical-calculator .mp-error-banner) { color: #ffa99b; background: #3b2526; border-color: #74413d; }

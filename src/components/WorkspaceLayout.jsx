@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Calculator, FileCheck2, FilePenLine, FileSearch, Gavel, Home, LogOut, MessageCircle, PanelLeft, Settings2, UserRound, X } from 'lucide-react'
+import { CalendarHeart, FileCheck2, FilePenLine, FileSearch, Gavel, HandCoins, Home, LogOut, MessageCircle, PanelLeft, Settings2, UserRound, X } from 'lucide-react'
 import { useAuth } from './AuthProvider'
 import { WorkspaceContext } from './WorkspaceContext'
 import WorkspaceConversationMenu from './WorkspaceConversationMenu'
@@ -19,8 +19,8 @@ const tools = [
   { label: '商业合同起草', icon: FilePenLine, path: '/contract-draft', aliases: ['/tools/contract-draft'] },
   { label: '劳动合同分析', icon: FileCheck2, path: '/tools/labor-contract', aliases: [] },
   { label: '劳动仲裁答辩', icon: Gavel, path: '/tools/arbitration', aliases: [] },
-  { label: '医疗期计算器', icon: Calculator, path: '/tools/medical-calculator', aliases: [], defaultPinned: false, formOnly: true },
-  { label: '养老保险测算', icon: Calculator, path: '/tools/pension-calc1', aliases: ['/tools/pension-calc2'], defaultPinned: false, formOnly: true }
+  { label: '医疗期计算器', icon: CalendarHeart, path: '/tools/medical-calculator', aliases: [], defaultPinned: false, formOnly: true },
+  { label: '养老保险测算', icon: HandCoins, path: '/tools/pension-calc1', aliases: ['/tools/pension-calc2'], defaultPinned: false, formOnly: true }
 ]
 
 const readPinnedPaths = (key) => {
