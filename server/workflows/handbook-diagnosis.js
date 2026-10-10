@@ -46,18 +46,31 @@ export function normalizeHandbookFindings(raw, chunks, laws = []) {
       evidence: evidence.map((item) => [item.chunkId, item.quote.replace(/\s/g, '')]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) }
     return { id: `finding:${fingerprint(identity).slice(0, 20)}`, kind: identity.kind, topic: identity.topic || '制度内容',
       title: string(finding.title), level: ['high', 'medium', 'low'].includes(finding.level) ? finding.level : 'medium',
-      status: !located || !validConflict || needsLegalVerification || finding.status === 'pending' ? 'pending' : 'risk',
+      status: !located || !validConflict || !isConflict || needsLegalVerification || finding.status === 'pending' ? 'pending' : 'risk',
       explanation: string(finding.explanation), conditions: strings(finding.conditions), evidence, authorities,
       locationStatus: located && validConflict ? 'found' : 'unverified',
       recommendation: string(finding.recommendation), suggestedClause: located && validConflict ? string(finding.suggestedClause) : '',
-      relatedChanges: strings(finding.relatedChanges),
-      verificationNote: !located || !validConflict ? '原文引用未唯一核对成功，暂不发布为已定位问题或修订条款。' : needsLegalVerification ? '法律依据及适用性待核实。' : '' }
+      relatedChanges: strings(finding.relatedChanges), supersedesFindingIds: strings(finding.supersedesFindingIds),
+      verificationNote: !located || !validConflict ? '原文引用未唯一核对成功，暂不发布为已定位问题或修订条款。' : needsLegalVerification || !isConflict ? '条款判断及执行条件待复核；具体法律依据尚未核实。' : '' }
   })
 }
 
-function mergeFindings(existing, incoming) {
+export function mergeHandbookFindings(existing, incoming, allowedReplacements = []) {
   const result = new Map(existing.map((item) => [item.id, item]))
-  for (const item of incoming) {
+  const allowed = new Set(allowedReplacements)
+  const sources = (finding) => unique(finding.evidence.map((item) => item.chunkId)).sort().join('\n')
+  for (const { supersedesFindingIds = [], ...incomingItem } of incoming) {
+    let item = incomingItem
+    for (const id of supersedesFindingIds) {
+      const replaced = result.get(id)
+      if (!allowed.has(id) || !replaced || replaced.kind !== 'conflict' || item.kind !== 'conflict'
+        || replaced.locationStatus !== 'found' || item.locationStatus !== 'found' || sources(replaced) !== sources(item)) continue
+      item = { ...item, conditions: unique([...replaced.conditions, ...item.conditions]),
+        relatedChanges: unique([...replaced.relatedChanges, ...item.relatedChanges]),
+        authorities: [...new Map([...replaced.authorities, ...item.authorities].map((authority) => [fingerprint(authority), authority])).values()],
+        status: replaced.status === 'pending' || item.status === 'pending' ? 'pending' : 'risk' }
+      result.delete(id)
+    }
     const previous = result.get(item.id)
     result.set(item.id, previous ? { ...previous, conditions: unique([...previous.conditions, ...item.conditions]),
       relatedChanges: unique([...previous.relatedChanges, ...item.relatedChanges]),
@@ -177,7 +190,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   const signature = fingerprint({ documents: parsed.documents, focus: input.focus || '', versions: result.referenceVersions, workflow: 'handbook-diagnosis-v1' })
   const unit = async (key, prompt, payload, type) => {
     active()
-    const unitSignature = fingerprint([signature, payload, type])
+    const unitSignature = fingerprint([signature, prompt, payload, type])
     const cached = saved(key)
     if (cached?.signature === unitSignature && cached.output?.complete === true) return cached.output
     const message = JSON.stringify(redactor.maskDeep(payload))
@@ -264,7 +277,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
     const context = structure.chunks.filter((item) => unique(relatedChunks).slice(0, 2).includes(item.id))
     const output = await unit(`handbook-review:${fingerprint(chunk.id).slice(0, 20)}`, REVIEW_PROMPT, { chunk, context, globalIndex: classifications.map((item) => ({ chunkId: item.chunkId, summary: item.summary, background: item.background })),
       lawRecords: laws, referenceMaterials: retrieveHandbookReferences(chunk, references.documents || []), focus: input.focus || '' }, 'review')
-    result.findings = mergeFindings(result.findings, normalizeHandbookFindings(output.findings, [chunk, ...context], laws))
+    result.findings = mergeHandbookFindings(result.findings, normalizeHandbookFindings(output.findings, [chunk, ...context], laws))
     result.pendingQuestions = unique([...result.pendingQuestions, ...strings(output.questions)])
     result.coverage = result.coverage.map((item) => item.chunkId === chunk.id ? { ...item, status: 'completed' } : item)
     await publish()
@@ -274,7 +287,8 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   for (const batch of batches) {
     const output = await unit(`handbook-relations:${fingerprint(batch.pairs.map((pair) => pair.id)).slice(0, 20)}`, `${RELATION_PROMPT}\n当前单元提供关联候选 pairs。返回 checkedRelationIds，逐项包含所有已核对的 pair.id；只有全部核对后才 complete:true。`,
       { ...batch, findings: result.findings.filter((finding) => finding.evidence.some((item) => batch.chunks.some((chunk) => chunk.id === item.chunkId))), lawRecords: laws }, 'relations')
-    result.findings = mergeFindings(result.findings, normalizeHandbookFindings(output.findings, batch.chunks, laws))
+    const allowedReplacements = result.findings.filter((finding) => finding.evidence.every((item) => batch.chunks.some((chunk) => chunk.id === item.chunkId))).map((finding) => finding.id)
+    result.findings = mergeHandbookFindings(result.findings, normalizeHandbookFindings(output.findings, batch.chunks, laws), allowedReplacements)
     result.pendingQuestions = unique([...result.pendingQuestions, ...strings(output.questions)])
     result.relationCoverage.completed += batch.pairs.length
     await publish()

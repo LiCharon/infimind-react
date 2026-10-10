@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildHandbookStructure, locateHandbookQuote } from '../services/handbook-structure.js'
-import { runHandbookDiagnosis, normalizeHandbookFindings, fakeHandbookResponse } from '../workflows/handbook-diagnosis.js'
+import { runHandbookDiagnosis, normalizeHandbookFindings, mergeHandbookFindings, fakeHandbookResponse } from '../workflows/handbook-diagnosis.js'
 import { loadHandbookReferences } from '../services/handbook-references.js'
 import { createBusinessDatabase } from '../services/business-db.js'
 import { createTaskService } from '../services/task-service.js'
@@ -55,6 +55,27 @@ await test('首页说明即使出现员工手册字样也不生成报告', async
   const report = await runHandbookDiagnosis({ ...runner.options, input: { text: '员工手册诊断\n员工手册分析助手\n您好，请直接上传需要分析的员工手册图片。\n发送消息\n由扣子提供' } })
   assert.equal(report.analysisStatus, 'blocked'); assert.equal(report.findings.length, 0)
   assert.equal(runner.events.some((event) => event.event === 'stage.start' && event.payload.stage === 'review'), false)
+})
+await test('模型不列法规也不能把条款合法性发布为已核实判断', () => {
+  const chunk = buildHandbookStructure([{ fileId: 'a', fileName: '合成制度', text: '员工任何一次迟到均直接解除劳动合同。' }]).chunks[0]
+  const finding = normalizeHandbookFindings([{ kind: 'clause', title: '解除条件', explanation: '需核实处理条件与法律适用',
+    level: 'high', status: 'risk', evidence: [{ chunkId: chunk.id, quote: chunk.text }], authorities: [] }], [chunk])[0]
+  assert.equal(finding.status, 'pending')
+  assert.equal(finding.level, 'high')
+  assert.match(finding.verificationNote, /具体法律依据尚未核实/)
+})
+await test('冲突归并需模型明确选择且两处来源一致，不吞掉独立条款或不同来源', () => {
+  const chunks = buildHandbookStructure([{ fileId: 'a', fileName: '合成制度', text }]).chunks
+  const raw = (title, kind = 'conflict', evidenceChunks = chunks.slice(1)) => ({ title, kind, explanation: title, status: 'pending',
+    conditions: [title], evidence: evidenceChunks.map((chunk) => ({ chunkId: chunk.id, quote: chunk.text.trim() })) })
+  const previous = normalizeHandbookFindings([raw('重复冲突一'), raw('重复冲突二'), raw('独立条款问题', 'clause')], chunks)
+  const incoming = normalizeHandbookFindings([{ ...raw('合并后的冲突'), supersedesFindingIds: previous.map((item) => item.id) }], chunks)
+  const merged = mergeHandbookFindings(previous, incoming, previous.map((item) => item.id))
+  assert.equal(merged.length, 2); assert.ok(merged.some((item) => item.kind === 'clause'))
+  assert.deepEqual(merged.find((item) => item.kind === 'conflict').conditions, ['重复冲突二', '重复冲突一', '合并后的冲突'])
+  assert.equal(mergeHandbookFindings(previous, incoming, []).length, 4)
+  const differentSource = normalizeHandbookFindings([{ ...raw('另一对来源', 'conflict', chunks.slice(0, 2)), supersedesFindingIds: [previous[0].id] }], chunks)
+  assert.equal(mergeHandbookFindings(previous, differentSource, [previous[0].id]).length, 4)
 })
 await test('短条款可以诊断，章节冲突关联两处原文并完成全部关系检查', async () => {
   const runner = makeRunner()
