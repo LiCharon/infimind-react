@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { BookOpen, Check, ChevronRight, Copy, FileText, History, Loader2, Plus, Send, Square, Trash2, X } from 'lucide-react'
+import { BookOpen, Check, ChevronRight, Copy, FileText, History, Loader2, PenLine, Send, Square, Trash2, X } from 'lucide-react'
 import { useAuth } from '../components/AuthProvider'
 import { useWorkspaceLayout, useWorkspaceText } from '../components/WorkspaceContext'
 import ToolComposerControls from '../components/ToolComposerControls'
@@ -9,6 +9,8 @@ import { authFetch, apiError } from '../utils/auth-api'
 import { ACCEPTED_EXTENSIONS, mergeSelectedFiles, describeRejection } from '../utils/file-selection'
 import { formatRelativeTime } from '../utils/relative-time'
 import { HANDBOOK_PRODUCT, HANDBOOK_TERMINAL, HANDBOOK_STATUS, formatHandbookReport, readHandbookEvents } from '../utils/handbook-result'
+import './ContractRewritePage.css'
+import './LaborConsultPage.css'
 import './HandbookDiagnosisPage.css'
 
 const createId = () => crypto.randomUUID()
@@ -56,7 +58,7 @@ export default function HandbookDiagnosisPage() {
   const [focus, setFocus] = useState('')
   const [files, setFiles] = useState([])
   const [intent, setIntent] = useState('analyze')
-  const [mode, setMode] = useState('fast')
+  const [mode, setMode] = useState('thinking')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -231,21 +233,22 @@ export default function HandbookDiagnosisPage() {
   const statusText = !report && intent === 'analyze' && (draft.trim() || files.length) && !active ? '新材料尚未检查' : report?.analysisStatus === 'completed' ? '本次正文检查完成' : report?.analysisStatus === 'blocked' ? '材料待处理' : HANDBOOK_STATUS[task?.status] || '员工手册诊断'
   const canContinuePartial = report?.analysisStatus === 'blocked' && report.sourceDocuments?.length && report.unreadableMaterials?.every((item) => !item.reason.includes('未确认包含制度正文'))
 
-  return <main className={`contract-chat handbook-workspace ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sourceOpen ? 'hb-source-open' : ''}`}>
+  return <main className={`contract-chat labor-consult handbook-workspace ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sourceOpen ? 'hb-source-open' : ''}`}>
     <aside className="chat-sidebar hb-history" aria-label={t('历史诊断')}>
-      <label className="hb-history-search"><History size={16} /><input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={t('搜索历史诊断')} aria-label={t('搜索历史诊断')} /></label>
-      <button className="hb-new" type="button" onClick={beginNew}><Plus size={16} />{t('新诊断')}</button>
-      <p>{t('员工手册 · 历史诊断')}</p>
-      <nav>{visibleItems.map((item) => <div key={item.threadId || item.id} className={`hb-history-row ${(task?.threadId || task?.id) === (item.threadId || item.id) ? 'is-active' : ''}`}>
-        <button type="button" {...getHistoryMenuProps(item)} onClick={() => { void selectTask(item.id) }}><FileText size={15} /><span><strong>{renderTitle(item)}</strong><small>{formatRelativeTime(item.createdAt)}</small></span></button>
-        <button type="button" aria-label={`删除诊断：${item.title}`} disabled={!HANDBOOK_TERMINAL.has(item.status)} onClick={() => setDeleting(item)}><Trash2 size={14} /></button>
+      <label className="sidebar-search"><History size={17} /><input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder={t('搜索历史诊断')} aria-label={t('搜索历史诊断')} /></label>
+      <div className="sidebar-brand"><span className="brand-orb"><img src="/logo.png" alt="" /></span><strong>{t('法飞飞')}</strong></div>
+      <button className="sidebar-action" type="button" onClick={beginNew}><PenLine size={20} />{t('新诊断')}</button>
+      <p className="history-label">{t('历史诊断')}</p>
+      <nav className="history-list">{visibleItems.map((item) => <div key={item.threadId || item.id} className="hb-history-row">
+        <button type="button" className={(task?.threadId || task?.id) === (item.threadId || item.id) ? 'selected' : ''} {...getHistoryMenuProps(item)} onClick={() => { void selectTask(item.id) }}><span className="history-thread-icon"><BookOpen size={16} /></span><span className="history-thread-main"><span className="history-thread-title">{renderTitle(item)}</span><small className="history-thread-time">{formatRelativeTime(item.createdAt)}</small></span></button>
+        <button className="hb-history-delete" type="button" aria-label={`删除诊断：${item.title}`} disabled={!HANDBOOK_TERMINAL.has(item.status)} onClick={() => setDeleting(item)}><Trash2 size={14} /></button>
       </div>)}</nav>{historyControls}
       {hasMore && <button className="hb-load-more" type="button" onClick={() => { void loadHistory(history.length).catch((cause) => setError(cause.message)) }}>{t('加载更早诊断')}</button>}
     </aside>
-    <section className="hb-main">
-      <header className="hb-header"><div><BookOpen size={18} /><strong>{t('员工手册诊断')}</strong></div><div>{report && <button type="button" onClick={() => { void copy(formatHandbookReport(report), 'report') }}>{copied === 'report' ? <Check size={15} /> : <Copy size={15} />}{t('复制报告')}</button>}{settings.analysisPanel && report?.sourceDocuments?.length > 0 && <button type="button" onClick={() => setSourceOpen((value) => !value)}><FileText size={15} />{t(sourceOpen ? '收起原文' : '查看原文')}</button>}</div></header>
-      <div className="hb-body" aria-live="polite" aria-busy={active}>
-        {!task && !report && <div className="hb-empty"><BookOpen size={38} strokeWidth={1.3} /><h1>{t('检查制度，定位原文，准备修订')}</h1><p>{t('上传员工手册或粘贴制度正文，查看条款问题、关联影响和局部修改建议。')}</p><button type="button" onClick={() => fileInput.current?.click()}><Plus size={17} />{t('上传员工手册')}</button><small>{t('也可以在下方直接粘贴需要检查的条款。')}</small></div>}
+    <section className="chat-column hb-main">
+      <header className="chat-header"><div className="header-left" /><div className="chat-title"><strong>{task?.title || t('新的员工手册诊断')}</strong><small>{t('面向企业方的制度检查 · 关联原文与修改建议 · 不构成正式法律意见')}</small></div><div className="header-tools">{report && <button className="icon-button" type="button" aria-label={t('复制报告')} title={t('复制报告')} onClick={() => { void copy(formatHandbookReport(report), 'report') }}>{copied === 'report' ? <Check size={18} /> : <Copy size={18} />}</button>}{settings.analysisPanel && report?.sourceDocuments?.length > 0 && <button className="icon-button" type="button" aria-label={t(sourceOpen ? '收起原文' : '查看原文')} title={t(sourceOpen ? '收起原文' : '查看原文')} onClick={() => setSourceOpen((value) => !value)}><FileText size={18} /></button>}</div></header>
+      <div className="conversation" aria-live="polite" aria-busy={active}><div className="conversation-inner hb-body">
+        {!task && !report && <><div className="assistant-turn welcome-turn"><div><p>{t('你好，我是法飞飞员工手册诊断助手。你可以上传员工手册、考勤制度、劳动合同等材料，也可以直接粘贴制度正文。我会检查条款问题与文件之间的矛盾，关联原文，并给出局部修改建议。')}</p></div></div><div className="starter-prompts"><button type="button" onClick={() => fileInput.current?.click()}>{t('上传员工手册，检查条款问题与修改建议')}<span>→</span></button><button type="button" onClick={() => { setFocus('重点检查考勤、奖惩与解除劳动合同规定'); fileInput.current?.click() }}>{t('重点检查考勤、奖惩与解除劳动合同规定')}<span>→</span></button><button type="button" onClick={() => { setFocus('重点核对员工手册、劳动合同与考勤制度之间的矛盾'); fileInput.current?.click() }}>{t('一起上传员工手册、劳动合同和考勤制度，核对矛盾')}<span>→</span></button></div></>}
         {task && <div className={`hb-progress ${report?.analysisStatus === 'blocked' ? 'is-blocked' : ''}`} role="status"><div>{active ? <Loader2 size={18} className="hb-spin" /> : <BookOpen size={18} />}<strong>{t(statusText)}</strong></div><p>{task.stageSummary || report?.scope?.description}</p>{report && report.analysisStatus !== 'blocked' && <small>{t('正文单元')} {completedCount}/{report.coverage?.length || 0} · {t('关联核对')} {report.relationCoverage?.completed || 0}/{report.relationCoverage?.total || 0}{report.analysisStatus !== 'completed' && ` · ${t('全文核对尚未完成')}`}</small>}
           {!active && ['failed', 'cancelled'].includes(task.status) && <><p>{task.errorSummary || t('检查已停止，已完成部分仍保留。')}</p><button type="button" onClick={() => { void submit('restart') }}>{t('继续未完成检查')}</button></>}
           {canContinuePartial && !active && <button type="button" onClick={() => { void submit('restart', true) }}>{t('仅检查已读取部分')}</button>}
@@ -266,15 +269,18 @@ export default function HandbookDiagnosisPage() {
         </>}
         {reply && <div className="hb-reply"><strong>{t('报告追问')}</strong><p>{reply}</p></div>}
         {error && <div className="hb-error" role="alert">{error}<button type="button" aria-label={t('关闭提示')} onClick={() => setError('')}><X size={14} /></button></div>}
-      </div>
-      <form className="hb-composer" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      </div></div>
+      <div className="composer-wrap">
+      <form className="composer hb-composer" onSubmit={(event) => { event.preventDefault(); void submit() }}>
         {report?.analysisStatus === 'completed' && <div className="hb-intent"><button type="button" className={intent === 'followup' ? 'is-active' : ''} onClick={() => { setIntent('followup'); setDraft(''); setFiles([]) }}>{t('追问报告')}</button><button type="button" className={intent === 'analyze' ? 'is-active' : ''} onClick={() => { setIntent('analyze'); setDraft('') }}>{t('提交新版正文')}</button></div>}
         {files.length > 0 && <div className="hb-files">{files.map((file) => <span key={file.name}><FileText size={13} />{file.name}<button type="button" aria-label={`移除文件：${file.name}`} disabled={active} onClick={() => setFiles((previous) => previous.filter((item) => item.name !== file.name))}><X size={13} /></button></span>)}</div>}
         {intent === 'analyze' && <details className="hb-focus"><summary>{t('检查侧重点（可选）')}</summary><input aria-label={t('检查侧重点')} value={focus} onChange={(event) => setFocus(event.target.value)} placeholder={t('例如：重点检查考勤与奖惩规定')} disabled={active} /></details>}
         <textarea aria-label={t(intent === 'followup' ? '报告追问' : '员工手册正文')} value={draft} onChange={(event) => { setDraft(event.target.value); if (intent === 'analyze') { setReport(null); setReply(''); setCitation(null); setSourceOpen(false) } }} placeholder={t(intent === 'followup' ? '就本次报告继续提问…' : '上传员工手册，或粘贴需要检查的制度正文…')} disabled={active} onKeyDown={(event) => { if (event.isComposing) return; const sendKey = settings.sendKey === 'command-enter' ? (event.ctrlKey || event.metaKey) : !event.shiftKey; if (event.key === 'Enter' && sendKey) { event.preventDefault(); void submit() } }} />
-        <div className="hb-composer-bottom"><ToolComposerControls onUpload={() => fileInput.current?.click()} uploadLabel={t('上传员工手册')} disabled={active} mode={mode} onModeChange={setMode} question={draft} hasPendingFiles={Boolean(files.length)} messages={report ? [{ result: report }] : []} /><small>{t(settings.sendKey === 'command-enter' ? 'Ctrl / ⌘ + Enter 发送' : 'Enter 发送 · Shift + Enter 换行')}</small>{watching ? <button className="hb-send" type="button" aria-label={t('停止检查')} onClick={() => { void cancel() }} disabled={task.status === 'cancel_requested'}><Square size={16} /></button> : <button className="hb-send" type="submit" aria-label={t(intent === 'followup' ? '发送追问' : '开始诊断')} disabled={submitting || (!draft.trim() && !files.length)}>{submitting ? <Loader2 className="hb-spin" size={17} /> : <Send size={17} />}</button>}</div>
+        <div className="composer-bottom"><ToolComposerControls onUpload={() => fileInput.current?.click()} uploadLabel={t('上传员工手册')} disabled={active} mode={mode} onModeChange={setMode} question={draft} hasPendingFiles={Boolean(files.length)} messages={report ? [{ result: report }] : []} />{watching ? <button className="voice-send stop" type="button" aria-label={t('停止检查')} onClick={() => { void cancel() }} disabled={task.status === 'cancel_requested'}><Square size={19} /></button> : <button className="voice-send" type="submit" aria-label={t(intent === 'followup' ? '发送追问' : '开始诊断')} disabled={submitting || (!draft.trim() && !files.length)}>{submitting ? <Loader2 className="hb-spin" size={20} /> : <Send size={19} />}</button>}</div>
         <input ref={fileInput} type="file" multiple accept={ACCEPTED_EXTENSIONS} hidden onChange={(event) => { selectFiles(event.target.files); event.target.value = '' }} />
       </form>
+      <p className="labor-disclaimer"><BookOpen size={13} />{t('本诊断为辅助分析，不构成正式法律意见；条款适用及制度制定、实施程序请由专业人士复核。')}</p>
+      </div>
     </section>
     {settings.analysisPanel && sourceOpen && report?.sourceDocuments?.length > 0 && <SourcePane documents={report.sourceDocuments} citation={citation} onClose={() => setSourceOpen(false)} />}
     {deleting && <div className="hb-dialog-backdrop"><div className="hb-dialog" role="dialog" aria-modal="true" aria-labelledby="hb-delete-title"><h2 id="hb-delete-title">{t('删除这段诊断？')}</h2><p>{t('这会删除本会话的诊断记录、原文和关联上传文件。')}</p><strong>{deleting.title}</strong><div><button type="button" disabled={deletingBusy} onClick={() => setDeleting(null)}>{t('保留')}</button><button type="button" disabled={deletingBusy} onClick={() => { void removeThread() }}>{t(deletingBusy ? '正在删除…' : '确认删除')}</button></div></div></div>}

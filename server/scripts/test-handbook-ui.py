@@ -26,7 +26,8 @@ with sync_playwright() as p:
     page.get_by_role('menuitem', name='员工手册诊断', exact=True).click()
     expect(page).to_have_url(args.url + '/tools/handbook')
     checks.append('从工作区更多功能进入员工手册诊断')
-    expect(page.get_by_role('heading', name='检查制度，定位原文，准备修订')).to_be_visible()
+    expect(page.locator('.chat-title strong')).to_have_text('新的员工手册诊断')
+    expect(page.locator('.sidebar-brand')).to_have_text('法飞飞')
     assert page.get_by_role('combobox').count() == 0, '页面不能要求选择完整手册或片段'
     page.screenshot(path=str(output / 'handbook-empty-desktop.png'), full_page=True)
     page.get_by_role('textbox', name='员工手册正文', exact=True).fill(home)
