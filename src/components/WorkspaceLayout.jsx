@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { FileCheck2, FilePenLine, FileSearch, Gavel, Home, LogOut, MessageCircle, PanelLeft, Settings2, UserRound, X } from 'lucide-react'
+import { BookOpen, FileCheck2, FilePenLine, FileSearch, Gavel, Home, LogOut, MessageCircle, PanelLeft, Settings2, UserRound, X } from 'lucide-react'
 import { useAuth } from './AuthProvider'
 import { WorkspaceContext } from './WorkspaceContext'
 import WorkspaceConversationMenu from './WorkspaceConversationMenu'
@@ -18,7 +18,8 @@ const tools = [
   { label: '商业合同审查', icon: FileSearch, path: '/contract-rewrite', aliases: ['/tools/contract-review'] },
   { label: '商业合同起草', icon: FilePenLine, path: '/contract-draft', aliases: ['/tools/contract-draft'] },
   { label: '劳动合同分析', icon: FileCheck2, path: '/tools/labor-contract', aliases: [] },
-  { label: '劳动仲裁答辩', icon: Gavel, path: '/tools/arbitration', aliases: [] }
+  { label: '劳动仲裁答辩', icon: Gavel, path: '/tools/arbitration', aliases: [] },
+  { label: '员工手册诊断', icon: BookOpen, path: '/tools/handbook', aliases: [], defaultPinned: false }
 ]
 
 const readPinnedPaths = (key) => {
