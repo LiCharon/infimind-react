@@ -30,12 +30,45 @@ const makeRunner = () => {
 let passed = 0
 const test = async (name, run) => { await run(); passed += 1; console.log(`PASS ${name}`) }
 
+await test('手册脱敏保留公司泛称前的怀孕条件和补正期限，实名主体与直接标识仍替换', async () => {
+  const runner = makeRunner(), messages = []
+  const source = '公司名称：虚构澄星科技有限公司\n第一章 考勤与保护\n第一条 员工怀孕后公司不得仅因此解除劳动合同。\n第二条 从考勤异常通知送达次日起三个工作日内可通过公司考勤系统提交证据。\n联系人：张三；电话13812345678。'
+  await runHandbookDiagnosis({ ...runner.options, fakeLlm: false, input: { text: source },
+    generateCompletion: async (prompt, message) => {
+      messages.push(message)
+      const payload = JSON.parse(message)
+      const stage = prompt.includes('本阶段只判断') ? 'scope' : payload.pairs ? 'relations' : 'review'
+      return { content: JSON.stringify(fakeHandbookResponse(stage, payload)), finishReason: 'stop' }
+    } })
+  assert.ok(messages.some((message) => message.includes('员工怀孕后公司')))
+  assert.ok(messages.some((message) => message.includes('从考勤异常通知送达次日起三个工作日内可通过公司')))
+  assert.ok(messages.every((message) => !message.includes('虚构澄星科技有限公司') && !message.includes('13812345678') && !message.includes('张三')))
+})
+
 await test('分块保留全部原文，长段落不截断且位置能复原', () => {
   const source = { fileId: 'a', fileName: '合成手册', text: text + '第三章 长条款\n' + '员工应遵守安全规定。'.repeat(1000) }
   const structure = buildHandbookStructure([source], { budget: 80 })
   assert.equal(structure.chunks.map((chunk) => chunk.text).join(''), source.text)
   assert.ok(structure.chunks.length > 10)
   for (const chunk of structure.chunks) assert.equal(source.text.slice(chunk.startOffset, chunk.endOffset), chunk.text)
+})
+await test('关联确认可接受明确true的对象，false和遗漏仍阻止完成', async () => {
+  for (const checked of [true, false, undefined]) {
+    const runner = makeRunner()
+    const run = () => runHandbookDiagnosis({ ...runner.options, fakeLlm: false, input: { text },
+      generateCompletion: async (prompt, message) => {
+        const payload = JSON.parse(message)
+        const stage = prompt.includes('本阶段只判断') ? 'scope' : payload.pairs ? 'relations' : 'review'
+        const output = fakeHandbookResponse(stage, payload)
+        if (stage === 'relations') output.checkedRelationIds = payload.pairs.map((pair) => ({ pairId: pair.id, checked }))
+        return { content: JSON.stringify(output), finishReason: 'stop' }
+      } })
+    if (checked === true) {
+      const report = await run()
+      assert.equal(report.analysisStatus, 'completed')
+      assert.equal(report.relationCoverage.completed, report.relationCoverage.total)
+    } else await assert.rejects(run, /跨章节关系尚未全部检查/)
+  }
 })
 await test('重复原文不猜位置，引用不存在不放行', () => {
   const chunk = buildHandbookStructure([{ fileId: 'a', fileName: '测试', text: '员工应遵守规定。\n员工应遵守规定。' }]).chunks[0]
@@ -89,6 +122,18 @@ await test('短条款可以诊断，章节冲突关联两处原文并完成全�
   const short = await runHandbookDiagnosis({ ...makeRunner().options, input: { text: '员工须按实际出勤记录申请考勤补正。' } })
   assert.equal(short.analysisStatus, 'completed'); assert.equal(short.scope.kind, 'fragment')
   assert.equal('score' in short, false)
+})
+await test('明确归并可用唯一原文修复同来源的错误引文，不能替换其他来源', () => {
+  const chunks = buildHandbookStructure([{ fileId: 'a', fileName: '合成制度', text }]).chunks.slice(1)
+  const raw = { kind: 'conflict', topic: '考勤', title: '同一矛盾的草稿', explanation: '同一事项处理不一致',
+    evidence: chunks.map((chunk) => ({ chunkId: chunk.id, quote: chunk.text.trim() })) }
+  const wrong = normalizeHandbookFindings([{ ...raw, evidence: raw.evidence.map((item, index) => index ? item : { ...item, quote: '不存在的草稿原文' }) }], chunks)[0]
+  assert.equal(wrong.locationStatus, 'unverified')
+  const corrected = normalizeHandbookFindings([{ ...raw, title: '原文修正后的同一矛盾', supersedesFindingIds: [wrong.id] }], chunks)
+  const merged = mergeHandbookFindings([wrong], corrected, [wrong.id])
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].locationStatus, 'found')
+  assert.ok(merged[0].evidence.every((item) => item.location.status === 'found'))
 })
 await test('解析失败先暂停，明确选择已读部分后才继续', async () => {
   const runner = makeRunner()
