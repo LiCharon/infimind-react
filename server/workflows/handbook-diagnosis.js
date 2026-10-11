@@ -3,7 +3,7 @@ import { extractText } from '../services/file-parser.js'
 import { TaskCancelledError } from './contract-review.js'
 import { buildHandbookStructure, fingerprint, handbookTopics, locateHandbookQuote, retrieveHandbookRelations } from '../services/handbook-structure.js'
 import { loadHandbookReferences, retrieveHandbookReferences } from '../services/handbook-references.js'
-import { createLaborContractRedactor } from '../services/labor-contract-redaction.js'
+import { createHandbookRedactor } from '../services/handbook-redaction.js'
 import { listLawsForBaseline, resolveLawStatus } from '../services/law-whitelist.js'
 import { CONTEXT_WINDOW_TOKENS, OUTPUT_RESERVE_TOKENS, CONTEXT_SAFETY_TOKENS, estimateTokens } from '../../src/utils/context-budget.js'
 import { SCOPE_PROMPT, REVIEW_PROMPT, RELATION_PROMPT, FOLLOWUP_PROMPT } from '../prompts/handbook-diagnosis.js'
@@ -64,7 +64,7 @@ export function mergeHandbookFindings(existing, incoming, allowedReplacements = 
     for (const id of supersedesFindingIds) {
       const replaced = result.get(id)
       if (!allowed.has(id) || !replaced || replaced.kind !== 'conflict' || item.kind !== 'conflict'
-        || replaced.locationStatus !== 'found' || item.locationStatus !== 'found' || sources(replaced) !== sources(item)) continue
+        || item.locationStatus !== 'found' || sources(replaced) !== sources(item)) continue
       item = { ...item, conditions: unique([...replaced.conditions, ...item.conditions]),
         relatedChanges: unique([...replaced.relatedChanges, ...item.relatedChanges]),
         authorities: [...new Map([...replaced.authorities, ...item.authorities].map((authority) => [fingerprint(authority), authority])).values()],
@@ -186,14 +186,15 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   try { laws = await lawLoader({ includeRepealed: false }) } catch { laws = []; result.warnings.push('法规记录库不可用，相关依据需核实。') }
   result.warnings = unique([...result.warnings, ...(references.warnings || []), '自动解析可能丢失复杂表格或页内图片信息；本次检查以提取正文为范围。'])
   result.referenceVersions = references.versions || []
-  const redactor = createLaborContractRedactor({ documents: [...parsed.documents, ...(references.documents || [])], extraTexts: [input.focus || '', input.message || ''] })
+  const redactor = createHandbookRedactor({ documents: [...parsed.documents, ...(references.documents || [])], extraTexts: [input.focus || '', input.message || ''] })
   const signature = fingerprint({ documents: parsed.documents, focus: input.focus || '', versions: result.referenceVersions, workflow: 'handbook-diagnosis-v1' })
   const unit = async (key, prompt, payload, type) => {
     active()
-    const unitSignature = fingerprint([signature, prompt, payload, type])
+    const message = JSON.stringify(redactor.maskDeep(payload))
+    // Reuse requires the actual sent input to match, including redaction changes.
+    const unitSignature = fingerprint([signature, prompt, message, type])
     const cached = saved(key)
     if (cached?.signature === unitSignature && cached.output?.complete === true) return cached.output
-    const message = JSON.stringify(redactor.maskDeep(payload))
     if (estimateTokens(prompt + message) > CONTEXT_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_TOKENS) throw error('本检查单元超出模型输入预算，未截断正文', 'handbook_context_exceeded')
     await emit('model.progress', { stage: type, summary: type === 'scope' ? '正在确认材料与检查范围' : type === 'relations' ? '正在核对跨章节原文' : '正在检查制度条款' })
     const response = fakeLlm ? { content: JSON.stringify(fakeHandbookResponse(type, payload)), finishReason: 'stop' }
@@ -208,7 +209,14 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
     if (['review', 'relations'].includes(type) && !Array.isArray(output.findings)) throw error('模型缺少诊断问题列表')
     if (['review', 'relations'].includes(type)) normalizeHandbookFindings(output.findings,
       type === 'review' ? [payload.chunk, ...payload.context] : payload.chunks, laws)
-    if (type === 'relations' && (!Array.isArray(output.checkedRelationIds) || payload.pairs.some((pair) => !output.checkedRelationIds.includes(pair.id)))) throw error('跨章节关系尚未全部检查，已保留此前结果')
+    if (type === 'relations') {
+      // Some models return explicit {pairId, checked:true} acknowledgements.
+      // Accept that equivalent representation, never false/absent acknowledgements.
+      output.checkedRelationIds = (Array.isArray(output.checkedRelationIds) ? output.checkedRelationIds : [])
+        .map((item) => typeof item === 'string' ? item : item?.checked === true && typeof item.pairId === 'string' ? item.pairId : '')
+        .filter(Boolean)
+      if (payload.pairs.some((pair) => !output.checkedRelationIds.includes(pair.id))) throw error('跨章节关系尚未全部检查，已保留此前结果')
+    }
     if (type === 'scope' && !['handbook', 'policy-fragment', 'attachment', 'unrelated', 'uncertain'].includes(output.type)) throw error('模型未返回可识别的材料类型')
     if (type === 'followup' && !string(output.answer)) throw error('追问没有完整回答')
     await checkpoint(key, { signature: unitSignature, output })
@@ -285,8 +293,8 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   }
   await stage('relations', '正在回看原文并核对跨章节关联')
   for (const batch of batches) {
-    const output = await unit(`handbook-relations:${fingerprint(batch.pairs.map((pair) => pair.id)).slice(0, 20)}`, `${RELATION_PROMPT}\n当前单元提供关联候选 pairs。返回 checkedRelationIds，逐项包含所有已核对的 pair.id；只有全部核对后才 complete:true。`,
-      { ...batch, findings: result.findings.filter((finding) => finding.evidence.some((item) => batch.chunks.some((chunk) => chunk.id === item.chunkId))), lawRecords: laws }, 'relations')
+    const output = await unit(`handbook-relations:${fingerprint(batch.pairs.map((pair) => pair.id)).slice(0, 20)}`, `${RELATION_PROMPT}\n当前单元提供关联候选 pairs。返回 checkedRelationIds:["实际pair.id",...] 字符串数组，逐项包含所有已核对的 pair.id；只有全部核对后才 complete:true。`,
+      { ...batch, findings: result.findings.filter((finding) => finding.evidence.length && finding.evidence.every((item) => batch.chunks.some((chunk) => chunk.id === item.chunkId))), lawRecords: laws }, 'relations')
     const allowedReplacements = result.findings.filter((finding) => finding.evidence.every((item) => batch.chunks.some((chunk) => chunk.id === item.chunkId))).map((finding) => finding.id)
     result.findings = mergeHandbookFindings(result.findings, normalizeHandbookFindings(output.findings, batch.chunks, laws), allowedReplacements)
     result.pendingQuestions = unique([...result.pendingQuestions, ...strings(output.questions)])
