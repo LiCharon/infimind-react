@@ -5,7 +5,6 @@ import { runLaborContractAnalysis, runLaborContractFollowup } from '../workflows
 import { runLaborDispatchAnalysis, runLaborDispatchFollowup } from '../workflows/labor-dispatch-analysis.js'
 import { runLaborArbitration } from '../workflows/labor-arbitration.js'
 import { formatArbitrationResult } from '../../src/utils/arbitration-result.js'
-import { runHandbookDiagnosis } from '../workflows/handbook-diagnosis.js'
 
 const transientPatterns = [
   /timeout/i,
@@ -44,8 +43,7 @@ export function createTaskProcessor({
   laborContractFollowupWorkflow = runLaborContractFollowup,
   laborDispatchAnalysisWorkflow = runLaborDispatchAnalysis,
   laborDispatchFollowupWorkflow = runLaborDispatchFollowup,
-  laborArbitrationWorkflow = runLaborArbitration,
-  handbookWorkflow = runHandbookDiagnosis
+  laborArbitrationWorkflow = runLaborArbitration
 } = {}) {
   if (!taskService || !fileStore) throw new Error('task processor requires taskService and fileStore')
 
@@ -86,30 +84,12 @@ export function createTaskProcessor({
     cancellationTimer.unref?.()
 
     try {
-      let files = task.productId === 'handbook-diagnosis' && getCheckpoint('handbook-parsing')
-        ? [] : await fileStore.readFiles(taskService.getFiles(taskId))
+      let files = await fileStore.readFiles(taskService.getFiles(taskId))
       let input = taskService.getTaskInput?.(taskId) || {}
       let sourceDocuments = []
       let report = null
       let history = []
       let privacyAliases = []
-      if (task.productId === 'handbook-diagnosis' && input.action === 'restart' && !getCheckpoint('handbook-parsing')) {
-        const source = taskService.getTask(input.materialTaskId || input.sourceTaskId, task.userId, false)
-        if (!source || source.productId !== task.productId || (source.threadId || source.id) !== task.threadId
-          || new Date(source.resultExpiresAt).getTime() <= Date.now()) {
-          throw Object.assign(new Error('原员工手册材料不存在、到期或无权使用'), { code: 'handbook_source_unavailable', unitRetryExhausted: true })
-        }
-        const originalFiles = taskService.getFiles(source.id).filter((file) => new Date(file.cleanupAt).getTime() > Date.now())
-        files = await fileStore.readFiles(originalFiles)
-      }
-      if (task.productId === 'handbook-diagnosis' && input.action === 'followup') {
-        const source = taskService.getTask(input.sourceTaskId, task.userId, true)
-        if (!source || source.productId !== task.productId || (source.threadId || source.id) !== task.threadId
-          || new Date(source.resultExpiresAt).getTime() <= Date.now() || source.result?.analysisStatus !== 'completed') {
-          throw Object.assign(new Error('原员工手册报告不存在、到期或无权使用'), { code: 'handbook_source_unavailable', unitRetryExhausted: true })
-        }
-        report = source.result
-      }
       if (task.productId === 'labor-arbitration' && task.threadId) {
         // 只复用当前用户、当前产品、当前案件的材料；取消首轮后仍可继续使用原上传。
         const priorTasks = (taskService.listAllThreadTasks?.(task.userId, task.productId, task.threadId)
@@ -216,7 +196,6 @@ export function createTaskProcessor({
           ? input.action === 'followup'
             ? input.analysisType === 'labor_dispatch_agreement' ? laborDispatchFollowupWorkflow : laborContractFollowupWorkflow
             : input.analysisType === 'labor_dispatch_agreement' ? laborDispatchAnalysisWorkflow : laborContractAnalysisWorkflow
-          : task.productId === 'handbook-diagnosis' ? handbookWorkflow
           : task.productId === 'labor-arbitration' ? laborArbitrationWorkflow
             : task.productId === 'contract-review' ? reviewWorkflow : null
       if (!workflow) {
