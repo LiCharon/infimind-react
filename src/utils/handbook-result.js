@@ -9,6 +9,7 @@ export function formatHandbookReport(report) {
     `检查状态：${report.analysisStatus === 'completed' ? '本次可读正文检查完成' : report.analysisStatus === 'blocked' ? '材料待处理，未完成诊断' : '检查尚未完成'}`]
   for (const finding of report.findings || []) {
     lines.push('', finding.title, `${finding.status === 'pending' ? '待核实' : '风险提示'} · ${finding.topic}`, finding.explanation)
+    if (finding.verificationNote) lines.push(`核对状态：${finding.verificationNote}`)
     for (const citation of finding.evidence || []) lines.push(`原文：${citation.quote}`, `定位：${citation.location?.status === 'found' ? citation.location.matches[0].fileName + ' · ' + citation.location.matches[0].sectionTitle : '引用待核实'}`)
     if (finding.conditions?.length) lines.push(`适用条件：${finding.conditions.join('；')}`)
     for (const authority of finding.authorities || []) lines.push(`待核实依据：${authority.title} ${authority.article}；${authority.note}`)

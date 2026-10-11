@@ -6,6 +6,7 @@ import { runLaborDispatchAnalysis, runLaborDispatchFollowup } from '../workflows
 import { runLaborArbitration } from '../workflows/labor-arbitration.js'
 import { formatArbitrationResult } from '../../src/utils/arbitration-result.js'
 import { runHandbookDiagnosis } from '../workflows/handbook-diagnosis.js'
+import { HANDBOOK_PARSER_VERSION } from './handbook-materials.js'
 
 const transientPatterns = [
   /timeout/i,
@@ -86,14 +87,16 @@ export function createTaskProcessor({
     cancellationTimer.unref?.()
 
     try {
-      let files = task.productId === 'handbook-diagnosis' && getCheckpoint('handbook-parsing')
-        ? [] : await fileStore.readFiles(taskService.getFiles(taskId))
       let input = taskService.getTaskInput?.(taskId) || {}
+      const handbookParsing = getCheckpoint('handbook-parsing')?.result
+      const reusableHandbookParsing = handbookParsing && (input.action === 'followup' || handbookParsing.parserVersion === HANDBOOK_PARSER_VERSION)
+      let files = task.productId === 'handbook-diagnosis' && reusableHandbookParsing
+        ? [] : await fileStore.readFiles(taskService.getFiles(taskId))
       let sourceDocuments = []
       let report = null
       let history = []
       let privacyAliases = []
-      if (task.productId === 'handbook-diagnosis' && input.action === 'restart' && !getCheckpoint('handbook-parsing')) {
+      if (task.productId === 'handbook-diagnosis' && input.action === 'restart' && !reusableHandbookParsing) {
         const source = taskService.getTask(input.materialTaskId || input.sourceTaskId, task.userId, false)
         if (!source || source.productId !== task.productId || (source.threadId || source.id) !== task.threadId
           || new Date(source.resultExpiresAt).getTime() <= Date.now()) {

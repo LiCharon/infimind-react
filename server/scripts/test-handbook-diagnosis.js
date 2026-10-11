@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import express from 'express'
 import JSZip from 'jszip'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildHandbookStructure, locateHandbookQuote } from '../services/handbook-structure.js'
@@ -14,7 +15,8 @@ import { createTaskProcessor } from '../services/task-processor.js'
 import { createTaskQueue } from '../services/task-queue.js'
 import { createTaskRouter } from '../routes/tasks.js'
 import { initialize, close as closeLaws } from '../services/law-whitelist.js'
-import { readHandbookEvents } from '../../src/utils/handbook-result.js'
+import { readHandbookEvents, formatHandbookReport } from '../../src/utils/handbook-result.js'
+import { extractHandbookText, HANDBOOK_PARSER_VERSION } from '../services/handbook-materials.js'
 
 initialize(':memory:')
 const directory = mkdtempSync(join(tmpdir(), 'fafee-handbook-test-'))
@@ -29,6 +31,94 @@ const makeRunner = () => {
 }
 let passed = 0
 const test = async (name, run) => { await run(); passed += 1; console.log(`PASS ${name}`) }
+
+const material = (name) => ({ id: name, originalname: name, buffer: readFileSync(fileURLToPath(new URL(`../../docs/员工手册诊断测试/材料/${name}`, import.meta.url))) })
+const imageText = '超过一个工作日未补正的忘打卡记录一律认定旷工。'
+await test('Word表格保留列分隔，内嵌图片条款进入原文且OCR文字不解释为HTML', async () => {
+  const parsed = await extractHandbookText(material('T11图文表格手册.docx'), {
+    recognizeImage: async () => ({ text: `${imageText}\n<公司标记>`, metadata: { confidence: 88 } }) })
+  assert.ok(parsed.text.includes(imageText))
+  assert.ok(parsed.text.includes('<公司标记>'))
+  assert.ok(parsed.text.includes('\t'))
+  assert.equal(parsed.metadata.embeddedImages, 1)
+  assert.deepEqual(parsed.metadata.unreadableParts, [])
+  assert.ok(parsed.metadata.warnings.some((item) => item.includes('OCR')))
+})
+await test('PDF文字层不能跳过同页图片条款，页码和原有文字仍保留', async () => {
+  const parsed = await extractHandbookText(material('T15图文混排.pdf'), { recognizeImage: async () => ({ text: imageText }) })
+  assert.ok(parsed.text.includes(imageText))
+  assert.ok(parsed.text.includes('补正'))
+  assert.equal(parsed.metadata.pages[0].page, 1)
+  assert.equal(parsed.metadata.pages[0].method, 'text+ocr')
+  assert.deepEqual(parsed.metadata.unreadableParts, [])
+})
+await test('内嵌图片失败或未识别文字先暂停，明确选择已读部分后才完成', async () => {
+  for (const recognizeImage of [async () => { throw new Error('虚构OCR读取失败') }, async () => ({ text: '' })]) {
+    const runner = makeRunner()
+    const opts = { ...runner.options, files: [material('T11图文表格手册.docx')], parseFile: (file) => extractHandbookText(file, { recognizeImage }) }
+    const blocked = await runHandbookDiagnosis(opts)
+    assert.equal(blocked.analysisStatus, 'blocked')
+    assert.equal(blocked.findings.length, 0)
+    assert.ok(blocked.unreadableMaterials.some((item) => item.reason.includes('图片')))
+    const partial = await runHandbookDiagnosis({ ...opts, input: { allowPartial: true } })
+    assert.equal(partial.analysisStatus, 'completed')
+    assert.ok(partial.unreadableMaterials.length)
+  }
+})
+await test('旧解析检查点不能隐藏未读图片，新解析版本恢复后补读', async () => {
+  const runner = makeRunner()
+  runner.checkpoints.set('handbook-parsing', { result: { documents: [{ fileId: 'x', fileName: '旧缓存', text: '员工应按规定考勤。' }], failures: [], warnings: [] } })
+  let reparsed = 0
+  const report = await runHandbookDiagnosis({ ...runner.options, files: [material('T11图文表格手册.docx')], input: { action: 'restart' },
+    parseFile: (file) => { reparsed += 1; return extractHandbookText(file, { recognizeImage: async () => ({ text: imageText }) }) } })
+  assert.equal(reparsed, 1)
+  assert.ok(report.sourceDocuments[0].text.includes(imageText))
+  assert.equal(runner.checkpoints.get('handbook-parsing').result.parserVersion, HANDBOOK_PARSER_VERSION)
+})
+await test('取消内嵌图OCR不能降级为可读部分继续诊断', async () => {
+  const controller = new AbortController()
+  await assert.rejects(extractHandbookText(material('T11图文表格手册.docx'), { signal: controller.signal,
+    recognizeImage: async () => { controller.abort(new Error('取消图片读取')); throw controller.signal.reason } }), /取消图片读取/)
+})
+await test('OCR冲突能定位识别文本但不能冒称已核实原件', () => {
+  const chunks = buildHandbookStructure([{ fileId: 'a', fileName: '正文', text: '第一章 补正\n员工可在三个工作日内补正。' },
+    { fileId: 'b', fileName: '图片', text: '【第1页，含OCR识别待核对】\n员工仅可在一个工作日内补正。' }]).chunks
+  const finding = normalizeHandbookFindings([{ kind: 'conflict', title: '补正期限矛盾', explanation: '同一对象和条件，期限不能同时执行。', status: 'risk',
+    evidence: chunks.map((chunk) => ({ chunkId: chunk.id, quote: chunk.text })), authorities: [] }], chunks)[0]
+  assert.equal(finding.locationStatus, 'found')
+  assert.equal(finding.status, 'pending')
+  assert.ok(finding.verificationNote.includes('图片原件'))
+  assert.ok(formatHandbookReport({ findings: [finding] }).includes(finding.verificationNote))
+})
+await test('OCR文档后续分块仍保留待核对状态，不因图片标记位于前一块丢失', () => {
+  const chunks = buildHandbookStructure([{ fileId: 'a', fileName: '扫描件', text: '【第1页，OCR识别待核对】\n第一章 考勤\n员工可在三个工作日内补正。\n第二章 处理\n员工仅可在一个工作日内补正。' }]).chunks
+  assert.ok(chunks.length >= 2)
+  assert.ok(chunks.every((chunk) => chunk.sourceNeedsVerification))
+})
+await test('明确归并可增加背景引文，但必须完整保留旧冲突的每个定位区间', () => {
+  const chunks = buildHandbookStructure([{ fileId: 'a', fileName: '背景', text: '两章同日起适用于同一员工。' },
+    { fileId: 'b', fileName: '条款一', text: '员工可在三个工作日内补正。其他员工应当做好安全检查。' },
+    { fileId: 'c', fileName: '条款二', text: '超过一个工作日未补正即按旷工处理。其他员工不得跳过安全检查。' }]).chunks
+  const make = (title, evidence) => normalizeHandbookFindings([{ kind: 'conflict', title, explanation: '具体处理不同', evidence, authorities: [] }], chunks)[0]
+  const refs = chunks.map((chunk) => ({ chunkId: chunk.id, quote: chunk.text }))
+  const old = make('原冲突', refs.slice(1)), expanded = { ...make('补充背景的同一冲突', refs), supersedesFindingIds: [old.id] }
+  assert.equal(mergeHandbookFindings([old], [expanded], [old.id]).length, 1)
+  const unrelated = { ...make('另一冲突', [refs[0], { chunkId: chunks[1].id, quote: '其他员工应当做好安全检查。' },
+    { chunkId: chunks[2].id, quote: '其他员工不得跳过安全检查。' }]), supersedesFindingIds: [old.id] }
+  assert.equal(mergeHandbookFindings([old], [unrelated], [old.id]).length, 2)
+})
+await test('同一正文块内的两条矛盾规则可以定位，重复或重叠引文不能冒充冲突双方', () => {
+  const first = '员工可在三个工作日内补正。', second = '超过一个工作日即拒绝补正。'
+  const chunk = buildHandbookStructure([{ fileId: 'a', fileName: '制度', text: `${first}\n${second}` }]).chunks[0]
+  const make = (quotes) => normalizeHandbookFindings([{ kind: 'conflict', title: '内部补正期限冲突', explanation: '同一对象期限不同', status: 'risk',
+    evidence: quotes.map((quote) => ({ chunkId: chunk.id, quote })), authorities: [] }], [chunk])[0]
+  assert.equal(make([first, second]).locationStatus, 'found')
+  assert.equal(make([first, second]).status, 'risk')
+  for (const quotes of [[first, first], [first, '三个工作日内补正']]) {
+    assert.equal(make(quotes).locationStatus, 'unverified')
+    assert.equal(make(quotes).suggestedClause, '')
+  }
+})
 
 await test('手册脱敏保留公司泛称前的怀孕条件和补正期限，实名主体与直接标识仍替换', async () => {
   const runner = makeRunner(), messages = []

@@ -83,6 +83,7 @@ export function buildHandbookStructure(documents, { budget = HANDBOOK_UNIT_TOKEN
           const partText = text.slice(begin, finish)
           chunks.push({ id: `${document.fileId}:${begin}:${finish}`, fileId: document.fileId, fileName: document.fileName,
             sectionId, sectionTitle: title, startOffset: begin, endOffset: finish, text: partText,
+            ...(/OCR识别待核对/.test(text) ? { sourceNeedsVerification: true } : {}),
             topics: handbookTopics(`${title}\n${partText}`) })
         }
       }

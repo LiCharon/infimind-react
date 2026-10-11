@@ -11,6 +11,7 @@ export const SCOPE_PROMPT = `${HANDBOOK_RULES}
 本阶段只判断当前正文块是否包含员工手册或企业制度正文，建立语义索引，不生成风险或修改建议。
 聊天界面、工具首页、上传说明、宣传图、模型回答、参考资料目录不是制度正文；即使出现“员工手册”字样也不能据此放行。
 结合正文中的实际规则判断type为handbook、policy-fragment、attachment、unrelated或uncertain。attachment只用于能说明与企业制度相关的附件；不确定时不能装作已确认。
+企业访客、供应商等的来访、现场或安全管理规则含实际规则时，可以是attachment；它们不适用普通员工，不能因为对象不同就认为无关，也不能把它们的时间要求当成员工考勤。只有标题、接待宣传或工具操作说明仍为unrelated。
 acceptedEvidence必须是当前块中支持该分类的连续原文，不能只用文件名或“员工手册”标题。若为unrelated则留空。
 识别适用地区、人员、版本日期等，只写原文确实出现的信息。目录或标题不证明整本手册完整；completeness为unconfirmed或fragment。
 结构不明确时，可在suggestedHeadings中建议正文中实际存在的短标题。quote和title均为完整标题行原文，不能把普通条款或句子改造成标题。程序会核验边界。
@@ -20,7 +21,9 @@ relatedSections仅填原文明确引用或语义上需要联系的章节标题�
 export const REVIEW_PROMPT = `${HANDBOOK_RULES}
 检查当前正文块的制度内容、定义和条件、执行流程、奖惩与解除、信息处理等问题。只输出需要处理的事项。背景未知但有疑点的事项status为pending。
 每项问题必须说明现有文字如何造成具体的权利限制、处理错误、矛盾或无法执行的分歧。不能仅因未写责任人、处理时限、材料形式、定义或完整操作流程就列为风险。简短原则、通常用语和依法处理的表述不必扩写成操作规程；可选完善且没有具体不利后果时不生成finding。引用关联正文已经提供的告知、核实或例外，不再把它报告为缺失。
+先反证每个拟报问题：当前条款是否已允许核实、更正、复核或特殊情况举证？问题是否只有假设另一本未提供的制度矛盾、假设系统关闭、假设工作人员拒绝合法请求才会发生？若如此，不生成finding，也不改写已经明确的期限。不同人员称谓或一般流程未列全部细节本身不是疑点。依据不足时可提出确实影响判断的背景问题，但不得把可选完善包装成待确认风险。
 问题至少引用一处当前chunk的原文；context仅帮助理解当前条款，不能用两处context替代当前chunk审查。当前块只是封面或目录、没有具体条款时，findings应为空。
+同一个chunk内部的两条规则也可能冲突：可以kind为conflict，但必须分别引用两处不重叠的连续原文；不能把同一句话重复或截取两次冒充冲突双方。只有跨块冲突才要求两个不同chunkId。
 不要因为当前块没有其他章节就声称整本手册缺项。程序事项另有清单，此处仅分析原文中实际陈述的程序条款。
 返回{complete:true,findings:[{kind:"clause|conflict",topic,title,level:"high|medium|low",status:"risk|pending",explanation,conditions:[],evidence:[{chunkId,quote}],authorities:[{title,article,reason}],recommendation,suggestedClause,relatedChanges:[]}],questions:[]}。
 若当前块与提供的关联原文存在矛盾，kind必须为conflict并同时引用两个不同块，不把跨章节矛盾塞进单处clause问题。条款合法性和执行条件没有核实依据时，即使风险级别较高，status仍为pending。relatedChanges用可读章节名称，不输出内部标识。

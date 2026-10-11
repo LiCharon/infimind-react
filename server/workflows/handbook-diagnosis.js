@@ -1,5 +1,5 @@
 import { chatDetailed } from '../services/llm-client.js'
-import { extractText } from '../services/file-parser.js'
+import { extractHandbookText, HANDBOOK_PARSER_VERSION } from '../services/handbook-materials.js'
 import { TaskCancelledError } from './contract-review.js'
 import { buildHandbookStructure, fingerprint, handbookTopics, locateHandbookQuote, retrieveHandbookRelations } from '../services/handbook-structure.js'
 import { loadHandbookReferences, retrieveHandbookReferences } from '../services/handbook-references.js'
@@ -32,7 +32,9 @@ export function normalizeHandbookFindings(raw, chunks, laws = []) {
     })
     const located = evidence.length > 0 && evidence.every((item) => item.location.status === 'found')
     const isConflict = finding.kind === 'conflict'
-    const validConflict = !isConflict || new Set(evidence.filter((item) => item.location.status === 'found').map((item) => item.chunkId)).size >= 2
+    const locations = evidence.filter((item) => item.location.status === 'found').map((item) => item.location.matches[0])
+    const validConflict = !isConflict || locations.some((left, index) => locations.slice(index + 1).some((right) =>
+      left.fileId !== right.fileId || left.endOffset <= right.startOffset || right.endOffset <= left.startOffset))
     const authorities = (Array.isArray(finding.authorities) ? finding.authorities : []).map((item) => {
       const name = string(item?.title).replace(/[《》\s]/g, '')
       const law = laws.find((candidate) => [candidate.title, ...(candidate.aliases || [])].some((title) => title.replace(/[《》\s]/g, '') === name))
@@ -42,16 +44,17 @@ export function normalizeHandbookFindings(raw, chunks, laws = []) {
         note: law ? '检索到法规记录；具体条文和适用性尚未核实。' : '法规记录未收录，需核实。' }
     })
     const needsLegalVerification = authorities.length > 0
+    const needsSourceVerification = evidence.some((item) => map.get(item.chunkId)?.sourceNeedsVerification || /OCR识别待核对/.test(map.get(item.chunkId)?.text || ''))
     const identity = { kind: isConflict ? 'conflict' : 'clause', topic: string(finding.topic), title: string(finding.title),
       evidence: evidence.map((item) => [item.chunkId, item.quote.replace(/\s/g, '')]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) }
     return { id: `finding:${fingerprint(identity).slice(0, 20)}`, kind: identity.kind, topic: identity.topic || '制度内容',
       title: string(finding.title), level: ['high', 'medium', 'low'].includes(finding.level) ? finding.level : 'medium',
-      status: !located || !validConflict || !isConflict || needsLegalVerification || finding.status === 'pending' ? 'pending' : 'risk',
+      status: !located || !validConflict || !isConflict || needsLegalVerification || needsSourceVerification || finding.status === 'pending' ? 'pending' : 'risk',
       explanation: string(finding.explanation), conditions: strings(finding.conditions), evidence, authorities,
       locationStatus: located && validConflict ? 'found' : 'unverified',
       recommendation: string(finding.recommendation), suggestedClause: located && validConflict ? string(finding.suggestedClause) : '',
       relatedChanges: strings(finding.relatedChanges), supersedesFindingIds: strings(finding.supersedesFindingIds),
-      verificationNote: !located || !validConflict ? '原文引用未唯一核对成功，暂不发布为已定位问题或修订条款。' : needsLegalVerification || !isConflict ? '条款判断及执行条件待复核；具体法律依据尚未核实。' : '' }
+      verificationNote: !located || !validConflict ? '原文引用未唯一核对成功，暂不发布为已定位问题或修订条款。' : needsSourceVerification ? '引文仅在OCR识别文字中定位，需对照图片原件核对；法律依据和执行条件仍待复核。' : needsLegalVerification || !isConflict ? '条款判断及执行条件待复核；具体法律依据尚未核实。' : '' }
   })
 }
 
@@ -59,12 +62,16 @@ export function mergeHandbookFindings(existing, incoming, allowedReplacements = 
   const result = new Map(existing.map((item) => [item.id, item]))
   const allowed = new Set(allowedReplacements)
   const sources = (finding) => unique(finding.evidence.map((item) => item.chunkId)).sort().join('\n')
+  const preservesLocatedEvidence = (previous, next) => previous.evidence.length > 0 && previous.evidence.every((old) =>
+    old.location.status === 'found' && next.evidence.some((current) => current.chunkId === old.chunkId && current.location.status === 'found'
+      && current.location.matches[0].startOffset <= old.location.matches[0].startOffset
+      && current.location.matches[0].endOffset >= old.location.matches[0].endOffset))
   for (const { supersedesFindingIds = [], ...incomingItem } of incoming) {
     let item = incomingItem
     for (const id of supersedesFindingIds) {
       const replaced = result.get(id)
       if (!allowed.has(id) || !replaced || replaced.kind !== 'conflict' || item.kind !== 'conflict'
-        || item.locationStatus !== 'found' || sources(replaced) !== sources(item)) continue
+        || item.locationStatus !== 'found' || (sources(replaced) !== sources(item) && !preservesLocatedEvidence(replaced, item))) continue
       item = { ...item, conditions: unique([...replaced.conditions, ...item.conditions]),
         relatedChanges: unique([...replaced.relatedChanges, ...item.relatedChanges]),
         authorities: [...new Map([...replaced.authorities, ...item.authorities].map((authority) => [fingerprint(authority), authority])).values()],
@@ -100,7 +107,7 @@ function relationBatches(pairs, chunks) {
 export function fakeHandbookResponse(stage, payload) {
   if (stage === 'scope') {
     const text = payload.chunk.text
-    const accepted = /(?:员工|劳动者|公司|用人单位).{0,30}(?:应当|应|须|不得|必须)|(?:旷工|迟到|早退|年假|病假|工资|考勤|违纪|解除|培训|签收).{0,30}(?:日|天|次|元|处理|规定|制度|员工)/u.test(text)
+    const accepted = /(?:员工|劳动者|公司|用人单位).{0,30}(?:应当|应|须|不得|必须)|(?:旷工|迟到|早退|打卡|补正|年假|病假|工资|考勤|违纪|解除|培训|签收).{0,30}(?:日|天|次|元|处理|规定|制度|员工)/u.test(text)
     return { complete: true, type: accepted ? 'policy-fragment' : 'unrelated', acceptedEvidence: accepted ? text.trim() : '',
       summary: accepted ? '测试用制度正文' : '未发现可诊断的制度正文', completeness: 'unconfirmed', background: {}, questions: accepted ? ['适用地区及执行背景待核实。'] : [], relatedSections: [] }
   }
@@ -124,7 +131,7 @@ export function fakeHandbookResponse(stage, payload) {
 export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], report: priorReport = null,
   emit = async () => {}, checkpoint = async () => {}, getCheckpoint = () => null,
   isCancellationRequested = () => false, updateFileParseStatus = () => {}, signal, fakeLlm = false,
-  parseFile = extractText, generateCompletion = chatDetailed, referenceLoader = loadHandbookReferences,
+  parseFile = extractHandbookText, generateCompletion = chatDetailed, referenceLoader = loadHandbookReferences,
   lawLoader = listLawsForBaseline, chunkBudget } = {}) {
   const active = () => { if (signal?.aborted || isCancellationRequested()) throw new TaskCancelledError() }
   const saved = (stage) => getCheckpoint(stage)?.result
@@ -132,6 +139,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   const stage = async (name, label) => { active(); currentStage = name; await emit('stage.start', { stage: name, label, summary: label }) }
   await stage('parsing', '正在读取员工手册正文')
   let parsed = saved('handbook-parsing')
+  if (input.action !== 'followup' && parsed?.parserVersion !== HANDBOOK_PARSER_VERSION) parsed = null
   if (!parsed) {
     const documents = []
     const failures = []
@@ -144,17 +152,19 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
         if (!result.text?.trim()) throw error('未读取到正文', 'handbook_empty_document')
         const fileId = file.id || fingerprint(file.originalname + result.text).slice(0, 20)
         const unreadPages = result.metadata?.pages?.filter((page) => page.error || !page.text?.trim()) || []
+        const unreadableParts = result.metadata?.unreadableParts || []
         documents.push({ fileId, fileName: file.originalname || '上传材料', text: result.text, pageCount: result.pageCount,
           pages: result.metadata?.pages?.map((page) => ({ page: page.page, method: page.method, error: Boolean(page.error), confidence: page.confidence })) || [] })
         if (unreadPages.length) failures.push({ fileId, fileName: file.originalname, reason: `第${unreadPages.map((page) => page.page).join('、')}页未读取成功` })
+        for (const reason of unreadableParts) failures.push({ fileId, fileName: file.originalname, reason })
         warnings.push(...(result.metadata?.warnings || []))
-        updateFileParseStatus(file.id, unreadPages.length ? 'partial' : 'succeeded')
+        updateFileParseStatus(file.id, unreadPages.length || unreadableParts.length ? 'partial' : 'succeeded')
       } catch (cause) {
         active(); failures.push({ fileId: file.id, fileName: file.originalname, reason: cause.message }); updateFileParseStatus(file.id, 'failed')
       }
     }
     if (string(input.text)) documents.push({ fileId: 'submitted-text', fileName: '提交的制度正文', text: input.text, pageCount: null, pages: [] })
-    parsed = { documents, failures, warnings: unique(warnings) }
+    parsed = { documents, failures, warnings: unique(warnings), parserVersion: HANDBOOK_PARSER_VERSION }
     await checkpoint('handbook-parsing', parsed)
   }
   let structure = buildHandbookStructure(parsed.documents, chunkBudget ? { budget: chunkBudget } : {})

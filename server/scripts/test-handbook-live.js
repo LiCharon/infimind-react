@@ -57,10 +57,16 @@ const { createTaskRouter } = await import('../routes/tasks.js')
 const { createAuthService } = await import('../services/auth-service.js')
 const { createAuthRouter } = await import('../routes/auth.js')
 const { createRequireAuth } = await import('../middleware/auth.js')
-const { extractText } = await import('../services/file-parser.js')
+const { extractHandbookText: extractText } = await import('../services/handbook-materials.js')
 const { default: express } = await import('express')
 const resumeRun = arg('--resume-run') ? resolve(arg('--resume-run')) : null
 const db = createBusinessDatabase(join(resumeRun || output, 'app-test.db'))
+// A second worker on an unfinished evaluation DB can claim the other suite's
+// jobs. Resume only a fully stopped run, otherwise preserve it for inspection.
+if (resumeRun) {
+  const unfinished = db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status NOT IN ('succeeded', 'failed', 'cancelled')").get().count
+  if (unfinished) { db.close(); throw new Error('原评测尚有未结束任务；请停止并核对原运行，不能并行复用同一数据库。') }
+}
 const taskService = createTaskService(db, { maxAttempts: 1 })
 const fileStore = createTaskFileStore({ root: join(resumeRun || output, 'uploads') })
 const auth = createAuthService(db, { jwtSecret: 'fictional-handbook-test-only-secret-20261011' })
@@ -148,7 +154,7 @@ try {
     const start = Date.now(), callStart = modelCalls.length
     console.log(`开始 ${item.id}: ${item.title}`)
     try {
-      if (item.parseOnly) {
+      if (item.parseOnly && !process.argv.includes('--diagnose-formats')) {
         const parsed = await extractText({ originalname: item.files[0], buffer: await readFile(join(dirname(manifestPath), '材料', item.files[0])) })
         await writeFile(join(output, `${item.id}-parse.json`), JSON.stringify(parsed, null, 2))
         outcomes.push({ id: item.id, parseOnly: true, ms: Date.now() - start, characters: parsed.text.length,
@@ -190,6 +196,9 @@ try {
 } finally {
   await persist()
   await new Promise((done) => server.close(done))
+  const closingDeadline = Date.now() + 5000
+  while (queue.activeCount && Date.now() < closingDeadline) await new Promise((done) => setTimeout(done, 50))
+  if (queue.activeCount) { await queue.close(); throw new Error('评测工作尚未结束，保留数据库，不冒称完整退出。') }
   await queue.close(); db.close(); kb.close(); globalThis.fetch = nativeFetch
 }
 console.log(`测试记录：${output}；需人工核对诊断点，不能把HTTP成功率当作法律准确率。`)
