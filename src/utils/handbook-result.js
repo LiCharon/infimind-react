@@ -1,3 +1,5 @@
+import { canShowHandbookClause } from './handbook-annotations.js'
+
 export const HANDBOOK_PRODUCT = 'handbook-diagnosis'
 export const HANDBOOK_TERMINAL = new Set(['succeeded', 'failed', 'cancelled'])
 export const HANDBOOK_STATUS = { queued: '等待处理', running: '正在检查', retry_waiting: '正在重试', cancel_requested: '正在停止', cancelled: '已停止', failed: '检查未完成', succeeded: '处理结束' }
@@ -24,7 +26,7 @@ export function formatHandbookReport(report) {
       ...(authority.versionLabel ? [`版本：${authority.versionLabel}`] : []), ...(authority.quote ? [`法条引文：${authority.quote}`] : []),
       ...(authority.supportReason ? [`模型复核意见：${authority.supportReason}`] : []), ...(authority.sourceUrl ? [`来源：${authority.sourceUrl}`] : []))
     lines.push('', '修改建议', finding.recommendation || '请结合缺失背景进一步核实。')
-    if (finding.suggestedClause) lines.push('', '示例条款', finding.suggestedClause)
+    if (canShowHandbookClause(finding, report.sourceDocuments)) lines.push('', '示例条款', finding.suggestedClause)
     if (finding.relatedChanges?.length) lines.push('', '关联修改', ...finding.relatedChanges.map((item) => `- ${item}`))
   }
   for (const item of report.unreadableMaterials || []) lines.push(`未检查材料：${item.fileName}；${item.reason}`)

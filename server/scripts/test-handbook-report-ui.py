@@ -17,7 +17,7 @@ quote = '员工忘打卡可以提交实际出勤证明。'
 clause = '第一条 员工可提交实际出勤证明。\n第二条 公司应核实后更正记录。'
 markdown = '### 原文问题\n\n**先核实实际出勤**，再判断记录。\n\n- 核对日期\n- 核对适用人员\n\n| 情形 | 处理 |\n| --- | --- |\n| 忘打卡 | 核实 |\n\n```text\n' + 'very-long-synthetic-token-' * 25 + '\n```\n\n<script>window.handbookUnsafe = true</script>'
 authority = {'title': '虚构法条测试', 'article': '第四十二条', 'note': '仅测试展示，不是真实法律。', 'provisionStatus': 'matched', 'quoteStatus': 'matched', 'supportStatus': 'model_supported', 'applicabilityStatus': 'pending', 'versionLabel': 'synthetic-v1', 'quote': '虚构条文原文需保留条件。', 'provisionText': '第四十二条 虚构条文原文需保留条件。', 'supportReason': '**模型意见**：应结合条件核对。'}
-finding = {'id': 'finding-format', 'title': '展示测试问题', 'kind': 'clause', 'topic': '考勤', 'level': 'medium', 'status': 'pending', 'explanation': markdown, 'recommendation': '1. 核对原件\n2. 更正记录\n\n保留现有期限。', 'suggestedClause': clause, 'conditions': ['已实际出勤'], 'authorities': [authority], 'relatedChanges': [], 'evidence': [{'chunkId': 'format-block', 'quote': quote, 'location': {'status': 'found', 'matches': [{'fileId': 'format-file', 'fileName': '虚构制度.txt', 'sectionTitle': '考勤', 'startOffset': 0, 'endOffset': len(quote)}]}}]}
+finding = {'id': 'finding-format', 'title': '展示测试问题', 'kind': 'clause', 'topic': '考勤', 'level': 'medium', 'status': 'risk', 'explanation': markdown, 'recommendation': '1. 核对原件\n2. 更正记录\n\n保留现有期限。', 'suggestedClause': clause, 'conditions': ['已实际出勤'], 'authorities': [authority], 'relatedChanges': [], 'evidence': [{'chunkId': 'format-block', 'quote': quote, 'location': {'status': 'found', 'matches': [{'fileId': 'format-file', 'fileName': '虚构制度.txt', 'sectionTitle': '考勤', 'startOffset': 0, 'endOffset': len(quote)}]}}]}
 report = {'analysisStatus': 'completed', 'scope': {'description': '虚构界面测试', 'background': {}}, 'findings': [finding], 'coverage': [], 'procedureChecklist': [], 'pendingQuestions': [], 'warnings': [], 'sourceDocuments': [{'fileId': 'format-file', 'fileName': '虚构制度.txt', 'text': quote}], 'referenceVersions': []}
 def response(task_id, data):
     return {'task': {'id': task_id, 'threadId': 'format-report', 'title': '报告格式测试', 'status': 'succeeded', 'productId': 'handbook-diagnosis'}, 'report': data}
@@ -44,7 +44,7 @@ with sync_playwright() as p:
         expect(article.locator('.hb-markdown > ul > li')).to_have_count(2)
         expect(article.locator('table')).to_be_visible()
         assert page.evaluate('window.handbookUnsafe !== true')
-        article.get_by_text('查看条件与修改建议', exact=True).click()
+        article.get_by_text('适用条件与依据详情', exact=True).click()
         expect(article.locator('.hb-markdown > ol > li')).to_have_count(2)
         expect(article.get_by_text('条号已匹配 · 引文已匹配 · 模型认为有支持 · 法律适用待复核', exact=True)).to_be_visible()
         article.get_by_text('查看法条原文', exact=True).click()

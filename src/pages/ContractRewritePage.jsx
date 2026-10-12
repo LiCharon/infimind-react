@@ -200,7 +200,7 @@ const buildDisplayRevisions = (revisions = []) => {
         parentFindingId: revision.findingId,
         memberFindingIds: Array.isArray(edit.memberFindingIds) ? edit.memberFindingIds : revision.memberFindingIds,
         isLocalized: true,
-        markerNumber,
+        markerNumber: Number.isInteger(edit.markerNumber) && edit.markerNumber > 0 ? edit.markerNumber : markerNumber,
         operation: (edit.operation || 'replace') === 'replace' && !edit.replacementText ? 'notice' : edit.operation || 'replace',
         lineStart: Number.isInteger(edit.lineStart) ? edit.lineStart : revision.lineStart,
         lineEnd: Number.isInteger(edit.lineEnd) ? edit.lineEnd : revision.lineEnd,
@@ -210,6 +210,7 @@ const buildDisplayRevisions = (revisions = []) => {
         quoteStatus: Array.isArray(edit.quoteSpans) && edit.quoteSpans.length ? 'exact' : 'none',
         rewrittenText: edit.replacementText || '',
         riskNote: edit.riskNote || revision.riskNote,
+        noticeText: edit.noticeText || '',
         fullRewrittenText: revision.rewrittenText || '',
         localizationStatus: edit.localizationStatus || ''
       }
@@ -241,7 +242,7 @@ function MarkedLineText({ raw, spans }) {
   let cursor = 0
   merged.forEach((span, index) => {
     if (span.start > cursor) parts.push(<React.Fragment key={`t-${index}`}>{text.slice(cursor, span.start)}</React.Fragment>)
-    parts.push(<span className="quote-mark" key={`m-${index}`}>{inline(text.slice(span.start, span.end))}{span.markerNumbers.length ? <sup className="quote-marker">{span.markerNumbers.join('·')}</sup> : null}</span>)
+    parts.push(<span className="quote-mark" key={`m-${index}`}>{inline(text.slice(span.start, span.end))}{span.markerNumbers.length ? <sup className="quote-marker">{span.markerNumbers.slice().sort((a, b) => a - b).join('·')}</sup> : null}</span>)
     cursor = span.end
   })
   if (cursor < text.length) parts.push(<React.Fragment key="tail">{text.slice(cursor)}</React.Fragment>)
@@ -293,12 +294,12 @@ export function RevisionDocument({ contractText, revisions, preserveFileMarkers 
           if (heading) {
             const Tag = `h${Math.min(heading[1].length + 1, 4)}`
             return <React.Fragment key={`l-${i}`}>
-              <Tag className="clause-heading">{heading[2]}</Tag>
+              <Tag className="clause-heading" data-source-line={i}>{heading[2]}</Tag>
               {revs.length > 0 && <div className="revision-stack">{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div>}
             </React.Fragment>
           }
           return <React.Fragment key={`l-${i}`}>
-            <p className="clause-text">{spans ? <MarkedLineText raw={raw} spans={spans} /> : inline(line)}</p>
+            <p className="clause-text" data-source-line={i}>{spans ? <MarkedLineText raw={raw} spans={spans} /> : inline(line)}</p>
             {revs.length > 0 && <div className="revision-stack">{revs.map((rev) => <SandwichBlock key={rev.findingId} revision={rev} />)}</div>}
           </React.Fragment>
         })}
@@ -316,7 +317,7 @@ function SandwichBlock({ revision: rev }) {
     const suggestion = rev.operation === 'delete'
       ? '删除该问题片段'
       : rev.operation === 'notice'
-        ? (rev.riskNote || '请结合实际业务确认并补全该项')
+        ? (rev.noticeText || rev.riskNote || '请结合实际业务确认并补全该项')
       : (rev.rewrittenText || '请结合批注对该片段作局部调整')
     const showFullRevision = rev.fullRewrittenText && rev.fullRewrittenText !== rev.rewrittenText
     return (
@@ -401,7 +402,7 @@ export function ReviewRoundsPanel({ rounds, thinking, finished = false, stoppedE
   )
 }
 
-export function downloadRevisionWord({ name = '合同审查稿', text = '', documentRevisions = [], preserveFileMarkers = false } = {}) {
+export function downloadRevisionWord({ name = '合同审查稿', text = '', documentRevisions = [], preserveFileMarkers = false, suffix = '审查批注稿' } = {}) {
     const revisions = buildDisplayRevisions(Array.isArray(documentRevisions) ? documentRevisions : [])
     const renderInline = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     // 按行号把修订块分组（与 RevisionDocument 的 byLine 逻辑一致：add 挂在 insertAfterLine 后）
@@ -433,12 +434,19 @@ export function downloadRevisionWord({ name = '合同审查稿', text = '', docu
         markerNumber: span.markerNumber
       })).filter((span) => span.end > span.start).sort((left, right) => left.start - right.start)
       if (!marks.length) return renderInline(text)
+      const merged = []
+      marks.forEach((mark) => {
+        const last = merged.at(-1)
+        if (last && mark.start <= last.end) {
+          last.end = Math.max(last.end, mark.end)
+          if (mark.markerNumber && !last.markerNumbers.includes(mark.markerNumber)) last.markerNumbers.push(mark.markerNumber)
+        } else merged.push({ ...mark, markerNumbers: mark.markerNumber ? [mark.markerNumber] : [] })
+      })
       let cursor = 0
       let html = ''
-      marks.forEach((mark) => {
-        if (mark.start < cursor) return
+      merged.forEach((mark) => {
         html += renderInline(text.slice(cursor, mark.start))
-        html += `<span class="mark">${renderInline(text.slice(mark.start, mark.end))}${mark.markerNumber ? `<sup>${mark.markerNumber}</sup>` : ''}</span>`
+        html += `<span class="mark">${renderInline(text.slice(mark.start, mark.end))}${mark.markerNumbers.length ? `<sup>${mark.markerNumbers.slice().sort((a, b) => a - b).join('·')}</sup>` : ''}</span>`
         cursor = mark.end
       })
       return html + renderInline(text.slice(cursor))
@@ -449,9 +457,9 @@ export function downloadRevisionWord({ name = '合同审查稿', text = '', docu
         const replacement = rev.operation === 'delete'
           ? '删除该问题片段'
           : rev.operation === 'notice'
-            ? (rev.riskNote || '请结合实际业务确认并补全该项')
+            ? (rev.noticeText || rev.riskNote || '请结合实际业务确认并补全该项')
             : (rev.rewrittenText || '请结合批注局部调整')
-        const fallbackClause = rev.localizationStatus === 'finding-fallback' && rev.fullRewrittenText && rev.fullRewrittenText !== rev.rewrittenText
+        const fallbackClause = ['finding-fallback', 'handbook-notice'].includes(rev.localizationStatus) && rev.fullRewrittenText && rev.fullRewrittenText !== rev.rewrittenText
           ? `<p class="note"><b>完整条款建议</b>${renderInline(rev.fullRewrittenText)}</p>` : ''
         return `<div class="local-edit"><span class="badge">${rev.markerNumber}</span><div><p><b>${label}</b>${renderInline(replacement)}</p>${rev.riskNote ? `<p class="note"><b>批注</b>${renderInline(rev.riskNote)}</p>` : ''}${fallbackClause}</div></div>`
       }
@@ -475,7 +483,7 @@ export function downloadRevisionWord({ name = '合同审查稿', text = '', docu
     const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:SimSun,serif;margin:48px;color:#111;line-height:1.85}h1{text-align:center;font-size:22pt}h2{margin-top:24px;font-size:15pt}p{font-size:12pt}p.li{margin-left:24px;text-indent:-12pt}.mark{background:#fff0e5;border-bottom:1px solid #e35f00}.mark sup,.badge{color:#fff;background:#e35f00;border-radius:9px;font-size:8pt;font-weight:bold}.mark sup{padding:1px 4px;margin-left:2px}.local-edit{display:flex;margin:5px 0 12px 22px;padding:7px 10px;background:#fffaf6;border:1px solid #f2ded0}.badge{display:inline-block;min-width:16px;height:16px;margin-right:8px;text-align:center}.local-edit p,.compact-rev p{margin:0;font-size:10.5pt}.local-edit b,.compact-rev b{margin-right:8px;color:#9e352d}.note{margin-top:4px!important;color:#765c50}.compact-rev{margin:7px 0 14px 22px;padding:8px 12px;border-left:3px solid #fd7002;background:#fafafa}.anchor{color:#777}</style></head><body>${htmlBody}</body></html>`
     const url = URL.createObjectURL(new Blob([html], { type: 'application/msword' }))
     const anchor = document.createElement('a')
-    anchor.href = url; anchor.download = `${name}-审查批注稿.doc`; anchor.click(); URL.revokeObjectURL(url)
+    anchor.href = url; anchor.download = `${name}-${suffix}.doc`; anchor.click(); URL.revokeObjectURL(url)
   }
 
 function ContractRewritePage() {
