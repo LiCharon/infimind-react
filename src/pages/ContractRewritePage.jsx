@@ -1,3 +1,4 @@
+import MaterialReviewPanel from '../components/MaterialReviewPanel.jsx'
 import { useComposerSend } from '../hooks/useComposerSend'
 import QueuedMessages from '../components/QueuedMessages'
 import SideChatEmptyState from '../components/SideChatEmptyState'
@@ -1085,7 +1086,7 @@ function ContractRewritePage() {
     ? <button className="icon-button" aria-label={t("返回对话")} onClick={() => setDocumentOpen(false)}><ChevronLeft size={21} /></button>
     : null
   const composer = (
-    <div className="composer-wrap"><div className="composer"><QueuedMessages composer={queuedComposer} />
+    <div className="composer-wrap"><MaterialReviewPanel taskId={[...(activeThread?.messages || [])].reverse().find((m) => m.taskId)?.taskId || activeThread?.taskId} running={Boolean(loading)} /><div className="composer"><QueuedMessages composer={queuedComposer} />
       <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage() } }} placeholder={t("上传合同或输入你特别关注的审查重点…")} />
       {files.length > 0 && <div className="pending-files">{files.map((file) => <span key={file.name}><FileText size={14} />{file.name}<button aria-label={(t("移除 ") + (file.name))} onClick={() => setFiles((items) => items.filter((item) => item !== file))}><X size={13} /></button></span>)}</div>}
       <div className="composer-bottom"><ToolComposerControls onUpload={() => inputRef.current?.click()} mode={mode} onModeChange={setMode} messages={activeThread?.messages || []} question={instruction} hasPendingFiles={files.length > 0}><button className="tool-text mobile-hide" type="button" onClick={() => setTaskModalOpen(true)}><Menu size={18} />{t("更多")}</button></ToolComposerControls><button className="voice-send" onClick={queuedComposer.send} disabled={Boolean(activeRequest.cancelPending) || (!loading && !hasComposerInput)} aria-label={queuedComposer.label || t(composerActionLabel)} title={composerActionLabel}>{loading ? (hasComposerInput ? <Send size={19} /> : <Square size={17} />) : <Send size={19} />}</button></div>

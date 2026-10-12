@@ -1,3 +1,5 @@
+import { selectMaterialBlocks, formatMaterialBlocks, materialNotice, isWholeDocumentQuestion } from '../services/document-materials.js'
+import { indexedMaterialText } from '../services/material-processing.js'
 /**
  * 用工咨询接口。
  *
@@ -26,7 +28,7 @@ import {
   seedLawWhitelist
 } from '../services/law-whitelist.js'
 import { verifyOutput, renderCitationNotice } from '../services/citation-verifier.js'
-import { mergeMaterials, getMaterials, clearMaterials, MAX_TOTAL_TEXT } from '../services/consult-material-store.js'
+import { mergeMaterials, getMaterials, clearMaterials, materialStoreKey, MAX_TOTAL_TEXT } from '../services/consult-material-store.js'
 import { rewriteFollowUpQuery } from '../services/query-rewriter.js'
 import { refineConversationTitle, isTitleRefineEnabled, toClientResult } from '../services/title-refiner.js'
 import { initializeLaborKb, searchLaborKb, getLaborKbStatus, getLaborSearchHealth } from '../services/labor-kb.js'
@@ -272,7 +274,7 @@ async function buildRetrievalQuery({ message, materials = [], history = [] }) {
  * 单个文件解析失败不中断整轮咨询：记入 failures，继续用其余材料作答。
  * @returns {{ materials: Array<{name:string,text:string}>, failures: string[] }}
  */
-async function parseAttachments(files = [], onProgress, updateFileParseStatus = () => {}) {
+async function parseAttachments(files = [], onProgress, updateFileParseStatus = () => {}, sourceTaskId = '') {
   const materials = []
   const failures = []
   for (const file of files) {
@@ -285,7 +287,7 @@ async function parseAttachments(files = [], onProgress, updateFileParseStatus = 
         failures.push(`${file.originalname}：未提取到可用文字`)
         continue
       }
-      materials.push({ name: file.originalname, text })
+      materials.push({ name: file.originalname, text, fileId: file.id, sourceTaskId: file.sourceTaskId || sourceTaskId, parseMetadata: parsed.metadata })
       await updateFileParseStatus(file.id, 'succeeded')
     } catch (error) {
       await updateFileParseStatus(file.id, 'failed')
@@ -359,7 +361,8 @@ export async function runLaborConsult({
   const message = String(input.message ?? task.prompt ?? '').trim()
   const mode = input.mode === 'fast' || task.mode === 'fast' ? 'fast' : 'thinking'
   const region = String(input.region || '').trim()
-  const conversationId = String(input.conversationId || task.threadId || '').trim()
+  const rawConversationId = String(input.conversationId || task.threadId || '').trim()
+  const conversationId = materialStoreKey(task.userId, rawConversationId)
   const history = parseHistory(input.history)
   const attachments = Array.isArray(files) ? files : []
   const warnings = []
@@ -388,7 +391,7 @@ export async function runLaborConsult({
       const parsed = await parseAttachments(
         attachments,
         (label) => emit('consult.progress', { label }),
-        updateFileParseStatus
+        updateFileParseStatus, task.id
       )
       failures = parsed.failures
       const merged = mergeMaterials(conversationId, parsed.materials)
@@ -499,7 +502,14 @@ export async function runLaborConsult({
   }
 
   const systemPrompt = buildLaborConsultSystemPrompt({ now: new Date(), laws })
-  const userMessage = buildLaborConsultUserMessage({ message, evidence, cases, attachments: materials, kbEntries })
+  const selectedMaterials = selectMaterialBlocks(materials, message)
+  const indexText = indexedMaterialText(input.materialIndex)
+  const materialContext = materialNotice(materials, selectedMaterials.coverage) + '\n' + (input.materialNotice || '')
+  const modelMaterials = selectedMaterials.blocks.length ? [{ name: '本轮选取的原文及已遍历材料的逐字摘录',
+    text: `${formatMaterialBlocks(selectedMaterials.blocks)}\n${indexText}\n【读取限制】${materialContext}` }] : []
+  await checkpoint('material-coverage', { ...selectedMaterials.coverage,
+    indexed: (input.materialIndex || []).map((e) => e.blockId), mode: isWholeDocumentQuestion(message) ? 'whole-material-index' : 'question-selection' })
+  const userMessage = buildLaborConsultUserMessage({ message, evidence, cases, attachments: modelMaterials, kbEntries })
   let answer = ''
   let reasoning = ''
   if (fakeLlm) {
@@ -616,7 +626,7 @@ router.post('/labor-consult/verify', (req, res) => {
 router.post('/labor-consult/forget', (req, res) => {
   const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId.trim() : ''
   if (!conversationId) return res.status(400).json({ error: '缺少 conversationId' })
-  clearMaterials(conversationId)
+  clearMaterials(materialStoreKey(req.user?.id, conversationId))
   res.json({ ok: true })
 })
 
@@ -675,7 +685,7 @@ router.post('/labor-consult', upload.array('files', MAX_FILES), async (req, res)
   const writeSSE = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   try {
     await runLaborConsult({
-      task: { mode, threadId: conversationId, prompt: message },
+      task: { userId: req.user?.id, mode, threadId: conversationId, prompt: message },
       input: { message, mode, region, conversationId, history },
       files: attachments,
       emit: writeSSE,

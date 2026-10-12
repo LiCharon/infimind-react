@@ -10,6 +10,8 @@ import HandbookDiagnosisPage from './pages/HandbookDiagnosisPage'
 import LaborArbitrationPage from './pages/LaborArbitrationPage'
 import AuthPage from './pages/AuthPage'
 import ToolConversationPage from './pages/ToolConversationPage'
+import MedicalCalculatorPage from './pages/MedicalCalculatorPage'
+import PensionCalculationPage from './pages/PensionCalculationPage'
 import CitationVerificationComparePage from './pages/CitationVerificationComparePage'
 import QRCodeModal from './components/QRCodeModal'
 import { AuthProvider, useAuth } from './components/AuthProvider'
@@ -64,6 +66,9 @@ function App() {
               <Route path="/tools/labor-contract" element={<LaborContractAnalysisPage />} />
               <Route path="/tools/arbitration" element={<LaborArbitrationPage />} />
               <Route path="/tools/handbook" element={<HandbookDiagnosisPage />} />
+              <Route path="/tools/medical-calculator" element={<MedicalCalculatorPage />} />
+              <Route path="/tools/pension-calc1" element={<PensionCalculationPage toolId="pension-calc1" />} />
+              <Route path="/tools/pension-calc2" element={<PensionCalculationPage toolId="pension-calc2" />} />
               <Route path="/tools/:toolId" element={<ToolConversationPage />} />
             </Route>
             <Route path="/auth" element={<AuthPage />} />

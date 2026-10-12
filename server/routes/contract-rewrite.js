@@ -24,7 +24,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   // 浏览器 FormData 以 UTF-8 写入中文 filename；Busboy 默认 Latin-1 会造成文件名乱码。
   defParamCharset: 'utf8',
-  limits: { fileSize: 80 * 1024 * 1024 } // 80MB
+  limits: { fileSize: MAX_FILE_SIZE, files: MAX_FILES } // 80MB
 })
 
 // 两个阶段共享同一份合同原文，避免因不同截断长度造成审查、确认和改写结果错位。
@@ -41,33 +41,7 @@ const dedupeKey = (item) => {
   return `${title}::${quote}`
 }
 
-const ACCEPTED_TYPES = [
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/rtf',
-  'application/vnd.oasis.opendocument.text',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.oasis.opendocument.spreadsheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/vnd.oasis.opendocument.presentation',
-  'text/plain',
-  'text/markdown',
-  'text/csv',
-  'text/tab-separated-values',
-  'text/html',
-  'application/json',
-  'application/xml',
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/bmp',
-  'image/tiff',
-  'image/gif'
-]
-
+import { isAcceptableFile, MAX_FILES, MAX_FILE_SIZE } from '../services/upload-config.js'
 // 用量只通过本地服务端读取，避免将密钥发送到浏览器。
 router.get('/account/balance', async (req, res) => {
   try {
@@ -158,7 +132,7 @@ router.post('/contract-draft', upload.array('files', 6), async (req, res) => {
   if (attachments.length > 6) return res.status(400).json({ error: '一次最多上传 6 个参考文件' })
 
   for (const file of attachments) {
-    const isValid = ACCEPTED_TYPES.includes(file.mimetype) || /\.(pdf|doc|docx|rtf|odt|xls|xlsx|ods|ppt|pptx|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|png|jpg|jpeg|webp|bmp|tif|tiff|gif)$/i.test(file.originalname || '')
+    const isValid = isAcceptableFile(file)
     if (!isValid) return res.status(400).json({ error: `${file.originalname} 文件类型暂不支持` })
   }
 
@@ -377,8 +351,7 @@ router.post('/contract-rewrite', upload.array('files', 6), async (req, res) => {
 
     // 验证文件类型
     for (const file of attachments) {
-      const isValid = ACCEPTED_TYPES.includes(file.mimetype) ||
-        /\.(pdf|doc|docx|rtf|odt|xls|xlsx|ods|ppt|pptx|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|png|jpg|jpeg|webp|bmp|tif|tiff|gif)$/i.test(file.originalname || '')
+      const isValid = isAcceptableFile(file)
       if (!isValid) {
         return res.status(400).json({ error: `${file.originalname} 文件类型暂不支持` })
       }

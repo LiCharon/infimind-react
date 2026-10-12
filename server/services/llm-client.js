@@ -1,3 +1,4 @@
+import { estimateTokens, CONTEXT_WINDOW_TOKENS, CONTEXT_SAFETY_TOKENS } from '../../src/utils/context-budget.js'
 import dotenv from 'dotenv'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -220,6 +221,7 @@ export async function chatDetailed(systemPrompt, userMessage, options = {}) {
   }
   messages.push({ role: 'user', content: normalizeMessageContent(userMessage) })
 
+  if (messages.reduce((n, m) => n + estimateTokens(typeof m.content === 'string' ? m.content : JSON.stringify(m.content)) + 16, 0) + maxTokens + CONTEXT_SAFETY_TOKENS > CONTEXT_WINDOW_TOKENS) throw Object.assign(new Error('本阶段材料超过模型上下文预算，已完成读取记录保留；请拆分任务。'), { code: 'material_context_overflow', retryable: false })
   const requestBody = {
     model,
     messages,
@@ -322,6 +324,7 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
   const inputChars = systemPrompt.length + (typeof userMessage === 'string' ? userMessage.length : JSON.stringify(userMessage).length)
   console.log(`[llm-client] Starting stream with model: ${model}, input ~${inputChars} chars`)
 
+  if (messages.reduce((n, m) => n + estimateTokens(typeof m.content === 'string' ? m.content : JSON.stringify(m.content)) + 16, 0) + maxTokens + CONTEXT_SAFETY_TOKENS > CONTEXT_WINDOW_TOKENS) throw Object.assign(new Error('本阶段材料超过模型上下文预算，已完成读取记录保留；请拆分任务。'), { code: 'material_context_overflow', retryable: false })
   const requestBody = {
     model,
     messages,

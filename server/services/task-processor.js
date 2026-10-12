@@ -1,3 +1,4 @@
+import { prepareTaskMaterials } from './material-processing.js'
 import { TaskCancelledError, runContractReview } from '../workflows/contract-review.js'
 import { runContractDraft } from '../workflows/contract-draft.js'
 import { runLaborConsult } from '../workflows/labor-consult.js'
@@ -90,9 +91,25 @@ export function createTaskProcessor({
       let input = taskService.getTaskInput?.(taskId) || {}
       const handbookParsing = getCheckpoint('handbook-parsing')?.result
       const reusableHandbookParsing = handbookParsing && (input.action === 'followup' || handbookParsing.parserVersion === HANDBOOK_PARSER_VERSION)
-      let files = task.productId === 'handbook-diagnosis' && reusableHandbookParsing
-        ? [] : await fileStore.readFiles(taskService.getFiles(taskId))
+      const staleHandbookParsing = task.productId === 'handbook-diagnosis' && handbookParsing && !reusableHandbookParsing
+      const sharedDocuments = getCheckpoint('material-source')?.result?.documents || []
+      const storedFiles = taskService.getFiles(taskId)
+      const canReuseShared = !staleHandbookParsing && storedFiles.length && storedFiles.every((f) => sharedDocuments.some((d) => d.fileId === f.id))
+      let files = task.productId === 'handbook-diagnosis' && reusableHandbookParsing ? []
+        : canReuseShared ? storedFiles.map((f) => ({ ...f, originalname: f.originalName, mimetype: f.mimeType })) : await fileStore.readFiles(storedFiles)
       let sourceDocuments = []
+      if (task.productId === 'labor-consult' && task.threadId) {
+        const priorTasks = taskService.listAllThreadTasks?.(task.userId, task.productId, task.threadId) || []
+        const byId = new Map()
+        for (const prior of priorTasks.filter((p) => p.id !== task.id && new Date(p.createdAt) <= new Date(task.createdAt))) {
+          if (new Date(prior.resultExpiresAt).getTime() <= Date.now()) continue
+          input.retainedMaterialIndex = [...(input.retainedMaterialIndex || []), ...(taskService.getCheckpoint(prior.id, 'material-source')?.result?.index || [])]
+          for (const document of taskService.getCheckpoint(prior.id, 'material-source')?.result?.documents || []) byId.set(document.fileName || document.fileId, document)
+        }
+        sourceDocuments = [...byId.values()]
+        input.materials = sourceDocuments.map((d) => ({ ...d, name: d.fileName }))
+      }
+
       let report = null
       let history = []
       let privacyAliases = []
@@ -127,6 +144,7 @@ export function createTaskProcessor({
           }
           // 创建时队列失败的上传已被路由回滚，不能阻塞用户重新提交。
           if (prior.status === 'failed' && prior.errorCode === 'queue_unavailable') continue
+          input.retainedMaterialIndex = [...(input.retainedMaterialIndex || []), ...(taskService.getCheckpoint(prior.id, 'material-source')?.result?.index || [])]
           const priorInput = taskService.getTaskInput?.(prior.id) || {}
           if (!priorInput.fileRefs?.length) continue
           const refs = priorInput.fileRefs.filter((ref) => !excluded.has(ref.id))
@@ -188,6 +206,12 @@ export function createTaskProcessor({
         privacyAliases = taskService.getCheckpoint(source.id, 'privacy')?.result?.aliases || []
         const originalFiles = taskService.getFiles(source.id)
         sourceDocuments = taskService.getLaborSourceDocuments(source.id)
+        const retainedSource = taskService.getCheckpoint(source.id, 'material-source')?.result
+        input.retainedMaterialIndex = retainedSource?.index || []
+        sourceDocuments = sourceDocuments.map((document) => {
+          const original = retainedSource?.documents?.find((item) => item.fileId === document.fileId && item.text === document.text)
+          return original ? { ...original, ...document, parseMetadata: original.parseMetadata } : document
+        })
         if (input.action === 'restart-analysis' && !sourceDocuments.length && originalFiles.length
           && originalFiles.every((file) => new Date(file.cleanupAt).getTime() > Date.now())) {
           files = await fileStore.readFiles(originalFiles)
@@ -227,7 +251,7 @@ export function createTaskProcessor({
         error.code = 'unsupported_product_id'
         throw error
       }
-      const result = await workflow({
+      const materialOptions = {
         task,
         input,
         files,
@@ -242,7 +266,19 @@ export function createTaskProcessor({
         updateFileParseStatus: (fileId, status) => taskService.updateFileParseStatus(fileId, status),
         signal: abortController.signal,
         fakeLlm
-      })
+      }
+      // Reparse outdated handbook checkpoints from originals, bypassing the shared text cache.
+      const materialArgs = await prepareTaskMaterials(staleHandbookParsing ? { ...materialOptions, getCheckpoint: (name) => ['material-source', 'material-coverage', 'parsing', 'materials', 'handbook-parsing'].includes(name) ? null : getCheckpoint(name) } : materialOptions)
+      const result = await workflow(materialArgs)
+      const coverage = getCheckpoint('material-coverage')?.result
+      if (coverage && result) {
+        coverage.indexed = [...new Set([...(coverage.indexed || []), ...(materialArgs.input.materialIndex || []).map((entry) => entry.blockId)])]
+        coverage.entered = fakeLlm ? [] : [...new Set([...(coverage.entered || []), ...(coverage.indexed || []), ...(coverage.selected || [])])]
+        coverage.simulated = Boolean(fakeLlm)
+        await checkpoint('material-coverage', coverage)
+        result.materialCoverage = { ...(result.materialCoverage || {}), ...coverage }
+        result.parseWarnings = materialArgs.input.materialNotice ? [materialArgs.input.materialNotice] : []
+      }
       if (isCancellationRequested()) return taskService.markCancelled(taskId)
       const completed = taskService.completeTask(taskId, result)
       if (task.productId === 'labor-arbitration' && completed?.status === 'succeeded' && result.conversationTitle) {

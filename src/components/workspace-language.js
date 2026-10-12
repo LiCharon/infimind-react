@@ -1,5 +1,7 @@
 const pairs = `设置|Settings
 员工手册诊断|Employee handbook review
+医疗期计算器|Medical period calculator
+养老保险测算|Pension estimate
 返回设置|Back to settings
 关闭设置|Close settings
 语言|Language

@@ -1,3 +1,6 @@
+import { extensionForFile } from './upload-config.js'
+import { readOcrImage } from './ocr-image-decoder.js'
+import { randomUUID } from 'node:crypto'
 import { readFile, writeFile, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, extname, basename, dirname, delimiter } from 'path'
@@ -5,6 +8,8 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { pathToFileURL } from 'node:url'
 import JSZip from 'jszip'
+import { finalizeDocument } from './document-materials.js'
+import { extractSpreadsheet, extractPresentation, openOfficeZip, appendImage, decodeDocumentBuffer } from './office-material-parser.js'
 
 const execFileAsync = promisify(execFile)
 const PLAIN_TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm'])
@@ -18,8 +23,22 @@ const MACOS_TEXTUTIL_EXTENSIONS = new Set(['.rtf', '.odt'])
  */
 export async function extractText(file, options = {}) {
   options.signal?.throwIfAborted()
-  const extension = extname(file.originalname || '').toLowerCase()
-  const mimeType = file.mimetype || ''
+  if (file.preparseError) throw file.preparseError
+  if (file.preparsed) return file.preparsed
+  return finalizeDocument(await extractRawText(file, options), file)
+}
+
+async function recognizeDefaultImage(file, options = {}) {
+  if (options.ocrInProcess || options.createOcrWorker) return extractImageText(file, options)
+  const { recognizeIsolatedImage } = await import('./ocr-process.js')
+  return recognizeIsolatedImage(file, options)
+}
+
+async function extractRawText(file, options = {}) {
+  options.signal?.throwIfAborted()
+  const extension = extensionForFile(file)
+  if (!extname(file.originalname || '') && extension) file = { ...file, originalname: `document${extension}` }
+  const mimeType = extension ? '' : file.mimetype || ''
 
   if (extension === '.pdf' || mimeType === 'application/pdf') {
     return extractPdfText(file, options)
@@ -33,7 +52,7 @@ export async function extractText(file, options = {}) {
 
   if (extension === '.docx' || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
     try {
-      return await extractDocxText(file)
+      return await extractDocxText(file, options)
     } catch (error) {
       // .docx 解析失败时，检测是否为伪装的旧版 .doc 文件
       if (
@@ -42,15 +61,18 @@ export async function extractText(file, options = {}) {
         isLegacyWord(file.buffer)
       ) {
         console.warn(`[file-parser] ${file.originalname} 可能是旧版 .doc 文件伪装为 .docx，尝试转换`)
-        return extractLegacyDocText(file)
+        return extractLegacyDocText(file, options)
       }
       throw error
     }
   }
 
   if (extension === '.doc' || mimeType === 'application/msword' || isLegacyWord(file.buffer)) {
-    return extractLegacyDocText(file)
+    return extractLegacyDocText(file, options)
   }
+
+  if (['.xlsx', '.csv', '.tsv'].includes(extension)) return extractSpreadsheet(file, { ...options, recognizeImage: options.recognizeImage || recognizeDefaultImage })
+  if (extension === '.pptx') return extractPresentation(file, { ...options, recognizeImage: options.recognizeImage || recognizeDefaultImage })
 
   if (PLAIN_TEXT_EXTENSIONS.has(extension) || mimeType.startsWith('text/')) {
     return extractPlainText(file, extension)
@@ -61,7 +83,7 @@ export async function extractText(file, options = {}) {
   }
 
   if (isImage(extension, mimeType)) {
-    return extractImageText(file, options)
+    return (options.recognizeImage || recognizeDefaultImage)(file, options)
   }
 
   throw new Error(`暂不支持的文件格式: ${extension || mimeType || '未知'}`)
@@ -103,7 +125,7 @@ export function stripNativeCommentText(text, annotations = []) {
 /**
  * PDF 文本提取
  */
-async function extractPdfText(file, { signal, recognizeImage = extractImageText } = {}) {
+async function extractPdfText(file, { signal, recognizeImage = recognizeDefaultImage } = {}) {
   let parser
   let abort
   try {
@@ -115,10 +137,20 @@ async function extractPdfText(file, { signal, recognizeImage = extractImageText 
     signal?.throwIfAborted()
     const data = await parser.getText()
     const pages = []
+    const ocrRegions = [], unreadableParts = []
     for (const page of data.pages || []) {
       signal?.throwIfAborted()
       if (page.text?.trim()) {
-        pages.push({ page: page.num, text: page.text, method: 'text' })
+        let text = page.text
+        const metadata = { warnings: [], unreadableParts: [], ocrRegions: [] }
+        try {
+          const extracted = await parser.getImage({ partial: [page.num], imageThreshold: 0, imageDataUrl: false, imageBuffer: true })
+          const images = extracted.pages.flatMap((item) => item.images)
+          for (const [index, image] of images.entries()) text += await appendImage(Buffer.from(image.data), {
+            kind: 'pdf-image', page: page.num, imageIndex: index, label: `第${page.num}页内嵌图片${index + 1}` }, recognizeImage, metadata, signal)
+        } catch (error) { signal?.throwIfAborted(); metadata.unreadableParts.push(`第${page.num}页图片未读取成功：${String(error.message).slice(0, 100)}`) }
+        ocrRegions.push(...metadata.ocrRegions); unreadableParts.push(...metadata.unreadableParts)
+        pages.push({ page: page.num, text, method: metadata.ocrRegions.length || text !== page.text ? 'text+ocr' : 'text' })
         continue
       }
       // Render one empty-text page at a time; never render a whole PDF into memory.
@@ -126,6 +158,8 @@ async function extractPdfText(file, { signal, recognizeImage = extractImageText 
         const rendered = await parser.getScreenshot({ partial: [page.num], desiredWidth: 1800, imageDataUrl: false })
         const image = rendered.pages[0]
         const recognized = image ? await recognizeImage({ originalname: `${file.originalname} 第${page.num}页.png`, buffer: Buffer.from(image.data) }, { signal }) : null
+        ocrRegions.push(...(recognized?.metadata?.ocrRegions || []).map((region) => ({ ...region,
+          id: `page-${page.num}-${region.id}`, origin: { kind: 'pdf-page', page: page.num, width: 1800 } })))
         pages.push({ page: page.num, text: recognized?.text || '', method: 'ocr', confidence: recognized?.metadata?.confidence ?? null })
       } catch (error) {
         signal?.throwIfAborted()
@@ -133,11 +167,19 @@ async function extractPdfText(file, { signal, recognizeImage = extractImageText 
         pages.push({ page: page.num, text: '', method: 'ocr', error: String(error.message || '').slice(0, 180) })
       }
     }
+    let text = ''
+    const sections = []
+    for (const page of pages.filter((p) => p.text.trim())) {
+      if (text) text += '\n\n'
+      const start = text.length
+      text += `【第${page.page}页${page.method !== 'text' ? '，OCR识别待核对' : ''}】\n${page.text}`
+      sections.push({ start, end: text.length, source: { page: page.page, method: page.method } })
+    }
     return {
-      text: pages.filter((page) => page.text.trim()).map((page) => `【第${page.page}页${page.method === 'ocr' ? '，OCR识别待核对' : ''}】\n${page.text}`).join('\n\n'),
+      text,
       pageCount: data.total || pages.length,
-      metadata: { pages, warnings: pages.filter((page) => !page.text.trim() || page.method === 'ocr').map((page) =>
-        !page.text.trim() || Number(page.confidence || 0) < 82
+      metadata: { pages, sections, ocrRegions, unreadableParts, warnings: pages.filter((page) => !page.text.trim() || page.method !== 'text').map((page) =>
+        !page.text.trim() || (page.confidence != null && Number(page.confidence) < 82)
           ? `第${page.page}页未读取成功或OCR置信度较低，请核对原件中的日期、金额及请求。`
           : `第${page.page}页使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。`) }
     }
@@ -153,8 +195,9 @@ async function extractPdfText(file, { signal, recognizeImage = extractImageText 
 /**
  * DOCX 文本提取
  */
-async function extractDocxText(file) {
+async function extractDocxText(file, options = {}) {
   try {
+    const zip = await openOfficeZip(file.buffer, 'word/document.xml')
     const mammoth = await import('mammoth')
     const result = await mammoth.extractRawText({ buffer: file.buffer })
 
@@ -165,11 +208,47 @@ async function extractDocxText(file) {
       }
     }
 
-    return {
-      text: result.value || '',
-      pageCount: null,
-      metadata: { format: 'docx' }
+    const xml = await zip.file('word/document.xml').async('string')
+    if (!/<w:tbl\b|<(?:\w+:)?(?:drawing|pict)\b/.test(xml)) return { text: result.value || '', pageCount: null, metadata: { format: 'docx' } }
+    const metadata = { format: 'docx', warnings: [], unreadableParts: [], ocrRegions: [] }
+    const images = []
+    const marker = `FAFEE_${randomUUID()}_IMAGE_`
+    const converted = await mammoth.convertToHtml({ buffer: file.buffer }, { externalFileAccess: false,
+      convertImage: mammoth.images.imgElement(async (image) => {
+        const buffer = await image.readAsBuffer()
+        const entry = Object.values(zip.files).find((item) => item.name.startsWith('word/media/') && !item.dir)
+        const index = images.length
+        images.push({ buffer, entry, index })
+        return { src: `fafee-image-${index}` }
+      }) })
+    let html = converted.value
+    for (const image of images) html = html.replace(new RegExp(`<img\\b[^>]*src="fafee-image-${image.index}"[^>]*>`, 'g'), `\n${marker}${image.index}_END\n`)
+    let text = stripMarkup(html.replace(/<\/(?:td|th)>/g, '\t'))
+    for (const image of images) {
+      let path = ''
+      for (const entry of Object.values(zip.files).filter((entry) => entry.name.startsWith('word/media/') && !entry.dir)) {
+        if ((await entry.async('nodebuffer')).equals(image.buffer)) { path = entry.name; break }
+      }
+      const imageText = await appendImage(image.buffer, { kind: 'zip-image', path, label: `Word内嵌图片${image.index + 1}` }, options.recognizeImage || recognizeDefaultImage, metadata, options.signal)
+      image.text = imageText
+      text = text.replaceAll(`${marker}${image.index}_END`, imageText)
     }
+    if (/<(?:td|th)\b[^>]*(?:rowspan|colspan)=/.test(html)) metadata.warnings.push('Word含合并单元格，请核对行列适用关系。')
+    if (/<(?:\w+:)?(?:drawing|pict)\b/.test(xml) && !images.length) metadata.unreadableParts.push('Word包含绘图或链接图片，未提取到图片，请核对原件。')
+    metadata.sections = []
+    let tableIndex = 0, searchFrom = 0
+    for (const table of html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/g)) {
+      let tableText = stripMarkup(table[0].replace(/<\/(?:td|th)>/g, '\t'))
+      for (const image of images) tableText = tableText.replaceAll(`${marker}${image.index}_END`, image.text)
+      const start = text.indexOf(tableText, searchFrom)
+      const rows = [...table[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)]
+      const header = rows.slice(0, 3).map((row) => stripMarkup(row[1].replace(/<\/(?:td|th)>/g, '\t'))).join('\n')
+      if (start >= 0) { metadata.sections.push({ start, end: start + tableText.length, header, source: { table: ++tableIndex } }); searchFrom = start + tableText.length }
+    }
+    if (!result.value.trim() && !metadata.imageTextLength) text = ''
+    metadata.embeddedImages = images.length
+    metadata.warnings.push(...converted.messages.map((item) => item.message))
+    return { text, pageCount: null, metadata }
   } catch (error) {
     throw new Error(`DOCX 解析失败: ${error.message}`)
   }
@@ -178,11 +257,11 @@ async function extractDocxText(file) {
 /**
  * 旧版 DOC 转换 + 提取
  */
-async function extractLegacyDocText(file) {
+async function extractLegacyDocText(file, options = {}) {
   const originalName = file.originalname || 'document.doc'
   const safeBaseName = sanitizeFilename(basename(originalName, extname(originalName)) || 'document')
   const docxBuffer = await convertLegacyDocToDocx(file)
-  return extractDocxText({ buffer: docxBuffer, originalname: `${safeBaseName}.docx`, mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+  return extractDocxText({ buffer: docxBuffer, originalname: `${safeBaseName}.docx`, mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, options)
 }
 
 /**
@@ -247,7 +326,7 @@ async function convertDocumentToText(file, extension) {
   }
 }
 
-async function convertLegacyDocToDocx(file, { preserveAnnotations = false } = {}) {
+export async function convertLegacyDocToDocx(file, { preserveAnnotations = false } = {}) {
   const tempDir = await mkdtemp(join(tmpdir(), 'doc-parse-'))
   const originalName = file.originalname || 'document.doc'
   const safeBaseName = sanitizeFilename(basename(originalName, extname(originalName)) || 'document')
@@ -388,20 +467,7 @@ async function extractPlainText(file, extension) {
   }
 }
 
-function decodeTextBuffer(buffer) {
-  const source = Buffer.from(buffer || [])
-  // UTF-8 BOM 与 UTF-16 文本在合同附件中较常见；其他编码保持 UTF-8 容错解码。
-  if (source[0] === 0xff && source[1] === 0xfe) return source.subarray(2).toString('utf16le')
-  if (source[0] === 0xfe && source[1] === 0xff) {
-    const swapped = Buffer.allocUnsafe(Math.max(0, source.length - 2))
-    for (let index = 2; index + 1 < source.length; index += 2) {
-      swapped[index - 2] = source[index + 1]
-      swapped[index - 1] = source[index]
-    }
-    return swapped.toString('utf16le')
-  }
-  return source.toString('utf8').replace(/^\uFEFF/, '')
-}
+function decodeTextBuffer(buffer) { return decodeDocumentBuffer(Buffer.from(buffer || [])) }
 
 function stripMarkup(source) {
   return decodeXmlEntities(String(source || '')
@@ -423,20 +489,25 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
   try {
     signal?.throwIfAborted()
     const createWorker = createOcrWorker || (await import('tesseract.js')).createWorker
-    const { Jimp, JimpMime } = await import('jimp')
+    const { JimpMime } = await import('jimp')
     console.log(`[file-parser] Starting OCR for: ${file.originalname}`)
 
     let imageBuffer = file.buffer
     let preprocessed = false
+    let scaleX = 1, scaleY = 1, originalWidth = 0, originalHeight = 0
     try {
-      const image = await Jimp.read(file.buffer)
+      const image = await readOcrImage(file.buffer)
+      originalWidth = image.width; originalHeight = image.height
+      if (image.width * image.height > 40_000_000) throw new Error('图片像素超限，请缩小后上传')
       const shortestSide = Math.min(image.width, image.height)
-      const scale = shortestSide > 0 ? Math.min(3, Math.max(1, 1800 / shortestSide)) : 1
+      const scale = shortestSide > 0 ? Math.min(3, Math.max(1, 1800 / shortestSide), Math.sqrt(40_000_000 / (image.width * image.height))) : 1
       if (scale > 1) image.resize({ w: Math.round(image.width * scale), h: Math.round(image.height * scale) })
+      scaleX = image.width / originalWidth; scaleY = image.height / originalHeight
       image.greyscale().contrast(0.25)
       imageBuffer = await image.getBuffer(JimpMime.png)
       preprocessed = true
     } catch (error) {
+      if (String(error.message).includes('像素超限')) throw error
       // 解码失败时仍交给 Tesseract 处理原始格式，避免预处理阻断可识别图片。
       console.warn(`[file-parser] Image preprocessing skipped for ${file.originalname}: ${error.message}`)
     }
@@ -459,16 +530,16 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
     }
     abort = () => { void worker.terminate().catch(() => {}) }
     signal?.addEventListener('abort', abort, { once: true })
-    let data
+    let data, alternate
     try {
       signal?.throwIfAborted()
       await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1', user_defined_dpi: '300' })
-      const primary = (await worker.recognize(imageBuffer)).data
+      const primary = (await worker.recognize(imageBuffer, {}, { text: true, blocks: true })).data
       data = primary
-      if (Number(primary?.confidence || 0) < 82) {
+      if (Number(primary?.confidence || 0) < 82 || /姓名|员工|工资|金额|期限|不得|扣|日期|\d{4}年/.test(primary?.text || '')) {
         await worker.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1', user_defined_dpi: '300' })
-        const alternate = (await worker.recognize(imageBuffer)).data
-        if (ocrScore(alternate) > ocrScore(primary)) data = alternate
+        alternate = (await worker.recognize(imageBuffer, { rotateAuto: true }, { text: true, blocks: true })).data
+        // Keep the primary transcription; disagreements are review candidates, not corrections.
       }
     } finally {
       signal?.removeEventListener('abort', abort)
@@ -476,6 +547,10 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
     }
     signal?.throwIfAborted()
 
+    if (!(data?.blocks || []).length && Number(data?.confidence || 0) < 82 && originalWidth && originalHeight) {
+      data.blocks = [{ paragraphs: [{ lines: [{ words: [{ text: data.text || '未识别文字', confidence: data.confidence || 0,
+        bbox: { x0: 0, y0: 0, x1: originalWidth * scaleX, y1: originalHeight * scaleY } }] }] }] }]
+    }
     const text = normalizeOcrText(data?.text || '')
     console.log(`[file-parser] OCR completed, text length: ${text.length}`)
 
@@ -485,6 +560,14 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
       metadata: {
         format: 'image',
         confidence: data?.confidence ?? null,
+        originalWidth, originalHeight, scaleX, scaleY,
+        ocrRegions: (data?.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).flatMap((line) => (line.words || []).map((word) => ({ ...word,
+          criticalLine: /姓名|员工|工资|金额|期限|不得|扣|日期|解除|补偿/.test(line.text || (line.words || []).map((w) => w.text).join('')) })))))
+          .filter((word) => word.criticalLine || word.confidence < 82 || /[0-9０-９]|不得|可以|不|应当|姓名|期限/.test(word.text))
+          .slice(0, 10000).map((word, index) => ({ id: `word-${index}`, text: word.text, confidence: word.confidence,
+            bbox: { x0: word.bbox.x0 / scaleX, y0: word.bbox.y0 / scaleY, x1: word.bbox.x1 / scaleX, y1: word.bbox.y1 / scaleY },
+            origin: { kind: 'file-image' }, candidates: ocrWordAlternatives(word, alternate, data.text),
+            reason: word.confidence < 82 ? '识别置信度偏低' : '关键文字待核对' })),
         languages: 'chi_sim+eng',
         preprocessed,
         warnings: ['本文件使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。']
@@ -496,10 +579,16 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
   }
 }
 
-function ocrScore(data) {
-  const confidence = Number(data?.confidence || 0)
-  const characters = normalizeOcrText(data?.text || '').replace(/\s/g, '').length
-  return confidence + Math.min(12, characters / 100)
+
+function ocrWordAlternatives(word, alternate, primaryText) {
+  if (!alternate || alternate.text === primaryText) return []
+  if (String(alternate.text).length <= 160) return [String(alternate.text)]
+  if (alternate.rotateRadians) return [] // Coordinates belong to a rotated candidate image.
+  const words = (alternate.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).flatMap((l) => l.words || [])))
+  return [...new Set(words.filter((candidate) => candidate.bbox && candidate.text !== word.text
+    && Math.min(candidate.bbox.x1, word.bbox.x1) > Math.max(candidate.bbox.x0, word.bbox.x0)
+    && Math.min(candidate.bbox.y1, word.bbox.y1) > Math.max(candidate.bbox.y0, word.bbox.y0))
+    .map((candidate) => candidate.text))].slice(0, 3)
 }
 
 function normalizeOcrText(text) {
@@ -533,7 +622,10 @@ function isLegacyWord(buffer) {
 }
 
 function isHtmlDocument(buffer) {
-  const prefix = decodeTextBuffer(Buffer.from(buffer || []).subarray(0, 4096)).trimStart()
+  if (isLegacyWord(buffer)) return false
+  let prefix
+  try { prefix = decodeTextBuffer(Buffer.from(buffer || []).subarray(0, 4096)).trimStart() }
+  catch { return false }
   return /^(?:<!doctype\s+html\b|<html\b|<\?xml[\s\S]*?<html\b)/i.test(prefix)
 }
 
