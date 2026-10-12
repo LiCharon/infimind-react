@@ -19,6 +19,18 @@ await mkdir(output, { recursive: true })
 assert.ok(process.env.DEEPSEEK_API_KEY, '未配置模型凭据')
 process.env.TASK_FAKE_LLM = 'false'
 delete process.env.HANDBOOK_REFERENCE_MANIFEST
+delete process.env.HANDBOOK_PROVISION_MANIFEST
+let provisionCount = 0
+let provisionManifestHash = ''
+if (arg('--public-provision-manifest')) {
+  const path = resolve(arg('--public-provision-manifest'))
+  const { loadHandbookProvisions } = await import('../services/handbook-provisions.js')
+  const loaded = await loadHandbookProvisions({ manifestPath: path })
+  assert.ok(loaded.configured && loaded.provisions.length)
+  process.env.HANDBOOK_PROVISION_MANIFEST = path
+  provisionCount = loaded.provisions.length
+  provisionManifestHash = createHash('sha256').update(await readFile(path)).digest('hex')
+}
 let referenceCount = 0
 if (arg('--synthetic-reference-fixture')) {
   assert.ok(!arg('--resume-run'), '参考资料对比须使用全新独立运行')
@@ -119,7 +131,7 @@ for (const account of accounts) {
 }
 const request = (path, options = {}, account = 0) => nativeFetch(`${origin}${path}`, { ...options, headers: { Authorization: `Bearer ${logins[account].accessToken}`, ...options.headers } })
 const outcomes = []
-const persist = () => writeFile(join(output, 'summary.json'), JSON.stringify({ destination: destination.origin, isolated: true, fakeLlm: false, referenceCount, lawMetadataCount: 0, outcomes, modelCalls }, null, 2))
+const persist = () => writeFile(join(output, 'summary.json'), JSON.stringify({ destination: destination.origin, isolated: true, fakeLlm: false, referenceCount, provisionCount, provisionManifestHash, lawMetadataCount: 0, outcomes, modelCalls }, null, 2))
 async function submit(item, extra = {}) {
   const body = new FormData()
   for (const [key, value] of Object.entries({ threadId: `live-${item.id}`, action: 'analyze', mode: arg('--mode') || 'thinking', ...extra })) body.set(key, String(value))
