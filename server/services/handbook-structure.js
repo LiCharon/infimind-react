@@ -7,16 +7,36 @@ export const fingerprint = (value) => createHash('sha256').update(typeof value =
 const heading = /^(?:第[一二三四五六七八九十百零〇\d]+[章节篇编]|[一二三四五六七八九十]+[、．.]|\d+(?:\.\d+)*[、．.]?\s+).{1,65}$/
 const clause = /^(?:第[一二三四五六七八九十百零〇\d]+条|[（(][一二三四五六七八九十百\d]+[）)]|\d+[、．.])/u
 const topicPatterns = [
-  ['考勤工时', /考勤|旷工|迟到|早退|打卡|工时|加班|工作时间/u],
-  ['薪酬待遇', /工资|薪酬|奖金|扣款|薪资|报酬|经济损失/u],
+  ['考勤工时', /考勤|旷工|迟到|早退|打卡|工时|加班|工作时间|出勤|缺勤|到岗|签到|刷卡/u],
+  ['薪酬待遇', /工资|薪酬|奖金|扣款|薪资|报酬|经济损失|发薪|薪金|月薪/u],
   ['休假福利', /休假|病假|年假|产假|福利|社保|社会保险/u],
   ['奖惩解除', /违纪|处分|处罚|解除|辞退|离职|开除|奖惩/u],
   ['绩效岗位', /绩效|不胜任|考核|调岗|培训|岗位|工作能力/u],
-  ['信息隐私', /个人信息|隐私|监控|保密|数据|网络|电脑/u],
+  ['信息隐私', /个人信息|隐私|监控|保密|数据|网络|电脑|商业秘密|竞业限制/u],
   ['安全与平等', /安全|性骚扰|歧视|工伤|职业健康/u],
   ['制定告知', /民主程序|职工代表|工会|公示|告知|签收|生效|修订/u]
 ]
 export const handbookTopics = (text) => topicPatterns.filter(([, pattern]) => pattern.test(text)).map(([topic]) => topic)
+
+// Rank candidate blocks by the specific wording as well as the broad topic.
+// IDF downweights shared boilerplate. This is lexical ranking, not vector search.
+export function rankHandbookChunks(query, chunks) {
+  const normalize = (value) => String(value || '').toLowerCase().replace(/法定休假日/g, '法定节假日')
+  const tokens = (value) => {
+    const words = [...normalize(value).matchAll(/[\u4e00-\u9fff]+|[a-z0-9]+/g)].flatMap(([word]) =>
+      /^[a-z0-9]+$/.test(word) ? [word] : Array.from({ length: Math.max(0, word.length - 1) }, (_, index) => word.slice(index, index + 2)))
+    return new Set(words)
+  }
+  const wanted = tokens(query), topics = handbookTopics(query)
+  const entries = chunks.map((chunk) => ({ chunk, terms: tokens(`${chunk.sectionTitle || ''}\n${chunk.text}`), titleTerms: tokens(chunk.sectionTitle) }))
+  const frequencies = new Map()
+  for (const { terms } of entries) for (const term of terms) frequencies.set(term, (frequencies.get(term) || 0) + 1)
+  return entries.map(({ chunk, terms, titleTerms }, index) => {
+    let score = chunk.topics.filter((topic) => topics.includes(topic)).length
+    for (const term of wanted) if (terms.has(term)) score += Math.log(1 + entries.length / (frequencies.get(term) || 1)) * (titleTerms.has(term) ? 2 : 1)
+    return { chunk, score, index }
+  }).sort((left, right) => right.score - left.score || left.index - right.index)
+}
 
 // Every interval partitions the original text. No trimming or silent text loss.
 function splitInterval(text, start, end, budget) {

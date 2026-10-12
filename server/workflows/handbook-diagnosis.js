@@ -1,7 +1,7 @@
 import { chatDetailed } from '../services/llm-client.js'
 import { extractHandbookText, HANDBOOK_PARSER_VERSION } from '../services/handbook-materials.js'
 import { TaskCancelledError } from './contract-review.js'
-import { buildHandbookStructure, fingerprint, handbookTopics, locateHandbookQuote, retrieveHandbookRelations } from '../services/handbook-structure.js'
+import { buildHandbookStructure, fingerprint, handbookTopics, locateHandbookQuote, retrieveHandbookRelations, rankHandbookChunks } from '../services/handbook-structure.js'
 import { loadHandbookReferences, retrieveHandbookReferences } from '../services/handbook-references.js'
 import { createHandbookRedactor } from '../services/handbook-redaction.js'
 import { listLawsForBaseline, resolveLawStatus } from '../services/law-whitelist.js'
@@ -13,6 +13,28 @@ const string = (value) => typeof value === 'string' ? value.trim() : ''
 const strings = (value) => Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim()) : []
 const unique = (values) => [...new Set(values.filter(Boolean))]
 const error = (message, code = 'handbook_output_invalid') => Object.assign(new Error(message), { code, retryable: false, unitRetryExhausted: true })
+
+// A narrow factual guard, not a legal/reasoning judge: a non-conflict edit must
+// not silently replace an already specified clock time. Explicit proposals in
+// 待确认/待核实 placeholders remain proposals, and numeric wording is normalized.
+function clockTimes(text) {
+  const digits = '零一二三四五六七八九'
+  const number = (value = '零') => {
+    if (/^\d+$/.test(value)) return Number(value)
+    value = value.replace(/两/g, '二')
+    if (value.includes('十')) { const [left, right] = value.split('十'); return (left ? digits.indexOf(left) : 1) * 10 + (right ? digits.indexOf(right) : 0) }
+    return Number([...value].map((digit) => digits.indexOf(digit)).join(''))
+  }
+  const pattern = /(?<period>上午|下午|晚上|早上|中午|凌晨)?(?:(?<hour>[零一二三四五六七八九十两\d]{1,3})(?:时|点)(?:(?<minute>[零一二三四五六七八九十两\d]{1,3})分)?(?<half>半)?|(?<colonhour>\d{1,2})[:：](?<colonminute>\d{2}))/g
+  return new Set([...String(text).matchAll(pattern)].flatMap(({ groups }) => {
+    let hour = number(groups.hour || groups.colonhour)
+    const minute = groups.half ? 30 : number(groups.minute || groups.colonminute)
+    if (hour > 24 || minute > 59) return []
+    if (/下午|晚上/.test(groups.period || '') && hour < 12) hour += 12
+    if (/凌晨|上午/.test(groups.period || '') && hour === 12) hour = 0
+    return [`${hour}:${minute}`]
+  }))
+}
 
 const PROCEDURE_CHECKLIST = [
   { id: 'discussion', title: '制定和修改程序', status: 'pending', description: '核对涉及员工切身利益的规则是否履行适用的讨论、协商程序。', materials: ['制度版本与修改记录', '讨论及协商记录'], note: '仅提供核对清单，未审查程序证据。' },
@@ -45,16 +67,19 @@ export function normalizeHandbookFindings(raw, chunks, laws = []) {
     })
     const needsLegalVerification = authorities.length > 0
     const needsSourceVerification = evidence.some((item) => map.get(item.chunkId)?.sourceNeedsVerification || /OCR识别待核对/.test(map.get(item.chunkId)?.text || ''))
-    const identity = { kind: isConflict ? 'conflict' : 'clause', topic: string(finding.topic), title: string(finding.title),
+    const sourceTimes = clockTimes(evidence.map((item) => item.quote).join('\n'))
+    const draftTimes = clockTimes(string(finding.suggestedClause).replace(/【(?:待确认|待核实)[^】]*】/g, ''))
+    const changedTime = !isConflict && sourceTimes.size > 0 && [...draftTimes].some((time) => !sourceTimes.has(time))
+    const identity = { kind: isConflict ? 'conflict' : 'clause', topic: string(finding.topic) || '制度内容', title: string(finding.title),
       evidence: evidence.map((item) => [item.chunkId, item.quote.replace(/\s/g, '')]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) }
     return { id: `finding:${fingerprint(identity).slice(0, 20)}`, kind: identity.kind, topic: identity.topic || '制度内容',
       title: string(finding.title), level: ['high', 'medium', 'low'].includes(finding.level) ? finding.level : 'medium',
       status: !located || !validConflict || !isConflict || needsLegalVerification || needsSourceVerification || finding.status === 'pending' ? 'pending' : 'risk',
       explanation: string(finding.explanation), conditions: strings(finding.conditions), evidence, authorities,
       locationStatus: located && validConflict ? 'found' : 'unverified',
-      recommendation: string(finding.recommendation), suggestedClause: located && validConflict ? string(finding.suggestedClause) : '',
+      recommendation: string(finding.recommendation), suggestedClause: located && validConflict && !changedTime ? string(finding.suggestedClause) : '',
       relatedChanges: strings(finding.relatedChanges), supersedesFindingIds: strings(finding.supersedesFindingIds),
-      verificationNote: !located || !validConflict ? '原文引用未唯一核对成功，暂不发布为已定位问题或修订条款。' : needsSourceVerification ? '引文仅在OCR识别文字中定位，需对照图片原件核对；法律依据和执行条件仍待复核。' : needsLegalVerification || !isConflict ? '条款判断及执行条件待复核；具体法律依据尚未核实。' : '' }
+      verificationNote: !located || !validConflict ? '原文引用未唯一核对成功，暂不发布为已定位问题或修订条款。' : changedTime ? '修订稿未经确认改变了引文中的时点，暂不提供该示例条款；判断及法律依据仍待复核。' : needsSourceVerification ? '引文仅在OCR识别文字中定位，需对照图片原件核对；法律依据和执行条件仍待复核。' : needsLegalVerification || !isConflict ? '条款判断及执行条件待复核；具体法律依据尚未核实。' : '' }
   })
 }
 
@@ -204,22 +229,36 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
     // Reuse requires the actual sent input to match, including redaction changes.
     const unitSignature = fingerprint([signature, prompt, message, type])
     const cached = saved(key)
-    if (cached?.signature === unitSignature && cached.output?.complete === true) return cached.output
+    const ownsCurrentSource = (output) => Array.isArray(output?.findings) && output.findings.every((finding) =>
+      Array.isArray(finding?.evidence) && finding.evidence.some((item) => item?.chunkId === payload.chunk?.id))
+    if (cached?.signature === unitSignature && cached.output?.complete === true && (type !== 'review' || ownsCurrentSource(cached.output))) return cached.output
     if (estimateTokens(prompt + message) > CONTEXT_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_TOKENS) throw error('本检查单元超出模型输入预算，未截断正文', 'handbook_context_exceeded')
     await emit('model.progress', { stage: type, summary: type === 'scope' ? '正在确认材料与检查范围' : type === 'relations' ? '正在核对跨章节原文' : '正在检查制度条款' })
-    const response = fakeLlm ? { content: JSON.stringify(fakeHandbookResponse(type, payload)), finishReason: 'stop' }
-      : await generateCompletion(prompt, message, { signal, maxAttempts: 1, responseFormat: { type: 'json_object' }, maxTokens: 16384,
+    const request = (instruction) => fakeLlm ? Promise.resolve({ content: JSON.stringify(fakeHandbookResponse(type, payload)), finishReason: 'stop' })
+      : generateCompletion(instruction, message, { signal, maxAttempts: 1, responseFormat: { type: 'json_object' }, maxTokens: 16384,
         temperature: 0.1, thinking: { type: task.mode === 'thinking' && ['review', 'relations'].includes(type) ? 'enabled' : 'disabled' },
         reasoningEffort: 'low', requestTimeoutMs: task.mode === 'thinking' ? 240000 : 120000 })
-    active()
-    if (response?.finishReason === 'length') throw error('模型输出达到长度限制，本单元尚未完成，已保留此前检查结果', 'handbook_output_truncated')
-    let output
-    try { output = redactor.restoreDeep(JSON.parse(response.content)) } catch { throw error('模型未返回完整的诊断 JSON，已保留此前检查结果') }
+    const decode = (response) => {
+      active()
+      if (response?.finishReason === 'length') throw error('模型输出达到长度限制，本单元尚未完成，已保留此前检查结果', 'handbook_output_truncated')
+      try { return redactor.restoreDeep(JSON.parse(response.content)) } catch { throw error('模型未返回完整的诊断 JSON，已保留此前检查结果') }
+    }
+    let output = decode(await request(prompt))
+    if (type === 'review' && Array.isArray(output?.findings) && output.findings.every((finding) => string(finding?.title) && string(finding?.explanation)) && !ownsCurrentSource(output) && !fakeLlm) {
+      await emit('stage.warning', { stage: type, summary: '正在纠正条款引用归属，仅重试当前单元一次。' })
+      output = decode(await request(`${prompt}\n引用归属需纠正：每项问题至少引用当前chunk ${payload.chunk.id} 的精确原文，不能只引用context；没有当前块问题应返回空findings。`))
+    }
     if (output?.complete !== true) throw error('模型未确认检查单元完成，不能发布全文完成状态')
     if (['review', 'relations'].includes(type) && !Array.isArray(output.findings)) throw error('模型缺少诊断问题列表')
     if (['review', 'relations'].includes(type)) normalizeHandbookFindings(output.findings,
       type === 'review' ? [payload.chunk, ...payload.context] : payload.chunks, laws)
+    if (type === 'review' && !ownsCurrentSource(output)) throw error('当前正文块缺少对应引用，尚未完成', 'handbook_review_source_invalid')
     if (type === 'relations') {
+      const normalized = normalizeHandbookFindings(output.findings, payload.chunks, laws)
+      const accounted = new Set(normalized.flatMap((finding) => [finding.id, ...finding.supersedesFindingIds]))
+      if ((payload.findings || []).some((finding) => finding.kind === 'conflict' && !accounted.has(finding.id))) {
+        throw error('关联归并遗漏已提供冲突的处置，尚未完成', 'handbook_merge_incomplete')
+      }
       // Some models return explicit {pairId, checked:true} acknowledgements.
       // Accept that equivalent representation, never false/absent acknowledgements.
       output.checkedRelationIds = (Array.isArray(output.checkedRelationIds) ? output.checkedRelationIds : [])
@@ -292,7 +331,8 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   await stage('review', '正在逐章节检查制度条款')
   for (const chunk of structure.chunks) {
     const relatedChunks = pairs.filter((pair) => pair.chunkIds.includes(chunk.id)).flatMap((pair) => pair.chunkIds).filter((id) => id !== chunk.id)
-    const context = structure.chunks.filter((item) => unique(relatedChunks).slice(0, 2).includes(item.id))
+    const relatedIds = new Set(relatedChunks)
+    const context = rankHandbookChunks(chunk.text, structure.chunks.filter((item) => relatedIds.has(item.id))).slice(0, 2).map((item) => item.chunk)
     const output = await unit(`handbook-review:${fingerprint(chunk.id).slice(0, 20)}`, REVIEW_PROMPT, { chunk, context, globalIndex: classifications.map((item) => ({ chunkId: item.chunkId, summary: item.summary, background: item.background })),
       lawRecords: laws, referenceMaterials: retrieveHandbookReferences(chunk, references.documents || []), focus: input.focus || '' }, 'review')
     result.findings = mergeHandbookFindings(result.findings, normalizeHandbookFindings(output.findings, [chunk, ...context], laws))
@@ -320,7 +360,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   return result
 }
 
-function handbookTopicsForQuestion(question, chunks) {
+export function handbookTopicsForQuestion(question, chunks) {
   const words = [...String(question || '').matchAll(/[\u4e00-\u9fff]{2,}|[a-z]{3,}/gi)].flatMap((match) =>
     match[0].length > 2 ? [match[0], ...Array.from({ length: match[0].length - 1 }, (_, index) => match[0].slice(index, index + 2))] : [match[0]])
   const topics = handbookTopics(question)

@@ -135,6 +135,68 @@ await test('手册脱敏保留公司泛称前的怀孕条件和补正期限，�
   assert.ok(messages.every((message) => !message.includes('虚构澄星科技有限公司') && !message.includes('13812345678') && !message.includes('张三')))
 })
 
+for (const repair of [false, true]) await test(repair ? '引用归属纠正仅重试一次并验证当前块' : 'context引用不能代替当前块的条款诊断', async () => {
+  let corrections = 0
+  const run = () => runHandbookDiagnosis({ ...makeRunner().options, input: { text }, fakeLlm: false, generateCompletion: async (prompt, message) => {
+    const payload = JSON.parse(message)
+    if (payload.chunk && !payload.context) return { content: JSON.stringify(fakeHandbookResponse('scope', payload)) }
+    if (payload.pairs) return { content: JSON.stringify({ complete: true, findings: [], checkedRelationIds: payload.pairs.map((pair) => pair.id) }) }
+    const partner = payload.context?.find((chunk) => chunk.text.includes('第三条'))
+    if (payload.chunk?.text.includes('第一条') && partner) {
+      const correcting = prompt.includes('引用归属需纠正')
+      if (correcting) corrections += 1
+      const source = repair && correcting ? payload.chunk : partner
+      return { content: JSON.stringify({ complete: true, findings: [{ kind: 'clause', title: '原文条件待核实', explanation: '测试引用归属', evidence: [{ chunkId: source.id, quote: source.text }] }] }) }
+    }
+    return { content: JSON.stringify({ complete: true, findings: [] }) }
+  } })
+  if (repair) assert.equal((await run()).analysisStatus, 'completed')
+  else await assert.rejects(run, /当前.*引用/)
+  assert.equal(corrections, 1)
+})
+for (const retain of [false, true]) await test(retain ? '关联归并可明确保留独立冲突' : '关联归并不能遗漏已提供冲突的处置', async () => {
+  const run = () => runHandbookDiagnosis({ ...makeRunner().options, input: { text }, fakeLlm: false, generateCompletion: async (prompt, message) => {
+    const payload = JSON.parse(message)
+    if (payload.chunk && !payload.context) return { content: JSON.stringify(fakeHandbookResponse('scope', payload)) }
+    if (payload.pairs) return { content: JSON.stringify({ complete: true, findings: retain ? payload.findings : [], checkedRelationIds: payload.pairs.map((pair) => pair.id) }) }
+    const partner = payload.context?.find((chunk) => chunk.text.includes('第三条'))
+    const findings = payload.chunk?.text.includes('第一条') && partner ? [{ kind: 'conflict', title: '同一迟到处理需协调', explanation: '两处规则需要同时核对',
+      evidence: [payload.chunk, partner].map((chunk) => ({ chunkId: chunk.id, quote: chunk.text })) }] : []
+    return { content: JSON.stringify({ complete: true, findings }) }
+  } })
+  if (retain) assert.equal((await run()).analysisStatus, 'completed')
+  else await assert.rejects(run, /归并.*处置/)
+})
+await test('非冲突条款的时点不能在修订稿中无确认地漂移', () => {
+  const chunks = buildHandbookStructure([{ fileId: 'time', fileName: '到岗规则', text: '办公室员工每个工作日上午十时到岗。' }]).chunks
+  const input = { kind: 'clause', title: '条件待补充', explanation: '补充依法请假的例外', evidence: [{ chunkId: chunks[0].id, quote: chunks[0].text }], authorities: [],
+    suggestedClause: '办公室员工每个工作日上午九时到岗；依法请假除外。' }
+  const changed = normalizeHandbookFindings([input], chunks)[0]
+  assert.equal(changed.locationStatus, 'found')
+  assert.equal(changed.suggestedClause, '')
+  assert.match(changed.verificationNote, /时点/)
+  const equivalent = normalizeHandbookFindings([{ ...input, suggestedClause: '办公室员工每个工作日上午10点到岗；依法请假除外。' }], chunks)[0]
+  assert.ok(equivalent.suggestedClause)
+  const proposed = normalizeHandbookFindings([{ ...input, suggestedClause: '办公室员工每个工作日上午【待确认：九时】到岗；依法请假除外。' }], chunks)[0]
+  assert.ok(proposed.suggestedClause)
+})
+await test('关联已召回时，正文上下文不能被封面背景挤掉', async () => {
+  const files = [
+    { id: 'pay-a', originalname: '发薪安排.txt', buffer: Buffer.from('中国大陆普通标准工时员工，同一版本。\n第一章 发薪安排\n第一条 同一员工同一月份的劳动报酬固定每月十五日发放。') },
+    { id: 'pay-b', originalname: '薪金安排.txt', buffer: Buffer.from('中国大陆普通标准工时员工，同一版本。\n第二章 薪金安排\n第二条 同一员工同一月份的薪金固定每月十日发放。') }
+  ]
+  let checked = false
+  await runHandbookDiagnosis({ ...makeRunner().options, files, fakeLlm: false, generateCompletion: async (prompt, message) => {
+    const input = JSON.parse(message)
+    if (input.chunk && !input.context) return { content: JSON.stringify({ complete: true, type: 'policy-fragment', acceptedEvidence: input.chunk.text, background: {}, relatedSections: [] }) }
+    if (input.chunk?.text.includes('十五日')) {
+      checked = true
+      assert.ok(input.context.some((chunk) => chunk.text.includes('薪金固定每月十日')), '已召回的十日薪金条款未进入上下文')
+    }
+    return { content: JSON.stringify({ complete: true, findings: [], questions: [], checkedRelationIds: input.pairs?.map((pair) => pair.id) || [] }) }
+  } })
+  assert.ok(checked)
+})
 await test('分块保留全部原文，长段落不截断且位置能复原', () => {
   const source = { fileId: 'a', fileName: '合成手册', text: text + '第三章 长条款\n' + '员工应遵守安全规定。'.repeat(1000) }
   const structure = buildHandbookStructure([source], { budget: 80 })

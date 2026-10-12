@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { extractText } from './file-parser.js'
-import { buildHandbookStructure, fingerprint, handbookTopics } from './handbook-structure.js'
+import { buildHandbookStructure, fingerprint, rankHandbookChunks } from './handbook-structure.js'
 
 // Server-owned, external manifest. Never import private handbooks into the repo or
 // use a client-supplied path. All versions remain comparison references.
@@ -28,8 +28,6 @@ export async function loadHandbookReferences({ manifestPath = process.env.HANDBO
 
 export function retrieveHandbookReferences(chunk, referenceDocuments = []) {
   const candidates = buildHandbookStructure(referenceDocuments).chunks
-  const topics = handbookTopics(chunk.text)
-  return candidates.map((item) => ({ item, score: item.topics.filter((topic) => topics.includes(topic)).length }))
-    .filter(({ score }) => score > 0).sort((a, b) => b.score - a.score).slice(0, 2)
-    .map(({ item }) => ({ title: item.fileName, role: 'reference', version: referenceDocuments.find((doc) => doc.fileId === item.fileId)?.referenceVersion?.version || '', text: item.text }))
+  return rankHandbookChunks(chunk.text, candidates).filter(({ score }) => score > 0).slice(0, 2)
+    .map(({ chunk: item }) => ({ title: item.fileName, role: 'reference', version: referenceDocuments.find((doc) => doc.fileId === item.fileId)?.referenceVersion?.version || '', text: item.text }))
 }
