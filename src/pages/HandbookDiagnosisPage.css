@@ -44,6 +44,20 @@
 .hb-suggestion header { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
 .hb-suggestion button { display: flex; align-items: center; gap: 5px; padding: 4px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--fafee-ink-muted); font-size: 11px; }
 .hb-suggestion p { margin-bottom: 0; }
+.hb-finding, .hb-reply, .hb-markdown { min-width: 0; overflow-wrap: anywhere; }
+.hb-markdown { font-size: 13px; line-height: 1.9; }
+.hb-markdown p, .hb-markdown li { font-size: inherit; line-height: inherit; white-space: normal; }
+.hb-markdown h1, .hb-markdown h2, .hb-markdown h3, .hb-markdown h4, .hb-markdown h5, .hb-markdown h6 { margin: 16px 0 8px; font-size: 14px; line-height: 1.7; }
+.hb-markdown ul, .hb-markdown ol { padding-left: 24px; margin: 10px 0; }
+.hb-markdown blockquote { margin: 12px 0; padding: 1px 12px; border-left: 2px solid var(--fafee-border); color: var(--fafee-ink-muted); }
+.hb-markdown pre { max-width: 100%; overflow-x: auto; padding: 12px; border-radius: 6px; background: var(--fafee-fill); white-space: pre; }
+.hb-markdown code { font-size: 12px; }
+.hb-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.hb-markdown th, .hb-markdown td { padding: 8px 10px; border: 1px solid var(--fafee-line); text-align: left; }
+.hb-authority { margin: 14px 0; padding: 12px; border-left: 2px solid var(--fafee-border); background: var(--fafee-paper); }
+.hb-authority small { font-size: 11px; line-height: 1.8; color: var(--fafee-ink-muted); }
+.hb-authority blockquote { margin: 10px 0; white-space: pre-wrap; }
+.hb-citations q, .hb-suggestion p { overflow-wrap: anywhere; white-space: pre-wrap; }
 .hb-disclosure { margin-top: 15px; padding: 12px 0; border-top: 1px solid var(--fafee-line); }
 .hb-disclosure summary { font-weight: 500; }
 .hb-disclosure summary small { float: right; margin-left: 12px; font-size: 10px; font-weight: 400; color: var(--fafee-ink-subtle); }
@@ -89,5 +103,6 @@
 .hb-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @keyframes hb-spin { to { transform: rotate(360deg); } }
 @media (max-width: 1000px) { .hb-source-open .hb-history { display: none !important; } }
-@media (max-width: 760px) { .hb-source { position: absolute; inset: 0; z-index: 8; width: 100%; min-width: 0; border-left: 0; } .handbook-workspace .chat-title small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
+@media (max-width: 1080px) { .handbook-workspace .chat-header .header-tools { display: flex; } }
+@media (max-width: 760px) { .hb-source { position: absolute; inset: 0; z-index: 8; width: 100%; min-width: 0; border-left: 0; } .handbook-workspace .chat-title { min-width: 0; } .handbook-workspace .chat-title small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .handbook-workspace .header-tools { gap: 4px; flex-shrink: 0; } }
 @media (prefers-reduced-motion: reduce) { .hb-spin { animation: none; } }

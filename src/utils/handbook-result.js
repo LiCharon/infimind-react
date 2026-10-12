@@ -2,20 +2,30 @@ export const HANDBOOK_PRODUCT = 'handbook-diagnosis'
 export const HANDBOOK_TERMINAL = new Set(['succeeded', 'failed', 'cancelled'])
 export const HANDBOOK_STATUS = { queued: '等待处理', running: '正在检查', retry_waiting: '正在重试', cancel_requested: '正在停止', cancelled: '已停止', failed: '检查未完成', succeeded: '处理结束' }
 
+export function formatHandbookAuthorityStatus(item) {
+  const provision = { matched: '条号已匹配', not_found: '条号未找到', unavailable: '未提供条文', ambiguous: '条文版本存在歧义', inactive: '条文版本不在有效期' }
+  const quote = { matched: '引文已匹配', missing: '未提供法条引文', mismatch: '引文未匹配' }
+  const support = { model_supported: '模型认为有支持', model_unsupported: '模型认为缺乏支持', uncertain: '模型尚不能判断' }
+  return [provision[item.provisionStatus] || '条文未核验', quote[item.quoteStatus] || '引文待核验', support[item.supportStatus] || '支持关系未复核', '法律适用待复核'].join(' · ')
+}
+
 export function formatHandbookReport(report) {
   if (!report) return ''
   if (report.kind === 'followup') return report.answer || ''
-  const lines = ['员工手册诊断', `检查范围：${report.scope?.description || '范围待核实'}`,
+  const lines = ['员工手册诊断', '', `检查范围：${report.scope?.description || '范围待核实'}`,
     `检查状态：${report.analysisStatus === 'completed' ? '本次可读正文检查完成' : report.analysisStatus === 'blocked' ? '材料待处理，未完成诊断' : '检查尚未完成'}`]
-  for (const finding of report.findings || []) {
-    lines.push('', finding.title, `${finding.status === 'pending' ? '待核实' : '风险提示'} · ${finding.topic}`, finding.explanation)
+  for (const [index, finding] of (report.findings || []).entries()) {
+    lines.push('', '────────', `${index + 1}. ${finding.title}`, `${finding.status === 'pending' ? '待核实' : '风险提示'} · ${finding.topic}`, '', '问题说明', finding.explanation)
     if (finding.verificationNote) lines.push(`核对状态：${finding.verificationNote}`)
-    for (const citation of finding.evidence || []) lines.push(`原文：${citation.quote}`, `定位：${citation.location?.status === 'found' ? citation.location.matches[0].fileName + ' · ' + citation.location.matches[0].sectionTitle : '引用待核实'}`)
-    if (finding.conditions?.length) lines.push(`适用条件：${finding.conditions.join('；')}`)
-    for (const authority of finding.authorities || []) lines.push(`待核实依据：${authority.title} ${authority.article}；${authority.note}`)
-    lines.push(`修改建议：${finding.recommendation}`)
-    if (finding.suggestedClause) lines.push(`示例条款：${finding.suggestedClause}`)
-    if (finding.relatedChanges?.length) lines.push(`关联修改：${finding.relatedChanges.join('；')}`)
+    for (const [position, citation] of (finding.evidence || []).entries()) lines.push('', `原文 ${position + 1}`, citation.quote, `定位：${citation.location?.status === 'found' ? citation.location.matches[0].fileName + ' · ' + citation.location.matches[0].sectionTitle : '引用待核实'}`)
+    if (finding.conditions?.length) lines.push('', '适用条件', ...finding.conditions.map((item) => `- ${item}`))
+    if (finding.authorities?.length) lines.push('', '待核实依据')
+    for (const authority of finding.authorities || []) lines.push(`${authority.title} ${authority.article}；${authority.note}`, formatHandbookAuthorityStatus(authority),
+      ...(authority.versionLabel ? [`版本：${authority.versionLabel}`] : []), ...(authority.quote ? [`法条引文：${authority.quote}`] : []),
+      ...(authority.supportReason ? [`模型复核意见：${authority.supportReason}`] : []), ...(authority.sourceUrl ? [`来源：${authority.sourceUrl}`] : []))
+    lines.push('', '修改建议', finding.recommendation || '请结合缺失背景进一步核实。')
+    if (finding.suggestedClause) lines.push('', '示例条款', finding.suggestedClause)
+    if (finding.relatedChanges?.length) lines.push('', '关联修改', ...finding.relatedChanges.map((item) => `- ${item}`))
   }
   for (const item of report.unreadableMaterials || []) lines.push(`未检查材料：${item.fileName}；${item.reason}`)
   if (report.pendingQuestions?.length) lines.push('', '待核实事项', ...report.pendingQuestions)
