@@ -1,3 +1,4 @@
+import { selectMaterialBlocks, formatMaterialBlocks } from '../services/document-materials.js'
 import { streamChat, getProModel } from '../services/llm-client.js'
 import { AGENT_3_SYSTEM_PROMPT, buildRewriteUserMessage } from '../prompts/agent-3-rewrite.js'
 
@@ -18,6 +19,7 @@ import { AGENT_3_SYSTEM_PROMPT, buildRewriteUserMessage } from '../prompts/agent
  * @returns {Promise<string>} 模型返回的完整 JSON 文本
  */
 export async function rewriteContract({ contractText, analysisReport, reviewReport, findings, completedRevisions = [] }, onChunk, model = getProModel(), { systemPromptSuffix = '', requireComplete = false, ...completionOptions } = {}) {
+  if (contractText.length > 24000) contractText = formatMaterialBlocks(selectMaterialBlocks([{ name: '合同原文', text: contractText }], JSON.stringify(findings), 24000).blocks)
   const userMessage = buildRewriteUserMessage({
     contractText,
     analysisReport,

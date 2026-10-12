@@ -241,7 +241,7 @@ export function createLaborDispatchAnalysisWorkflow({
           if (content) documents.push({
             fileId: String(file.id || ''), fileName: String(file.originalname || file.originalName || '上传文件'),
             role: input.fileRefs?.find((ref) => ref.id === file.id)?.role || input.fileRoles?.[index] || '',
-            pageCount: Number(result?.pageCount) || null, text: content
+            pageCount: Number(result?.pageCount) || null, text: content, parseMetadata: result.metadata
           })
           else parseErrors.push(`材料 ${index + 1}：未提取到可分析文本`)
         } catch (error) {

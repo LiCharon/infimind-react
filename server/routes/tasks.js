@@ -1,3 +1,4 @@
+import { createMaterialRouter } from './materials.js'
 import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import multer from 'multer'
@@ -10,15 +11,14 @@ import {
   normalizeDraftSnapshot,
   resolveDraftIntent
 } from '../workflows/contract-draft.js'
-import { getMaterials } from '../services/consult-material-store.js'
+import { getMaterials, clearMaterials, materialStoreKey } from '../services/consult-material-store.js'
 import { LABOR_CONTRACT_RETENTION_POLICY, TASK_RETENTION_POLICY } from '../services/task-service.js'
 import { extractText } from '../services/file-parser.js'
 import { classifyLaborContractDocument, classifyLaborContractDocumentsWithLlm } from '../workflows/labor-contract-document-classifier.js'
 import { CONTEXT_WINDOW_TOKENS, OUTPUT_RESERVE_TOKENS, CONTEXT_SAFETY_TOKENS, selectHistoryByTokens } from '../../src/utils/context-budget.js'
 import { refineConversationTitle, isTitleRefineEnabled, toClientResult } from '../services/title-refiner.js'
 
-const MAX_FILES = 6
-const MAX_FILE_SIZE = 80 * 1024 * 1024
+import { MAX_FILES, MAX_FILE_SIZE } from '../services/upload-config.js'
 const MAX_MESSAGE_LENGTH = 16000
 const MAX_THREAD_ID_LENGTH = 200
 const LABOR_ANALYSIS_TYPES = new Set(['ordinary_labor_contract', 'labor_dispatch_agreement'])
@@ -89,6 +89,7 @@ export function createTaskRouter({
 } = {}) {
   if (!taskService || !taskQueue || !fileStore) throw new Error('task router requires taskService, taskQueue and fileStore')
   const router = Router()
+  router.use(createMaterialRouter({ taskService, fileStore }))
   // In-process guard for the demo server: block new turns while deleting files.
   const deletingThreads = new Set()
   const creatingThreads = new Set()
@@ -113,12 +114,25 @@ export function createTaskRouter({
       }
       const outcome = taskService.deleteThreadTasks(req.user.id, productId, threadId)
       if (!outcome.deleted) return jsonError(res, 409, '会话状态已变化，请稍后重试', 'thread_busy')
+      if (productId === 'labor-consult') clearMaterials(materialStoreKey(req.user.id, threadId))
       return res.json({ deleted: true, taskIds: outcome.taskIds })
     } catch (error) {
       console.error('[tasks] thread deletion failed:', error.message)
       return jsonError(res, 500, '会话删除未完成，请重试', 'thread_delete_failed')
     } finally { deletingThreads.delete(key) }
   }
+
+  router.post('/labor-consult/forget', async (req, res) => {
+    const threadId = normalizeThreadId(req.body?.conversationId)
+    if (!threadId) return jsonError(res, 400, '缺少 conversationId')
+    if (!taskService.listAllThreadTasks(req.user.id, 'labor-consult', threadId).length) {
+      clearMaterials(materialStoreKey(req.user.id, threadId))
+      return res.json({ ok: true })
+    }
+    req.params.threadId = threadId
+    return deleteThread(req, res, 'labor-consult')
+  })
+
 
   router.post('/tasks/labor-contract-analysis/classify', upload.array('files', MAX_FILES), async (req, res) => {
     const files = Array.isArray(req.files) ? req.files : []
@@ -129,15 +143,16 @@ export function createTaskRouter({
       if (!isValidAttachment(file)) return jsonError(res, 400, `${file.originalname || '文件'} 文件类型暂不支持`)
     }
 
-    const parsedFiles = await Promise.all(files.map(async (file, index) => {
+    const parsedFiles = []
+    for (const [index, file] of files.entries()) {
       try {
         const parsed = await extractText(file)
         const text = String(parsed?.text || '').trim()
-        return { index, file, text, parseStatus: text ? 'succeeded' : 'empty' }
+        parsedFiles.push({ index, file, text, parseStatus: text ? 'succeeded' : 'empty', parseMetadata: parsed.metadata })
       } catch (error) {
-        return { index, file, text: '', parseStatus: 'failed', parseError: error }
+        parsedFiles.push({ index, file, text: '', parseStatus: 'failed', parseError: error })
       }
-    }))
+    }
     const readable = parsedFiles.filter((item) => item.parseStatus === 'succeeded')
     const inferred = fakeLlm
       ? readable.map((item) => classifyLaborContractDocument({ fileName: item.file.originalname, text: item.text }))
@@ -479,7 +494,7 @@ export function createTaskRouter({
           history,
           // 追问任务不一定重新上传附件；把当前会话材料快照放入任务输入，
           // worker 重启后仍能复原，而不是依赖进程内的材料 Map。
-          materials: conversationId ? getMaterials(conversationId) : [],
+          materials: conversationId ? getMaterials(materialStoreKey(req.user.id, conversationId)) : [],
           fileRefs
         },
         files: storedFiles

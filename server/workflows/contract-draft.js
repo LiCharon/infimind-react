@@ -1,3 +1,5 @@
+import { indexedMaterialText } from '../services/material-processing.js'
+import { selectMaterialBlocks, formatMaterialBlocks } from '../services/document-materials.js'
 import { extractText } from '../services/file-parser.js'
 import { chat, getFlashModel, streamChat } from '../services/llm-client.js'
 import { buildContractDraftSystemPrompt, buildContractDraftUserMessage } from '../prompts/contract-draft.js'
@@ -9,7 +11,7 @@ import {
 } from '../prompts/contract-draft-types.js'
 import { TaskCancelledError, isValidAttachment } from './contract-review.js'
 
-export const MAX_DRAFT_REFERENCE_TEXT = 40000
+export const MAX_DRAFT_REFERENCE_TEXT = 12_000_000
 export const MAX_DRAFT_HISTORY_MESSAGES = 12
 export const MAX_DRAFT_HISTORY_MESSAGE_LENGTH = 6000
 
@@ -416,8 +418,16 @@ export async function runContractDraft({
   }
 
   ensure()
-  const referenceMaterials = await parseReferences({ files, emit, checkpoint, getCheckpoint, updateFileParseStatus, ensure })
+  let referenceMaterials = await parseReferences({ files, emit, checkpoint, getCheckpoint, updateFileParseStatus, ensure })
   ensure()
+
+  if (input.materialIndex?.length) {
+    const selected = selectMaterialBlocks(referenceMaterials, instruction)
+    referenceMaterials = [{ name: '参考材料的原文片段与逐字条件摘录', text: formatMaterialBlocks(selected.blocks) + '\n' + indexedMaterialText(input.materialIndex) + '\n' + (input.materialNotice || '') }]
+    await checkpoint('material-coverage', { ...selected.coverage, indexed: input.materialIndex.map((e) => e.blockId), mode: 'all-conditions-index' })
+  } else if (input.materialNotice && referenceMaterials.length) {
+    referenceMaterials = referenceMaterials.map((material) => ({ ...material, text: material.text + '\n【材料读取与OCR核对提示】\n' + input.materialNotice }))
+  }
 
   const typeCheckpoint = checkpointValue(getCheckpoint, 'contract_type')
   let classification = typeCheckpoint?.classification || null
