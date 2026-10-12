@@ -161,7 +161,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   emit = async () => {}, checkpoint = async () => {}, getCheckpoint = () => null,
   isCancellationRequested = () => false, updateFileParseStatus = () => {}, signal, fakeLlm = false,
   parseFile = extractHandbookText, generateCompletion = chatDetailed, referenceLoader = loadHandbookReferences,
-  lawLoader = listLawsForBaseline, provisionLoader = loadHandbookProvisions, chunkBudget } = {}) {
+  lawLoader = listLawsForBaseline, provisionLoader = loadHandbookProvisions, materialDocuments = [], chunkBudget } = {}) {
   const active = () => { if (signal?.aborted || isCancellationRequested()) throw new TaskCancelledError() }
   const saved = (stage) => getCheckpoint(stage)?.result
   let currentStage = 'parsing'
@@ -176,14 +176,20 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
     for (const file of files) {
       active()
       try {
-        const result = await parseFile(file, { signal })
+        const shared = materialDocuments.find((document) => document.fileId === file.id)
+        const result = shared ? { text: shared.text, pageCount: shared.pageCount, metadata: shared.parseMetadata } : await parseFile(file, { signal })
         active()
         if (!result.text?.trim()) throw error('未读取到正文', 'handbook_empty_document')
         const fileId = file.id || fingerprint(file.originalname + result.text).slice(0, 20)
         const unreadPages = result.metadata?.pages?.filter((page) => page.error || !page.text?.trim()) || []
         const unreadableParts = result.metadata?.unreadableParts || []
         documents.push({ fileId, fileName: file.originalname || '上传材料', text: result.text, pageCount: result.pageCount,
-          pages: result.metadata?.pages?.map((page) => ({ page: page.page, method: page.method, error: Boolean(page.error), confidence: page.confidence })) || [] })
+          pages: result.metadata?.pages?.map((page) => ({ page: page.page, method: page.method, error: Boolean(page.error), confidence: page.confidence })) || [],
+          parseMetadata: { parserVersion: result.metadata?.parserVersion, completeness: result.metadata?.completeness,
+            warnings: result.metadata?.warnings || [], ocrRegionCount: result.metadata?.ocrRegions?.length || 0,
+            blocks: (result.metadata?.blocks || []).map(({ id, start, end, source }) => ({ id, start, end,
+              source: Object.fromEntries(Object.entries(source || {}).filter(([key]) => ['page', 'slide', 'sheet', 'table', 'method'].includes(key))) })) },
+          parseWarnings: result.metadata?.warnings || [] })
         if (unreadPages.length) failures.push({ fileId, fileName: file.originalname, reason: `第${unreadPages.map((page) => page.page).join('、')}页未读取成功` })
         for (const reason of unreadableParts) failures.push({ fileId, fileName: file.originalname, reason })
         warnings.push(...(result.metadata?.warnings || []))
@@ -210,6 +216,9 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   let publishedSource = false
   const publish = async () => {
     active(); await checkpoint('handbook-report', { result })
+    const completed = result.coverage.filter((item) => item.status === 'completed').map((item) => item.chunkId)
+    await checkpoint('material-coverage', { parsed: result.coverage.length, indexed: [], entered: fakeLlm ? [] : completed,
+      selected: completed, checked: completed, simulated: Boolean(fakeLlm), partial: result.analysisStatus !== 'completed' || parsed.failures.length > 0 })
     const { sourceDocuments, ...summary } = result
     await emit('handbook.snapshot', { stage: currentStage, result: publishedSource ? summary : { ...summary, sourceDocuments } })
     publishedSource = true

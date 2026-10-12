@@ -75,6 +75,26 @@ await test('旧解析检查点不能隐藏未读图片，新解析版本恢复�
   assert.ok(report.sourceDocuments[0].text.includes(imageText))
   assert.equal(runner.checkpoints.get('handbook-parsing').result.parserVersion, HANDBOOK_PARSER_VERSION)
 })
+await test('共享解析正文只读取一次，报告不暴露图片内部来源描述', async () => {
+  const runner = makeRunner(), file = { id: 'shared-source', originalname: '虚构制度.txt' }
+  const report = await runHandbookDiagnosis({ ...runner.options, files: [file],
+    materialDocuments: [{ fileId: file.id, text: '第一章 考勤\n员工须核对实际出勤。', parseMetadata: {
+      parserVersion: 1, completeness: 'complete', warnings: ['OCR待核对'], ocrRegions: [{ origin: { path: 'internal/zip/image.png' } }],
+      blocks: [{ id: 'block', start: 0, end: 22, source: { method: 'ocr', path: 'internal/source' } }] } }],
+    parseFile: async () => { throw new Error('不应重新读取已经共享解析的文件') } })
+  assert.equal(report.analysisStatus, 'completed')
+  assert.equal(report.sourceDocuments[0].parseMetadata.ocrRegionCount, 1)
+  assert.ok(!JSON.stringify(report).includes('internal/'))
+  assert.equal(report.sourceDocuments[0].parseMetadata.blocks[0].source.method, 'ocr')
+})
+await test('旧解析版本的追问保留历史原文，不重新解释源文件', async () => {
+  const runner = makeRunner(), text = '员工应按实际出勤核对考勤。'
+  runner.checkpoints.set('handbook-parsing', { result: { parserVersion: 2, documents: [{ fileId: 'historical', fileName: '历史文本', text }], failures: [], warnings: [] } })
+  const result = await runHandbookDiagnosis({ ...runner.options, input: { action: 'followup', message: '解释实际出勤要求' },
+    report: { analysisStatus: 'completed', findings: [] }, parseFile: async () => { throw new Error('追问不应重读') } })
+  assert.equal(result.kind, 'followup')
+  assert.equal(runner.checkpoints.get('handbook-parsing').result.documents[0].text, text)
+})
 await test('取消内嵌图OCR不能降级为可读部分继续诊断', async () => {
   const controller = new AbortController()
   await assert.rejects(extractHandbookText(material('T11图文表格手册.docx'), { signal: controller.signal,
