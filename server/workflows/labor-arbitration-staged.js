@@ -64,7 +64,7 @@ export async function runStagedArbitration({ task = {}, input = {}, documents, w
   const redactor = createLaborContractRedactor({ documents: selected, extraTexts: [userMessages, previous],
     categories: ['phone', 'identity', 'email', 'business-id', 'bank-account'] })
   const options = { model: getFlashModel(), thinking: { type: input.mode === 'fast' ? 'disabled' : 'enabled' },
-    reasoningEffort: 'high', temperature: 0.2, maxTokens: input.mode === 'fast' ? OUTPUT_RESERVE_TOKENS : OUTPUT_RESERVE_TOKENS * 2,
+    reasoningEffort: 'high', temperature: 0.2, maxTokens: OUTPUT_RESERVE_TOKENS,
     requestTimeoutMs: input.mode === 'fast' ? 180000 : 300000, maxAttempts: 1,
     responseFormat: { type: 'json_object' }, signal }
   const calls = []
@@ -80,7 +80,7 @@ export async function runStagedArbitration({ task = {}, input = {}, documents, w
     const masked = redactor.mask(JSON.stringify(context))
     if (estimateTokens(prompt) + estimateTokens(masked) + options.maxTokens + CONTEXT_SAFETY_TOKENS > CONTEXT_WINDOW_TOKENS) throw stageError('本阶段上下文超过模型预算，请精简材料或按请求分项继续。', 'arbitration_output_truncated')
     const response = await callModel(prompt, masked, { ...options,
-      ...(stage.startsWith('arbitration_review_') ? { maxTokens: input.mode === 'fast' ? 4096 : 8192 } : {}) })
+      maxTokens: OUTPUT_RESERVE_TOKENS })
     ensureActive()
     calls.push({ stage, model: response.model || options.model, usage: response.usage || null,
       promptHash: hash(prompt), inputHash: hash(masked), estimatedPromptTokens: estimateTokens(prompt) + estimateTokens(masked) + 64 })

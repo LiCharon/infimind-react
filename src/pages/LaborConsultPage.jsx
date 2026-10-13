@@ -1,4 +1,5 @@
 import MaterialReviewPanel from '../components/MaterialReviewPanel.jsx'
+import { selectConversationHistory } from '../utils/context-budget.js'
 import { useComposerSend } from '../hooks/useComposerSend'
 import QueuedMessages from '../components/QueuedMessages'
 import SideChatEmptyState from '../components/SideChatEmptyState'
@@ -670,10 +671,9 @@ function LaborConsultPage() {
     if ((!content && !selectedFiles.length) || isAsking || !activeConversation || inFlightRef.current.has(activeConversation.id)) return
     const conversationId = activeConversation.id
     const assistantId = createId('assistant')
-    const history = activeConversation.messages
+    const history = selectConversationHistory(activeConversation.messages
       .filter((message) => (message.type === 'user' || message.type === 'assistant') && message.content)
-      .slice(-6)
-      .map((message) => ({ role: message.type === 'user' ? 'user' : 'assistant', content: message.content }))
+      .map((message) => ({ role: message.type === 'user' ? 'user' : 'assistant', content: message.content })), { question: content }).history
 
     const uploadedFiles = selectedFiles.map((file) => ({ name: file.name, size: file.size }))
     const displayContent = content || `请分析我上传的 ${uploadedFiles.length} 份材料涉及的劳动用工问题。`

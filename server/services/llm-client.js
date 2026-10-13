@@ -1,4 +1,4 @@
-import { estimateTokens, CONTEXT_WINDOW_TOKENS, CONTEXT_SAFETY_TOKENS } from '../../src/utils/context-budget.js'
+import { estimateTokens, CONTEXT_WINDOW_TOKENS, CONTEXT_SAFETY_TOKENS, MAX_MODEL_OUTPUT_TOKENS, selectHistoryByTokens } from '../../src/utils/context-budget.js'
 import dotenv from 'dotenv'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -206,7 +206,7 @@ export async function chatDetailed(systemPrompt, userMessage, options = {}) {
   const {
     model = DEEPSEEK_MODEL,
     temperature = 0.3,
-    maxTokens = 8192,
+    maxTokens = MAX_MODEL_OUTPUT_TOKENS,
     thinking,
     reasoningEffort,
     signal,
@@ -298,7 +298,7 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
   const {
     model = DEEPSEEK_MODEL,
     temperature = 0.3,
-    maxTokens = 8192,
+    maxTokens = MAX_MODEL_OUTPUT_TOKENS,
     history = [],
     thinking,
     reasoningEffort,
@@ -314,10 +314,9 @@ export async function* streamChat(systemPrompt, userMessage, options = {}) {
     messages.push({ role: 'system', content: systemPrompt })
   }
   if (Array.isArray(history)) {
-    history
-      .filter((message) => ['user', 'assistant'].includes(message?.role) && typeof message?.content === 'string' && message.content.trim())
-      .slice(-12)
-      .forEach((message) => messages.push({ role: message.role, content: message.content.slice(0, 6000) }))
+    const questionTokens = estimateTokens(systemPrompt) + estimateTokens(typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage)) + 64
+    const selected = selectHistoryByTokens(history, CONTEXT_WINDOW_TOKENS - maxTokens - CONTEXT_SAFETY_TOKENS - questionTokens)
+    selected.history.forEach((message) => messages.push(message))
   }
   messages.push({ role: 'user', content: normalizeMessageContent(userMessage) })
 

@@ -30,7 +30,7 @@ try {
   checkpoints.clear()
   const unfinished = { choices: [{ delta: { content: '{"findings":[]}' }, finish_reason: 'length' }] }
   globalThis.fetch = async () => new Response(`data: ${JSON.stringify(unfinished)}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
-  await assert.rejects(reviewContract(params), /未完成/)
+  await assert.rejects(reviewContract(params), (error) => error.code === 'commercial_output_incomplete')
   assert.equal(checkpoints.get('material-coverage').result.checked.length, 0)
   assert.equal(checkpoints.get('material-coverage').result.entered.length, 1)
   assert.equal([...checkpoints.keys()].some((key) => key.startsWith('commercial-review:')), false)

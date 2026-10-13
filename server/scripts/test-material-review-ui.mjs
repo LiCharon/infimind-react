@@ -35,16 +35,16 @@ const base = `http://127.0.0.1:${server.address().port}`
 const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
 const browser = await chromium.launch({ headless: true, ...(existsSync(edge) ? { executablePath: edge } : {}) })
 const errors = [], checks = []
-let expired = false, allFailed = false
+let expired = false, allFailed = false, manyRegions = false
 const png = readFileSync(join(root, 'public/logo.png'))
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   page.on('pageerror', (error) => errors.push(error.message))
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url()), p = url.pathname
-    if (p.endsWith('/regions/word-0')) return route.fulfill(expired ? { status: 410, contentType: 'application/json', body: '{"error":"原件已到保存期限，无法查看原图"}' } : { status: 200, contentType: 'image/png', body: png })
+    if (/\/regions\/word-\d+$/.test(p)) return route.fulfill(expired ? { status: 410, contentType: 'application/json', body: '{"error":"原件已到保存期限，无法查看原图"}' } : { status: 200, contentType: 'image/png', body: png })
     const body = p.endsWith('/materials') ? (allFailed ? { documents: [], failures: [{ fileId: 'failed', fileName: '虚构坏文件.xlsx', reason: '文件内容与扩展名不一致' }], coverage: { parsed: 0, partial: true } } : { documents: [{ fileId: 'file-a', fileName: '虚构工资截图.png', completeness: 'complete', warnings: ['OCR文字待核对'], ocrRegionCount: 1 }], coverage: { parsed: 2, indexed: ['a', 'b'], selected: ['b'], checked: [], partial: true } })
-      : p.endsWith('/materials/file-a') ? { fileId: 'file-a', fileName: '虚构工资截图.png', text: '工资8000元', warnings: [], regions: [{ id: 'word-0', text: '8000', reason: '关键文字待核对', candidates: ['80000'] }] }
+      : p.endsWith('/materials/file-a') ? { fileId: 'file-a', fileName: '虚构工资截图.png', text: '工资8000元', warnings: [], regions: manyRegions ? Array.from({length:101},(_,i)=>({id:`word-${i}`,text:`字段${i}`,reason:'关键文字待核对',candidates:[]})) : [{ id: 'word-0', text: '8000', reason: '关键文字待核对', candidates: ['80000'] }] }
         : p === '/api/auth/refresh' ? { accessToken: 'browser-test-only', expiresAt: '2099-01-01' }
           : p === '/api/auth/me' ? { user: { id: 'material-ui-user', username: '虚构用户', email: 'test@example.invalid' } }
             : { tasks: [], threads: [], conversations: [], messages: [], balances: [] }
@@ -71,6 +71,18 @@ try {
   await page.locator('.material-review-panel > summary').click()
   await page.getByRole('alert').filter({ hasText: '虚构坏文件.xlsx' }).waitFor()
   checks.push('全部解析失败的提示刷新后仍保留')
+  expired = false; allFailed = false; manyRegions = true
+  await page.reload({waitUntil:'networkidle'})
+  await page.locator('.material-review-panel > summary').click()
+  await page.getByRole('button',{name:/查看识别文字与原图/}).click()
+  await page.getByRole('button',{name:'字段0 · 关键文字待核对'}).waitFor()
+  assert.equal(await page.locator('.material-review-regions button').count(),100)
+  await page.getByRole('navigation',{name:'OCR核对区域分页'}).getByRole('button',{name:'下一页'}).click()
+  await page.getByRole('button',{name:'字段100 · 关键文字待核对'}).waitFor()
+  assert.equal(await page.locator('.material-review-regions button').count(),1)
+  await page.getByRole('button',{name:'字段100 · 关键文字待核对'}).click()
+  await page.getByAltText('原图核对：字段100').waitFor()
+  checks.push('大量可疑区域分页并保持稳定原图定位')
   for (const route of ['/contract-rewrite', '/contract-draft', '/labor-consult', '/tools/labor-contract', '/tools/arbitration', ...(existsSync(join(root, 'src/pages/HandbookDiagnosisPage.jsx')) ? ['/tools/handbook'] : [])]) {
     await page.goto(base + route, { waitUntil: 'networkidle' })
     const input = page.locator('input[type="file"]')

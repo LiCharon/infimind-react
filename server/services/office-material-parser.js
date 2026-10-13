@@ -4,14 +4,15 @@ import { XMLParser } from 'fast-xml-parser'
 import { Readable } from 'node:stream'
 import { posix } from 'node:path'
 import { createHash } from 'node:crypto'
+import { normalizeOfficeNamespaces } from './office-xml-namespaces.js'
 
-const parser = new XMLParser({ ignoreAttributes: false, parseTagValue: false, parseAttributeValue: false })
-const ordered = new XMLParser({ ignoreAttributes: false, preserveOrder: true, parseTagValue: false, parseAttributeValue: false })
+const parser = new XMLParser({ ignoreAttributes: false, parseTagValue: false, parseAttributeValue: false, trimValues:false })
+const ordered = new XMLParser({ ignoreAttributes: false, preserveOrder: true, parseTagValue: false, parseAttributeValue: false, trimValues:false })
 const list = (v) => v == null ? [] : Array.isArray(v) ? v : [v]
 export const imageHash = (buffer) => createHash('sha256').update(buffer).digest('hex')
 export function parseOfficeXml(xml, preserveOrder = false) {
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error('文档包含不支持的XML实体声明')
-  return (preserveOrder ? ordered : parser).parse(xml)
+  return (preserveOrder ? ordered : parser).parse(normalizeOfficeNamespaces(xml))
 }
 
 // Inspect central-directory sizes before inflating any Office entries.
@@ -61,6 +62,9 @@ async function appendImage(buffer, origin, recognizeImage, metadata, signal) {
     signal?.throwIfAborted()
     metadata.imageTextLength = (metadata.imageTextLength || 0) + (result.text?.trim().length || 0)
     metadata.warnings.push(`${origin.label}使用OCR识别，姓名、日期、金额及否定词待核对。`)
+    metadata.warnings.push(...(result.metadata?.warnings || []).filter((warning)=>!warning.startsWith('本文件使用OCR识别')).map((warning)=>`${origin.label}：${warning}`))
+    metadata.ocrWords ||= []
+    metadata.ocrWords.push(...(result.metadata?.ocrWords || []).map((word)=>({...word,origin:{...origin,hash:imageHash(buffer)}})))
     metadata.ocrRegions.push(...(result.metadata?.ocrRegions || []).map((region) => ({ ...region, id: imageHash(Buffer.from(`${origin.label}:${region.id}`)).slice(0, 24), origin: { ...origin, hash: imageHash(buffer) } })))
     if (!result.text?.trim()) metadata.unreadableParts.push(`${origin.label}未识别到文字，请核对原件是否包含文字。`)
     return `\n【${origin.label}，OCR识别待核对】\n${result.text || '未识别到文字'}\n`
@@ -72,11 +76,11 @@ async function appendImage(buffer, origin, recognizeImage, metadata, signal) {
 }
 
 export async function extractSpreadsheet(file, { signal, recognizeImage } = {}) {
-  const workbook = new ExcelJS.Workbook()
+  let workbook = new ExcelJS.Workbook()
   const csv = /\.(csv|tsv)$/i.test(file.originalname)
   if (csv) await workbook.csv.read(Readable.from([decodeDocumentBuffer(file.buffer)]), { map: (v) => v,
     parserOptions: { delimiter: /\.tsv$/i.test(file.originalname) ? '\t' : ',', ignoreEmpty: false } })
-  else { await openOfficeZip(file.buffer, 'xl/workbook.xml'); await workbook.xlsx.load(file.buffer) }
+  else workbook = await loadSpreadsheetWorkbook(file.buffer, { signal })
   let text = ''
   const metadata = { format: csv ? 'csv' : 'xlsx', sections: [], warnings: [], unreadableParts: [], ocrRegions: [] }
   let cellTextLength = 0
@@ -90,7 +94,7 @@ export async function extractSpreadsheet(file, { signal, recognizeImage } = {}) 
       row.eachCell({ includeEmpty: true }, (cell, column) => {
         let value = cell.value
         if (value && typeof value === 'object') {
-          if ('formula' in value || 'sharedFormula' in value) value = `公式=${value.formula || value.sharedFormula}；缓存结果=${value.result ?? '未保存，未重算'}`
+          if ('formula' in value || 'sharedFormula' in value) value = `公式=${value.formula || value.sharedFormula}；缓存结果=${value.result == null ? '未保存，未重算' : typeof value.result === 'object' ? JSON.stringify(value.result) : value.result}`
           else if (value instanceof Date) value = value.toISOString().replace('T', ' ').replace('Z', '') + '（原表未声明时区）'
           else if (value.richText) value = value.richText.map((r) => r.text).join('')
           else value = value.text ?? value.error ?? JSON.stringify(value)
@@ -115,6 +119,22 @@ export async function extractSpreadsheet(file, { signal, recognizeImage } = {}) 
   }
   if (!cellTextLength && !metadata.imageTextLength) text = ''
   return { text, pageCount: null, metadata }
+}
+
+export async function loadSpreadsheetWorkbook(buffer, { signal } = {}) {
+  const zip = await openOfficeZip(buffer, 'xl/workbook.xml')
+  let changed = false
+  for(const entry of Object.values(zip.files).filter((item) => !item.dir && /\.(?:xml|rels)$/.test(item.name))) {
+    signal?.throwIfAborted()
+    const xml = await entry.async('string'), normalized = normalizeOfficeNamespaces(xml)
+    if(normalized !== xml) { zip.file(entry.name,normalized); changed = true }
+  }
+  const workbook = new ExcelJS.Workbook()
+  const readable = changed ? await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'}) : buffer
+  try { await workbook.xlsx.load(readable) }
+  catch (cause) { throw new Error('XLSX文件无法读取，请确认文件未加密、未损坏且使用标准工作簿格式。', {cause}) }
+  signal?.throwIfAborted()
+  return workbook
 }
 
 function relationships(zip, part) {

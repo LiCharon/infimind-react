@@ -1,5 +1,5 @@
 import { extensionForFile } from './upload-config.js'
-import { readOcrImage } from './ocr-image-decoder.js'
+import { prepareOcrImage } from './ocr-preprocessing.js'
 import { randomUUID } from 'node:crypto'
 import { readFile, writeFile, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -137,7 +137,7 @@ async function extractPdfText(file, { signal, recognizeImage = recognizeDefaultI
     signal?.throwIfAborted()
     const data = await parser.getText()
     const pages = []
-    const ocrRegions = [], unreadableParts = []
+    const ocrRegions = [], ocrWords = [], unreadableParts = [], ocrWarnings = []
     for (const page of data.pages || []) {
       signal?.throwIfAborted()
       if (page.text?.trim()) {
@@ -150,6 +150,7 @@ async function extractPdfText(file, { signal, recognizeImage = recognizeDefaultI
             kind: 'pdf-image', page: page.num, imageIndex: index, label: `第${page.num}页内嵌图片${index + 1}` }, recognizeImage, metadata, signal)
         } catch (error) { signal?.throwIfAborted(); metadata.unreadableParts.push(`第${page.num}页图片未读取成功：${String(error.message).slice(0, 100)}`) }
         ocrRegions.push(...metadata.ocrRegions); unreadableParts.push(...metadata.unreadableParts)
+        ocrWords.push(...(metadata.ocrWords || [])); ocrWarnings.push(...metadata.warnings)
         pages.push({ page: page.num, text, method: metadata.ocrRegions.length || text !== page.text ? 'text+ocr' : 'text' })
         continue
       }
@@ -160,6 +161,8 @@ async function extractPdfText(file, { signal, recognizeImage = recognizeDefaultI
         const recognized = image ? await recognizeImage({ originalname: `${file.originalname} 第${page.num}页.png`, buffer: Buffer.from(image.data) }, { signal }) : null
         ocrRegions.push(...(recognized?.metadata?.ocrRegions || []).map((region) => ({ ...region,
           id: `page-${page.num}-${region.id}`, origin: { kind: 'pdf-page', page: page.num, width: 1800 } })))
+        ocrWords.push(...(recognized?.metadata?.ocrWords || []).map((word)=>({...word,origin:{kind:'pdf-page',page:page.num,width:1800}})))
+        ocrWarnings.push(...(recognized?.metadata?.warnings || []).filter((warning)=>!warning.startsWith('本文件使用OCR识别')).map((warning)=>`第${page.num}页：${warning}`))
         pages.push({ page: page.num, text: recognized?.text || '', method: 'ocr', confidence: recognized?.metadata?.confidence ?? null })
       } catch (error) {
         signal?.throwIfAborted()
@@ -178,10 +181,10 @@ async function extractPdfText(file, { signal, recognizeImage = recognizeDefaultI
     return {
       text,
       pageCount: data.total || pages.length,
-      metadata: { pages, sections, ocrRegions, unreadableParts, warnings: pages.filter((page) => !page.text.trim() || page.method !== 'text').map((page) =>
+      metadata: { pages, sections, ocrRegions, ocrWords, unreadableParts, warnings: [...ocrWarnings,...pages.filter((page) => !page.text.trim() || page.method !== 'text').map((page) =>
         !page.text.trim() || (page.confidence != null && Number(page.confidence) < 82)
           ? `第${page.page}页未读取成功或OCR置信度较低，请核对原件中的日期、金额及请求。`
-          : `第${page.page}页使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。`) }
+          : `第${page.page}页使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。`)] }
     }
   } catch (error) {
     signal?.throwIfAborted()
@@ -480,7 +483,7 @@ function stripMarkup(source) {
 }
 
 /**
- * 图片 OCR：先放大、灰度化、增强对比度，再以中英双语识别；低置信度时补跑稀疏文本模式。
+ * 图片 OCR：按字高处理小字，清晰文字保留原尺寸；局部重识别仅保存候选，不改写正文。
  * Jimp 为纯 JavaScript 依赖，避免部署时编译原生图像库。
  */
 async function extractImageText(file, { signal, createOcrWorker } = {}) {
@@ -489,22 +492,16 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
   try {
     signal?.throwIfAborted()
     const createWorker = createOcrWorker || (await import('tesseract.js')).createWorker
-    const { JimpMime } = await import('jimp')
     console.log(`[file-parser] Starting OCR for: ${file.originalname}`)
 
     let imageBuffer = file.buffer
     let preprocessed = false
-    let scaleX = 1, scaleY = 1, originalWidth = 0, originalHeight = 0
+    let scaleX = 1, scaleY = 1, originalWidth = 0, originalHeight = 0, processedWidth = 0, processedHeight = 0, lineHeight = null
     try {
-      const image = await readOcrImage(file.buffer)
-      originalWidth = image.width; originalHeight = image.height
-      if (image.width * image.height > 40_000_000) throw new Error('图片像素超限，请缩小后上传')
-      const shortestSide = Math.min(image.width, image.height)
-      const scale = shortestSide > 0 ? Math.min(3, Math.max(1, 1800 / shortestSide), Math.sqrt(40_000_000 / (image.width * image.height))) : 1
-      if (scale > 1) image.resize({ w: Math.round(image.width * scale), h: Math.round(image.height * scale) })
-      scaleX = image.width / originalWidth; scaleY = image.height / originalHeight
-      image.greyscale().contrast(0.25)
-      imageBuffer = await image.getBuffer(JimpMime.png)
+      const image = await prepareOcrImage(file.buffer)
+      originalWidth = image.originalWidth; originalHeight = image.originalHeight
+      processedWidth = image.width; processedHeight = image.height; lineHeight = image.lineHeight
+      scaleX = image.scaleX; scaleY = image.scaleY; imageBuffer = image.buffer
       preprocessed = true
     } catch (error) {
       if (String(error.message).includes('像素超限')) throw error
@@ -514,7 +511,7 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
 
     // Initialization may load language resources. Stop waiting immediately on cancel,
     // and release a worker that finishes initializing after the task has stopped.
-    const initializing = Promise.resolve(createWorker(['chi_sim', 'eng']))
+    const initializing = Promise.resolve(createWorker(['eng', 'chi_sim']))
     let abortInitialization
     try {
       worker = signal ? await Promise.race([initializing, new Promise((_, reject) => {
@@ -530,16 +527,60 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
     }
     abort = () => { void worker.terminate().catch(() => {}) }
     signal?.addEventListener('abort', abort, { once: true })
-    let data, alternate
+    let data
+    const alternates = [], retryWarnings = []
     try {
       signal?.throwIfAborted()
       await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1', user_defined_dpi: '300' })
       const primary = (await worker.recognize(imageBuffer, {}, { text: true, blocks: true })).data
       data = primary
-      if (Number(primary?.confidence || 0) < 82 || /姓名|员工|工资|金额|期限|不得|扣|日期|\d{4}年/.test(primary?.text || '')) {
-        await worker.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1', user_defined_dpi: '300' })
-        alternate = (await worker.recognize(imageBuffer, { rotateAuto: true }, { text: true, blocks: true })).data
-        // Keep the primary transcription; disagreements are review candidates, not corrections.
+      const lines = ocrLines(primary)
+      const eligibleLines = lines.filter((line) => isCriticalOcrText(line.text) || line.words.some((word) => word.confidence < 82))
+        .sort((a,b) => Number(b.words.some((word) => word.confidence < 82)) - Number(a.words.some((word) => word.confidence < 82)))
+      const retryLines = eligibleLines.slice(0,4)
+      if(eligibleLines.length > retryLines.length) retryWarnings.push('可疑行较多，本次仅补读最多4行；其余已标记文字仍需对照原图核对。')
+      for (const line of retryLines) {
+        signal?.throwIfAborted()
+        const box = line.bbox
+        if(!box || !processedWidth || !processedHeight) continue
+        const left = Math.max(0,Math.floor(box.x0)-6), top = Math.max(0,Math.floor(box.y0)-6)
+        const rectangle = {left,top,width:Math.min(processedWidth-left,Math.ceil(box.x1)-left+6),height:Math.min(processedHeight-top,Math.ceil(box.y1)-top+6)}
+        if(rectangle.width <= 0 || rectangle.height <= 0) continue
+        line.rectangle = rectangle
+        try {
+          await worker.setParameters({tessedit_pageseg_mode:'7',preserve_interword_spaces:'1',user_defined_dpi:'300'})
+          const alternate = (await worker.recognize(imageBuffer,{rectangle},{text:true,blocks:true})).data
+          alternates.push({...alternate,bounds:box,primaryLine:line.text})
+        } catch {
+          signal?.throwIfAborted()
+          retryWarnings.push('部分局部OCR核对未完成，保留第一次识别文字，请对照原图核对。')
+        }
+      }
+      // A low-confidence Chinese name may be read as Latin letters by the
+      // bilingual model. Keep a Chinese-only local candidate, never replace it.
+      const chineseLines = retryLines.filter((line)=>line.rectangle && /[\u4e00-\u9fff]/.test(line.text) && line.words.some((word)=>word.confidence<82))
+      if(chineseLines.length && typeof worker.reinitialize === 'function') {
+        try {
+          await worker.reinitialize('chi_sim')
+          await worker.setParameters({tessedit_pageseg_mode:'7',preserve_interword_spaces:'1',user_defined_dpi:'300'})
+          for(const line of chineseLines) {
+            signal?.throwIfAborted()
+            const alternate = (await worker.recognize(imageBuffer,{rectangle:line.rectangle},{text:true,blocks:true})).data
+            alternates.push({...alternate,bounds:line.bbox,primaryLine:line.text})
+          }
+        } catch {
+          signal?.throwIfAborted()
+          retryWarnings.push('中文局部候选读取未完成，请直接对照原图核对姓名等文字。')
+        }
+      }
+      if (!lines.length && Number(primary?.confidence || 0) < 82) {
+        try {
+          await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1',user_defined_dpi:'300'})
+          alternates.push((await worker.recognize(imageBuffer,{},{text:true,blocks:true})).data)
+        } catch {
+          signal?.throwIfAborted()
+          retryWarnings.push('补充OCR核对未完成，保留第一次识别文字，请对照原图核对。')
+        }
       }
     } finally {
       signal?.removeEventListener('abort', abort)
@@ -552,6 +593,8 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
         bbox: { x0: 0, y0: 0, x1: originalWidth * scaleX, y1: originalHeight * scaleY } }] }] }] }]
     }
     const text = normalizeOcrText(data?.text || '')
+    const recordedWords = ocrLines(data).flatMap((line)=>line.words)
+    if(recordedWords.length > 10000) retryWarnings.push('OCR词级记录超过10000项，核对记录只保留前10000项；正文未截断，请对照原件核对其余文字。')
     console.log(`[file-parser] OCR completed, text length: ${text.length}`)
 
     return {
@@ -560,17 +603,21 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
       metadata: {
         format: 'image',
         confidence: data?.confidence ?? null,
-        originalWidth, originalHeight, scaleX, scaleY,
+        originalWidth, originalHeight, scaleX, scaleY, lineHeight, preprocessingStrategy:'adaptive-text-height',
+        ocrWords: recordedWords.slice(0,10000).map((word) => ({text:word.text,confidence:word.confidence,
+          bbox:{x0:word.bbox.x0/scaleX,y0:word.bbox.y0/scaleY,x1:word.bbox.x1/scaleX,y1:word.bbox.y1/scaleY}})),
         ocrRegions: (data?.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).flatMap((line) => (line.words || []).map((word) => ({ ...word,
-          criticalLine: /姓名|员工|工资|金额|期限|不得|扣|日期|解除|补偿/.test(line.text || (line.words || []).map((w) => w.text).join('')) })))))
-          .filter((word) => word.criticalLine || word.confidence < 82 || /[0-9０-９]|不得|可以|不|应当|姓名|期限/.test(word.text))
-          .slice(0, 10000).map((word, index) => ({ id: `word-${index}`, text: word.text, confidence: word.confidence,
+          criticalLine: isCriticalOcrText(line.text || (line.words || []).map((w) => w.text).join('')) })))))
+          .filter((word) => word.bbox && (word.criticalLine || word.confidence < 82 || isCriticalOcrText(word.text)))
+          .slice(0, 10000).map((word, index) => {
+            const candidates = ocrWordAlternatives(word,alternates,data.text)
+            return { id: `word-${index}`, text: word.text, confidence: word.confidence,
             bbox: { x0: word.bbox.x0 / scaleX, y0: word.bbox.y0 / scaleY, x1: word.bbox.x1 / scaleX, y1: word.bbox.y1 / scaleY },
-            origin: { kind: 'file-image' }, candidates: ocrWordAlternatives(word, alternate, data.text),
-            reason: word.confidence < 82 ? '识别置信度偏低' : '关键文字待核对' })),
-        languages: 'chi_sim+eng',
+            origin: { kind: 'file-image' }, candidates,
+            reason: candidates.length ? '两次识别结果有差异' : word.confidence < 82 ? '识别置信度偏低' : '关键文字待核对' }}),
+        languages: 'eng+chi_sim',
         preprocessed,
-        warnings: ['本文件使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。']
+        warnings: [...new Set(['本文件使用OCR识别，请核对原件中的姓名、日期、金额及请求；识别置信度不代表逐字准确。', ...retryWarnings])]
       }
     }
   } catch (error) {
@@ -580,15 +627,25 @@ async function extractImageText(file, { signal, createOcrWorker } = {}) {
 }
 
 
-function ocrWordAlternatives(word, alternate, primaryText) {
-  if (!alternate || alternate.text === primaryText) return []
-  if (String(alternate.text).length <= 160) return [String(alternate.text)]
-  if (alternate.rotateRadians) return [] // Coordinates belong to a rotated candidate image.
-  const words = (alternate.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).flatMap((l) => l.words || [])))
-  return [...new Set(words.filter((candidate) => candidate.bbox && candidate.text !== word.text
-    && Math.min(candidate.bbox.x1, word.bbox.x1) > Math.max(candidate.bbox.x0, word.bbox.x0)
-    && Math.min(candidate.bbox.y1, word.bbox.y1) > Math.max(candidate.bbox.y0, word.bbox.y0))
-    .map((candidate) => candidate.text))].slice(0, 3)
+const isCriticalOcrText = (text) => /[0-9０-９]|姓名|员工|工资|金额|期限|不得|不能|可以|日期|解除|补偿|应当|\b(?:employee|name|salary|amount|term|date|not|must|pay)\b/i.test(text || '')
+const overlapsOcrBox = (a,b) => a && b && Math.min(a.x1,b.x1)>Math.max(a.x0,b.x0) && Math.min(a.y1,b.y1)>Math.max(a.y0,b.y0)
+function ocrLines(data) {
+  return (data?.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).map((line) => {
+    const words = (line.words || []).filter((word) => word.bbox)
+    const bbox = line.bbox || (words.length ? {x0:Math.min(...words.map((w)=>w.bbox.x0)),y0:Math.min(...words.map((w)=>w.bbox.y0)),
+      x1:Math.max(...words.map((w)=>w.bbox.x1)),y1:Math.max(...words.map((w)=>w.bbox.y1))} : null)
+    return {...line,words,bbox,text:line.text || words.map((word)=>word.text).join('')}
+  })))
+}
+function ocrWordAlternatives(word, alternates, primaryText) {
+  const values = alternates.flatMap((alternate) => {
+    if (!alternate || alternate.text === primaryText || (alternate.bounds && !overlapsOcrBox(word.bbox,alternate.bounds))) return []
+    const text = normalizeOcrText(alternate.text)
+    if(text.replace(/\s/g,'') === String(alternate.primaryLine || '').replace(/\s/g,'')) return []
+    if(text.length <= 160) return text ? [text] : []
+    return ocrLines(alternate).flatMap((line)=>line.words).filter((candidate)=>candidate.text!==word.text && overlapsOcrBox(candidate.bbox,word.bbox)).map((candidate)=>candidate.text)
+  })
+  return [...new Set(values)].slice(0,3)
 }
 
 function normalizeOcrText(text) {

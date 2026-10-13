@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { estimateTokens } from '../../src/utils/context-budget.js'
 
-export const DOCUMENT_PARSER_VERSION = 3
+export const DOCUMENT_PARSER_VERSION = 4
 export const MAX_DOCUMENT_CHARACTERS = 2_000_000
 export const DOCUMENT_CHUNK_TOKENS = 6000
 export const fingerprint = (value) => createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex')
@@ -19,7 +19,8 @@ export function splitDocument(text, { fileId = '', fileName = '', budget = DOCUM
   while (start < text.length) {
     const section = sections.find((item) => start >= item.start && start < item.end)
     const nextSection = sections.find((item) => item.start > start)
-    let low = start + 1, high = Math.min(text.length, section?.end ?? nextSection?.start ?? text.length)
+    const boundaryEnd = Math.min(text.length, section?.end ?? nextSection?.start ?? text.length)
+    let low = start + 1, high = boundaryEnd
     while (low < high) {
       const mid = Math.ceil((low + high) / 2)
       if (estimateTokens(text.slice(start, mid)) <= budget) low = mid
@@ -27,7 +28,7 @@ export function splitDocument(text, { fileId = '', fileName = '', budget = DOCUM
     }
     let end = low
     const newline = text.lastIndexOf('\n', end - 1)
-    if (newline > start + (end - start) / 2) end = newline + 1
+    if (end < boundaryEnd && newline > start + (end - start) / 2) end = newline + 1
     if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--
     if (end <= start) end = Math.min(start + 2, text.length)
     blocks.push({ id: fingerprint(`${fileId}:${start}:${end}:${text.slice(start, end)}`).slice(0, 24), fileId, fileName,

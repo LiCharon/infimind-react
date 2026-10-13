@@ -1,3 +1,4 @@
+import { MAX_MODEL_OUTPUT_TOKENS } from '../../src/utils/context-budget.js'
 import { selectMaterialBlocks, formatMaterialBlocks, materialNotice, isWholeDocumentQuestion } from '../services/document-materials.js'
 import { indexedMaterialText } from '../services/material-processing.js'
 /**
@@ -44,11 +45,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
   // 浏览器 FormData 以 UTF-8 写入中文 filename；Busboy 默认 Latin-1 会造成文件名乱码。
   defParamCharset: 'utf8',
-  limits: { fileSize: MAX_FILE_SIZE }
+  limits: { fileSize: MAX_FILE_SIZE, fieldSize: 12 * 1024 * 1024 }
 })
 
 const MAX_MESSAGE_LENGTH = 8000
-const MAX_HISTORY = 12
 const EVIDENCE_LIMIT = 10
 const CASE_LIMIT = 5
 /** 实务问答条目数：这是答复质量的主要来源，配额给得比其它两路高 */
@@ -62,10 +62,11 @@ const KB_LIMIT = 7
  * 就被 `finish=length` 截断、正文 0 字（连续三次全失败）。`high` 档同样存在该风险，只是概率低。
  *
  * 为什么直接给最大值是安全的：max_tokens 是**上限而非目标**，只按实际生成量计费。
- * 给足不增加成本，却彻底消除"思考挤掉正文"这一类失败。
+ * 不按预留上限计费；实际生成变长仍会增加用量。提高上限能降低长度截断，
+ * 但不能排除上下文超限、网络中断或请求超时。
  * API 明确回包：valid range of max_tokens is [1, 393216]。
  */
-const MAX_OUTPUT_TOKENS = Number(process.env.LABOR_MAX_TOKENS || 393216)
+const MAX_OUTPUT_TOKENS = MAX_MODEL_OUTPUT_TOKENS
 
 const LABOR_TOPICS = [
   ['劳动关系认定与主体', ['劳动关系', '用人单位', '事实劳动关系', '劳务派遣', '外包', '主体资格']],
@@ -194,7 +195,6 @@ const parseHistory = (raw) => {
   if (!Array.isArray(history)) return []
   return history
     .filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
-    .slice(-MAX_HISTORY)
 }
 
 /**

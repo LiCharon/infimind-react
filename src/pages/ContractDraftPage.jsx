@@ -1,4 +1,5 @@
 import MaterialReviewPanel from '../components/MaterialReviewPanel.jsx'
+import { selectConversationHistory } from '../utils/context-budget.js'
 import { useComposerSend } from '../hooks/useComposerSend'
 import QueuedMessages from '../components/QueuedMessages'
 import SideChatEmptyState from '../components/SideChatEmptyState'
@@ -321,18 +322,19 @@ function ContractDraftPage() {
     if (latestTask.status !== 'succeeded') throw new Error(latestTask.errorSummary || TASK_STATUS_LABELS[latestTask.status] || '合同起草未完成。')
   }
 
-  const runLegacyDraft = async ({ conversationId, assistantId, content, history, filesSnapshot, requestMode, run }) => {
+  const runLegacyDraft = async ({ conversationId, assistantId, content, history, currentDraft, filesSnapshot, requestMode, run }) => {
     const body = filesSnapshot.length ? new FormData() : null
     if (body) {
       body.append('message', content)
       body.append('history', JSON.stringify(history))
       body.append('mode', requestMode)
+      if (currentDraft) body.append('currentDraft', JSON.stringify(currentDraft))
       filesSnapshot.forEach((file) => body.append('files', file))
     }
     const response = await authFetch(DRAFT_ENDPOINT, {
       method: 'POST',
       headers: body ? { Accept: 'text/event-stream' } : { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: body || JSON.stringify({ message: content, history, mode: requestMode }),
+      body: body || JSON.stringify({ message: content, history, currentDraft, mode: requestMode }),
       signal: run.controller.signal
     })
     if (!response.ok) {
@@ -380,13 +382,10 @@ function ContractDraftPage() {
     const previousDraft = [...activeConversation.messages].reverse().find((message) => message.type === 'draft' && message.draftText)
     const recentConversation = activeConversation.messages
       .filter((message) => message.type === 'user' || message.type === 'assistant')
-      .slice(-5)
       .map((message) => ({ role: message.type === 'user' ? 'user' : 'assistant', content: message.content || '' }))
       .filter((message) => message.content)
-    // 后续重生成必须看见当前草稿；放在最近对话末尾，让模型将它视为待更新版本。
-    const history = previousDraft
-      ? [...recentConversation, { role: 'assistant', content: `【当前合同草稿，用户可能要求基于此版本调整或重新生成】\n${previousDraft.draftText}` }]
-      : recentConversation
+    // The full draft is mandatory input via currentDraft, separate from history.
+    const history = selectConversationHistory(recentConversation, { question: request, mandatoryText: previousDraft?.draftText || '' }).history
     const currentDraft = previousDraft ? {
       draftText: previousDraft.draftText,
       title: previousDraft.title || activeConversation.title,
@@ -426,7 +425,7 @@ function ContractDraftPage() {
       const shouldUseLegacySse = taskPayload.code === 'draft_sse_required' || taskPayload.code === 'draft_intent_clarification'
       if (shouldUseLegacySse) {
         resolveReady()
-        await runLegacyDraft({ conversationId, assistantId, content, history, filesSnapshot, requestMode, run })
+        await runLegacyDraft({ conversationId, assistantId, content, history, currentDraft, filesSnapshot, requestMode, run })
         return
       }
       if (!taskResponse.ok) throw new Error(taskPayload.error || `起草任务创建失败（${taskResponse.status}）`)

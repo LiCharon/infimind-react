@@ -1,7 +1,6 @@
 import { readOcrImage } from './ocr-image-decoder.js'
 import { JimpMime } from 'jimp'
-import ExcelJS from 'exceljs'
-import { openOfficeZip, imageHash } from './office-material-parser.js'
+import { openOfficeZip, imageHash, loadSpreadsheetWorkbook } from './office-material-parser.js'
 import { convertLegacyDocToDocx } from './file-parser.js'
 
 export async function renderOcrRegion(file, region) {
@@ -13,9 +12,7 @@ export async function renderOcrRegion(file, region) {
     if (!zip.file(origin.path)) throw new Error('原图不存在')
     buffer = await zip.file(origin.path).async('nodebuffer')
   } else if (origin.kind === 'xlsx-image') {
-    await openOfficeZip(buffer, 'xl/workbook.xml')
-    const workbook = new ExcelJS.Workbook()
-    await workbook.xlsx.load(buffer)
+    const workbook = await loadSpreadsheetWorkbook(buffer)
     buffer = workbook.getImage(origin.imageId)?.buffer
     if (!buffer) throw new Error('工作表原图不存在')
   } else if (origin.kind === 'pdf-page' || origin.kind === 'pdf-image') {

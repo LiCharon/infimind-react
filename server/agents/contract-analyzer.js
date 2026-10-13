@@ -1,6 +1,7 @@
 import { splitDocument, fingerprint } from '../services/document-materials.js'
-import { chatDetailed } from '../services/llm-client.js'
-import { streamChat, getProModel } from '../services/llm-client.js'
+import { getProModel } from '../services/llm-client.js'
+import { completeCommercial } from '../services/commercial-completion.js'
+import { estimateTokens } from '../../src/utils/context-budget.js'
 import { buildAnalysisSystemPrompt, buildAnalysisUserMessage } from '../prompts/agent-1-analysis.js'
 import { getTypeCatalogForPrompt } from '../services/knowledge-base.js'
 
@@ -18,14 +19,22 @@ import { getTypeCatalogForPrompt } from '../services/knowledge-base.js'
  * @returns {Promise<string>} 完整的分析报告文本
  */
 export async function analyzeContract(contractText, onChunk, model = getProModel(), options = {}) {
-  const blocks = splitDocument(contractText)
+  // Reuse stage.start to replace an unfinished preview on retry/split/merge.
+  // Only a validated report is returned and written to the analysis checkpoint.
+  const resetPreview = async (label = '正在重新分析合同结构与要素完整性') => {
+    if (onChunk) await options.emit?.('stage.start', { stage: 'analysis', label })
+  }
+  const blockBudget = options.blockBudget || 6000
+  const blocks = splitDocument(contractText, { budget: blockBudget })
   if (blocks.length > 1) {
     const reports = []
-    for (const block of blocks) {
+    for (const [index, block] of blocks.entries()) {
       options.signal?.throwIfAborted()
       const key = `commercial-analysis:${block.id}`
       const saved = (await options.getCheckpoint?.(key))?.result
-      const report = saved?.report || await analyzeContract(block.text, null, model, options)
+      await resetPreview(`正在分析合同第 ${index + 1}/${blocks.length} 个内容块`)
+      const report = saved?.report || await analyzeContract(block.text, onChunk, model, options)
+      if (saved?.report && onChunk) await onChunk(saved.report)
       await options.checkpoint?.(key, { report }); reports.push(report)
     }
     let pending = reports
@@ -35,15 +44,21 @@ export async function analyzeContract(contractText, onChunk, model = getProModel
         options.signal?.throwIfAborted()
         const key = `commercial-analysis-merge:${fingerprint(pending.slice(i, i + 4).join('\n'))}`
         const saved = (await options.getCheckpoint?.(key))?.result
-        if (saved?.report) { merged.push(saved.report); continue }
-        const response = await chatDetailed('将各内容块的结构分析汇总成一份合同结构概览，保留主体、交易条件、条款引用与冲突线索。不得补造原文；摘要只用于安排审查，不替代原文证据。', pending.slice(i, i + 4).join('\n'), { model, maxTokens: 4096, signal: options.signal })
-        if (response.finishReason !== 'stop') throw new Error('合同结构汇总未完整结束')
-        await options.checkpoint?.(key, { report: response.content })
-        merged.push(response.content)
+        const finalMerge = pending.length <= 4
+        if (finalMerge) await resetPreview('正在汇总合同结构与要素分析')
+        if (saved?.report) {
+          if (finalMerge && onChunk) await onChunk(saved.report)
+          merged.push(saved.report); continue
+        }
+        const report = await completeCommercial({ ...options, stage: 'merge', key, model,
+          ...(finalMerge ? { onChunk, onReset: resetPreview } : {}),
+          systemPrompt: '将各内容块的结构分析汇总成一份合同结构概览，保留主体、交易条件、条款引用与冲突线索。不得补造原文；摘要只用于安排审查，不替代原文证据。',
+          userMessage: pending.slice(i, i + 4).join('\n') })
+        await options.checkpoint?.(key, { report })
+        merged.push(report)
       }
       pending = merged
     }
-    if (onChunk) onChunk(pending[0])
     return pending[0]
   }
   const userMessage = buildAnalysisUserMessage(contractText)
@@ -57,23 +72,16 @@ export async function analyzeContract(contractText, onChunk, model = getProModel
     systemPrompt = buildAnalysisSystemPrompt()
   }
 
-  let fullReport = ''
-  let finishReason = null
-
-  for await (const chunk of streamChat(systemPrompt, userMessage, {
-    model, signal: options.signal,
-    temperature: 0.3,
-    maxTokens: 8192
-  })) {
-    if (chunk.finishReason === 'length') throw new Error('合同结构内容块输出未完成')
-    if (typeof chunk.finishReason === 'string') finishReason = chunk.finishReason
-    if (chunk.content) {
-      fullReport += chunk.content
-      if (onChunk) onChunk(chunk.content)
+  try {
+    const report = await completeCommercial({ ...options, stage: 'analysis', key: fingerprint(contractText), model, systemPrompt, userMessage,
+      onChunk, onReset: resetPreview })
+    return report
+  } catch (error) {
+    if (['commercial_output_incomplete', 'commercial_output_invalid'].includes(error.code) && blockBudget > 1500 && estimateTokens(contractText) > 1500) {
+      await options.emit?.('stage.progress', { stage: 'analysis', message: '正在把未完成的内容块拆小后继续分析。' })
+      await resetPreview('正在拆分后继续分析合同结构')
+      return analyzeContract(contractText, onChunk, model, { ...options, blockBudget: Math.floor(blockBudget / 2) })
     }
+    throw error
   }
-
-  options.signal?.throwIfAborted()
-  if (finishReason !== 'stop') throw new Error('合同结构内容块缺少完成标记，已完成进度保留')
-  return fullReport
 }

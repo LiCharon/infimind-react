@@ -1,4 +1,4 @@
-import { estimateTokens } from '../../src/utils/context-budget.js'
+import { MAX_MODEL_OUTPUT_TOKENS, CONTEXT_WINDOW_TOKENS, CONTEXT_SAFETY_TOKENS, estimateTokens, selectHistoryByTokens } from '../../src/utils/context-budget.js'
 import { documentBlocks, formatMaterialBlocks, selectMaterialBlocks } from '../services/document-materials.js'
 import { indexedMaterialText } from '../services/material-processing.js'
 import { createHash } from 'node:crypto'
@@ -1316,7 +1316,7 @@ export function createLaborContractAnalysisWorkflow({
 } = {}) {
   const optionsFor = ({ mode, signal, requestTimeoutMs, maxTokens }) => ({
     model: mode === 'fast' ? getFlashModel() : getProModel(), temperature: 0.15,
-    maxTokens: maxTokens || (mode === 'fast' ? 8192 : 16384),
+    maxTokens: maxTokens || MAX_MODEL_OUTPUT_TOKENS,
     thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
     ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }),
     responseFormat: { type: 'json_object' }, signal, requestTimeoutMs, maxAttempts: 1
@@ -1552,7 +1552,7 @@ export function createLaborContractFollowupWorkflow({
     {
       model: mode === 'fast' ? getFlashModel() : getProModel(),
       temperature: 0.2,
-      maxTokens: 3000,
+      maxTokens: MAX_MODEL_OUTPUT_TOKENS,
       thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
       ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }),
       signal
@@ -1562,7 +1562,7 @@ export function createLaborContractFollowupWorkflow({
     yield* streamChat(systemPrompt, userMessage, {
       model: mode === 'fast' ? getFlashModel() : getProModel(),
       temperature: 0.2,
-      maxTokens: 3000,
+      maxTokens: MAX_MODEL_OUTPUT_TOKENS,
       thinking: { type: mode === 'fast' ? 'disabled' : 'enabled' },
       ...(mode === 'fast' ? {} : { reasoningEffort: 'low' }),
       signal
@@ -1587,12 +1587,19 @@ export function createLaborContractFollowupWorkflow({
       aliases: privacyAliases,
       extraTexts: [report, history, question]
     })
-    const userMessage = messageBuilder({
+    const messageContext = {
       question: privacyRedactor.mask(question),
       report: privacyRedactor.maskDeep(report),
       documents: sourceDocuments.length ? [{ fileName: '本轮相关原文', text: formatMaterialBlocks(selectMaterialBlocks(privacyRedactor.maskDocuments(sourceDocuments), question, 24000).blocks) + '\n' + privacyRedactor.mask(indexedMaterialText(input.materialIndex)) + '\n' + (input.materialNotice || '') }] : [],
-      history: privacyRedactor.maskDeep(history.slice(-6))
-    })
+      history: []
+    }
+    // Each serialized item is a complete question/answer pair. Preserve all
+    // pairs that fit alongside the actual report, source excerpts and output.
+    const selectedHistory = selectHistoryByTokens(privacyRedactor.maskDeep(history)
+      .map((item) => ({ role: 'user', content: JSON.stringify(item) })),
+    CONTEXT_WINDOW_TOKENS - MAX_MODEL_OUTPUT_TOKENS - CONTEXT_SAFETY_TOKENS
+      - estimateTokens(systemPrompt + messageBuilder(messageContext)) - 64)
+    const userMessage = messageBuilder({ ...messageContext, history: selectedHistory.history.map((item) => JSON.parse(item.content)) })
     const reportOnlyExplanation = /解释|说明|理解|含义|什么意思|为什么|扣分原因|报告中的/.test(question)
       && !/重新分析|重新评分|重新打分|重新核对|新风险|新增风险|再检查|有没有遗漏/.test(question)
     let response = !sourceDocuments.length && !reportOnlyExplanation
@@ -1644,7 +1651,10 @@ export function createLaborContractFollowupWorkflow({
     }
     if (signal?.aborted || isCancellationRequested()) throw new TaskCancelledError()
     if (response.finishReason === 'length') throw createAnalysisOutputError('劳动合同追问回复达到长度限制，未生成完整答案。', 'labor_followup_output_truncated')
-    const answer = textValue(privacyRedactor.restore(response.content), 16000)
+    const answerText = String(privacyRedactor.restore(response.content) || '').trim()
+    const answer = answerText && (selectedHistory.droppedMessages
+      ? `本轮上下文未纳入较早的 ${selectedHistory.droppedMessages} 次完整问答；如需结合早期讨论，请补充相关内容。\n\n${answerText}`
+      : answerText)
     if (!answer) throw createAnalysisOutputError('劳动合同追问未返回内容，请稍后重试。', 'labor_followup_output_empty')
     const result = {
       schemaVersion: 2,

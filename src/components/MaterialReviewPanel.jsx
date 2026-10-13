@@ -8,12 +8,13 @@ export default function MaterialReviewPanel({ taskId, running = false }) {
   const [selected, setSelected] = useState(null)
   const [image, setImage] = useState('')
   const [error, setError] = useState('')
+  const [regionPage, setRegionPage] = useState(0)
   const sequence = useRef(0)
   const base = `/api/tasks/${encodeURIComponent(taskId || '')}/materials`
   useEffect(() => {
     let alive = true
     const controller = new AbortController()
-    setSummary(null); setDocument(null); setSelected(null); setError(''); sequence.current++
+    setSummary(null); setDocument(null); setSelected(null); setError(''); setRegionPage(0); sequence.current++
     if (!taskId) return () => controller.abort()
     const load = async () => {
       try {
@@ -42,7 +43,7 @@ export default function MaterialReviewPanel({ taskId, running = false }) {
   }, [selected, document, base])
   const inspect = async (fileId) => {
     const request = ++sequence.current
-    setError(''); setSelected(null); setDocument(null)
+    setError(''); setSelected(null); setDocument(null); setRegionPage(0)
     try {
       const response = await authFetch(`${base}/${encodeURIComponent(fileId)}`)
       const data = await response.json()
@@ -52,6 +53,8 @@ export default function MaterialReviewPanel({ taskId, running = false }) {
   }
   if (!summary?.documents?.length && !summary?.failures?.length) return null
   const coverage = summary.coverage
+  const regions = document?.regions || [], pageSize = 100
+  const changeRegionPage = (page) => { setRegionPage(page); setSelected(null); setError('') }
   return <details className="material-review-panel">
     <summary>材料读取范围与 OCR 核对</summary>
     {coverage && <p>已解析 {coverage.parsed || 0} 个内容块 · 已整理摘录 {coverage.indexed?.length || 0} 块 · 本轮选取 {coverage.selected?.length || 0} 块 · 已进入模型 {coverage.entered?.length || 0} 块 · 已完成检查 {coverage.checked?.length || 0} 块</p>}
@@ -66,7 +69,12 @@ export default function MaterialReviewPanel({ taskId, running = false }) {
     {document && <section aria-label="OCR原图核对">
       <h4>{document.fileName}</h4>
       <p>识别文字为机器读取结果。金额、日期、姓名和否定词请对照原件；此处不会自动修改原文。</p>
-      <div className="material-review-regions">{document.regions.map((region) => <button type="button" key={region.id} aria-pressed={selected?.id === region.id} onClick={() => { setError(''); setSelected(region) }}>{region.location ? `${region.location}：` : ''}{region.text} · {region.reason}</button>)}</div>
+      <div className="material-review-regions">{regions.slice(regionPage * pageSize,(regionPage+1) * pageSize).map((region) => <button type="button" key={region.id} aria-pressed={selected?.id === region.id} onClick={() => { setError(''); setSelected(region) }}>{region.location ? `${region.location}：` : ''}{region.text} · {region.reason}</button>)}</div>
+      {regions.length > pageSize && <nav aria-label="OCR核对区域分页">
+        <button type="button" disabled={regionPage === 0} onClick={() => changeRegionPage(regionPage-1)}>上一页</button>
+        <span> 第{regionPage+1}页，共{Math.ceil(regions.length/pageSize)}页（{regions.length}处） </span>
+        <button type="button" disabled={(regionPage+1)*pageSize >= regions.length} onClick={() => changeRegionPage(regionPage+1)}>下一页</button>
+      </nav>}
       {selected && <div className="material-review-comparison"><p>识别文字：<strong>{selected.text}</strong></p>
         {image && <img src={image} onLoad={(event) => event.currentTarget.scrollIntoView({ block: 'nearest' })} alt={`原图核对：${selected.text}`} />}
         {selected.candidates?.length > 0 && <details><summary>另一次识别结果（仅供核对）</summary><pre>{selected.candidates.join('\n')}</pre></details>}

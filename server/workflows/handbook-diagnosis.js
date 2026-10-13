@@ -1,3 +1,4 @@
+import { MAX_MODEL_OUTPUT_TOKENS } from '../../src/utils/context-budget.js'
 import { chatDetailed } from '../services/llm-client.js'
 import { extractHandbookText, HANDBOOK_PARSER_VERSION } from '../services/handbook-materials.js'
 import { TaskCancelledError } from './contract-review.js'
@@ -168,7 +169,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
   const stage = async (name, label) => { active(); currentStage = name; await emit('stage.start', { stage: name, label, summary: label }) }
   await stage('parsing', '正在读取员工手册正文')
   let parsed = saved('handbook-parsing')
-  if (input.action !== 'followup' && parsed?.parserVersion !== HANDBOOK_PARSER_VERSION) parsed = null
+  if (input.action !== 'followup' && !(parsed?.parserVersion > 0 && parsed.parserVersion <= HANDBOOK_PARSER_VERSION)) parsed = null
   if (!parsed) {
     const documents = []
     const failures = []
@@ -252,7 +253,7 @@ export async function runHandbookDiagnosis({ task = {}, input = {}, files = [], 
     if (estimateTokens(prompt + message) > CONTEXT_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS - CONTEXT_SAFETY_TOKENS) throw error('本检查单元超出模型输入预算，未截断正文', 'handbook_context_exceeded')
     await emit('model.progress', { stage: type, summary: type === 'scope' ? '正在确认材料与检查范围' : type === 'relations' ? '正在核对跨章节原文' : '正在检查制度条款' })
     const request = (instruction) => fakeLlm ? Promise.resolve({ content: JSON.stringify(fakeHandbookResponse(type, payload)), finishReason: 'stop' })
-      : generateCompletion(instruction, message, { signal, maxAttempts: 1, responseFormat: { type: 'json_object' }, maxTokens: 16384,
+      : generateCompletion(instruction, message, { signal, maxAttempts: 1, responseFormat: { type: 'json_object' }, maxTokens: MAX_MODEL_OUTPUT_TOKENS,
         temperature: 0.1, thinking: { type: task.mode === 'thinking' && ['review', 'relations'].includes(type) ? 'enabled' : 'disabled' },
         reasoningEffort: 'low', requestTimeoutMs: task.mode === 'thinking' ? 240000 : 120000 })
     const decode = (response) => {

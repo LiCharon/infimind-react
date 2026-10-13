@@ -32,14 +32,14 @@ const LABOR_REVIEW_PERSPECTIVES = new Set(['dispatch_unit', 'using_unit'])
 const upload = multer({
   storage: multer.memoryStorage(),
   defParamCharset: 'utf8',
-  limits: { files: MAX_FILES, fileSize: MAX_FILE_SIZE }
+  limits: { files: MAX_FILES, fileSize: MAX_FILE_SIZE, fieldSize: 12 * 1024 * 1024 }
 })
 
 // 仲裁完整文本历史可超过 multer 默认的 1 MB 字段限制；文件限制沿用现有工具。
 const arbitrationUpload = multer({
   storage: multer.memoryStorage(),
   defParamCharset: 'utf8',
-  limits: { files: MAX_FILES, fileSize: MAX_FILE_SIZE, fieldSize: 12 * 1024 * 1024, fields: 7 }
+  limits: { files: MAX_FILES, fileSize: MAX_FILE_SIZE, fieldSize: 12 * 1024 * 1024, fields: 8 }
 })
 
 const jsonError = (res, status, message, code = 'bad_request') => res.status(status).json({ error: message, code })
@@ -54,10 +54,9 @@ const parseJsonValue = (value, fallback = null) => {
 
 const normalizeConversationHistory = (value) => (Array.isArray(value) ? value : [])
   .filter((item) => item && typeof item === 'object' && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string')
-  .slice(-12)
   .map((item) => ({
     role: item.role,
-    content: item.content.slice(0, 6000)
+    content: item.content
   }))
 
 const normalizeThreadId = (value) => String(value || '').trim().slice(0, MAX_THREAD_ID_LENGTH)
@@ -123,7 +122,6 @@ export function createTaskRouter({
     } finally { deletingThreads.delete(key) }
   }
 
-  router.use(createHandbookTaskRouter({ taskService, taskQueue, fileStore, deleteThread, creatingThreads, deletingThreads, deletionKey }))
   router.post('/labor-consult/forget', async (req, res) => {
     const threadId = normalizeThreadId(req.body?.conversationId)
     if (!threadId) return jsonError(res, 400, '缺少 conversationId')
@@ -135,6 +133,7 @@ export function createTaskRouter({
     return deleteThread(req, res, 'labor-consult')
   })
 
+  router.use(createHandbookTaskRouter({ taskService, taskQueue, fileStore, deleteThread, creatingThreads, deletingThreads, deletionKey }))
 
   router.post('/tasks/labor-contract-analysis/classify', upload.array('files', MAX_FILES), async (req, res) => {
     const files = Array.isArray(req.files) ? req.files : []
@@ -894,6 +893,24 @@ export function createTaskRouter({
     keepAliveTimer.unref?.()
     res.on('close', close)
     writeEvents()
+  })
+
+  router.post('/tasks/:taskId/retry', async (req, res) => {
+    const existing = taskService.getTask(req.params.taskId, req.user.id, false)
+    if (!existing || existing.productId !== 'contract-review') return jsonError(res, 404, '审查任务不存在或无权访问', 'task_not_found')
+    if (deletingThreads.has(deletionKey(req.user.id, 'contract-review', existing.threadId || existing.id))) {
+      return jsonError(res, 409, '会话正在删除，请稍后再继续核对', 'thread_busy')
+    }
+    let task
+    try { task = taskService.resumeFailedReview(req.params.taskId, req.user.id) } catch (error) {
+      return jsonError(res, 409, error.message, error.code)
+    }
+    if (!task) return jsonError(res, 404, '审查任务不存在或无权访问', 'task_not_found')
+    try { await taskQueue.enqueue(task.id) } catch {
+      taskService.failTask(task.id, new Error('继续核对暂时未能排入队列，已完成结果保留，请稍后再试。'), { code: 'queue_unavailable' })
+      return jsonError(res, 503, '继续核对暂时未能排入队列，请稍后再试。', 'queue_unavailable')
+    }
+    return res.status(202).json({ task })
   })
 
   router.post('/tasks/:taskId/cancel', (req, res) => {

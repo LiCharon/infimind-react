@@ -128,7 +128,14 @@ await test('OCR保存原图坐标、低置信度和关键文字；二次结果�
       blocks: [{ paragraphs: [{ lines: [{ words: [{ text: '8000', confidence: 60, bbox: { x0: 30, y0: 30, x1: 90, y1: 60 } }] }] }] }] } }) }) })
   assert.equal(parsed.text, '工资8000')
   const region = parsed.metadata.ocrRegions[0]
-  assert.equal(region.bbox.x0, 10); assert.ok(region.candidates.includes('工资80000'))
+  assert.equal(region.bbox.x0, 30); assert.ok(region.candidates.includes('工资80000'))
+  assert.equal(region.reason,'两次识别结果有差异')
+  const small = new Jimp({width:100,height:100,color:0xffffffff})
+  for(let y=10;y<22;y++) for(let x=10;x<70;x++) small.setPixelColor(0x000000ff,x,y)
+  const resized = await extractText(file('小字.png',await small.getBuffer(JimpMime.png)), {createOcrWorker:async()=>({setParameters:async()=>{},terminate:async()=>{},
+    recognize:async()=>({data:{text:'工资8000',confidence:90,blocks:[{paragraphs:[{lines:[{words:[{text:'8000',confidence:90,bbox:{x0:30,y0:30,x1:90,y1:60}}]}]}]}]}})})})
+  assert.equal(resized.metadata.scaleX,2)
+  assert.equal(resized.metadata.ocrRegions[0].bbox.x0,15)
 })
 await test('隔离OCR进程可取消，取消结果不能伪装为读取成功', async () => {
   const image = await new Jimp({ width: 100, height: 100, color: 0xffffffff }).getBuffer(JimpMime.png)
@@ -136,6 +143,17 @@ await test('隔离OCR进程可取消，取消结果不能伪装为读取成功',
   const timer = setTimeout(() => controller.abort(), 50)
   try { await assert.rejects(extractText(file('取消.png', image, 'image/png'), { signal: controller.signal }), (error) => error.name === 'AbortError') }
   finally { clearTimeout(timer) }
+})
+await test('补读失败保留初次文字，局部补读时取消必须终止并释放worker', async () => {
+  const image = await new Jimp({width:100,height:100,color:0xffffffff}).getBuffer(JimpMime.png)
+  let calls=0,terminated=0
+  const fallback = await extractText(file('无词框.png',image), {createOcrWorker:async()=>({setParameters:async()=>{},terminate:async()=>{terminated++},
+    recognize:async()=> {if(++calls>1) throw new Error('synthetic secondary failure'); return {data:{text:'工资8000',confidence:60,blocks:[]}}}})})
+  assert.equal(fallback.text,'工资8000'); assert.ok(fallback.metadata.warnings.some((w)=>w.includes('补充OCR核对未完成'))); assert.equal(terminated,1)
+  const controller=new AbortController(); calls=0;terminated=0
+  await assert.rejects(extractText(file('局部取消.png',image), {signal:controller.signal,createOcrWorker:async()=>({setParameters:async()=>{},terminate:async()=>{terminated++},
+    recognize:async()=> {if(++calls>1) {controller.abort(); throw controller.signal.reason} return {data:{text:'工资8000',confidence:60,blocks:[{paragraphs:[{lines:[{words:[{text:'8000',confidence:60,bbox:{x0:10,y0:10,x1:60,y1:40}}]}]}]}]}}}})}), (error)=>error.name==='AbortError')
+  assert.ok(terminated>0)
 })
 await test('WebP复用PDF画布解码并可核对原图，超大像素在解码前拒绝', async () => {
   const { createCanvas } = await import('@napi-rs/canvas')

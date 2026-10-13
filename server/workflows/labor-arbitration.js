@@ -203,7 +203,7 @@ export async function runLaborArbitration({
 
   const action = ['analyze', 'followup', 'draft'].includes(input.action) ? input.action : 'analyze'
   // Thinking tokens and the final JSON share the completion allowance.
-  const outputReserve = input.mode === 'fast' ? OUTPUT_RESERVE_TOKENS : OUTPUT_RESERVE_TOKENS * 2
+  const outputReserve = OUTPUT_RESERVE_TOKENS
   const userMessage = safeText(input.message, 16000)
   const sourceRequests = extractExplicitArbitrationRequests([userMessage, ...documents.map((document) => document.text)].join('\n'))
   documents = selectArbitrationMaterialText(documents, userMessage, MAX_DOCUMENT_TEXT)

@@ -1,4 +1,5 @@
 import { prepareTaskMaterials } from './material-processing.js'
+import { buildCommercialRecovery } from './commercial-recovery.js'
 import { TaskCancelledError, runContractReview } from '../workflows/contract-review.js'
 import { runContractDraft } from '../workflows/contract-draft.js'
 import { runLaborConsult } from '../workflows/labor-consult.js'
@@ -90,7 +91,7 @@ export function createTaskProcessor({
     try {
       let input = taskService.getTaskInput?.(taskId) || {}
       const handbookParsing = getCheckpoint('handbook-parsing')?.result
-      const reusableHandbookParsing = handbookParsing && (input.action === 'followup' || handbookParsing.parserVersion === HANDBOOK_PARSER_VERSION)
+      const reusableHandbookParsing = handbookParsing && (input.action === 'followup' || (handbookParsing.parserVersion > 0 && handbookParsing.parserVersion <= HANDBOOK_PARSER_VERSION))
       const staleHandbookParsing = task.productId === 'handbook-diagnosis' && handbookParsing && !reusableHandbookParsing
       const sharedDocuments = getCheckpoint('material-source')?.result?.documents || []
       const storedFiles = taskService.getFiles(taskId)
@@ -231,9 +232,9 @@ export function createTaskProcessor({
         if (input.action === 'reanalyze' && !sourceDocuments.length) {
           throw new Error('这段历史没有保存可继续分析的原文，请重新上传合同。')
         }
-        history = taskService.listThreadTasks(task.userId, task.productId, task.threadId, 100)
+        history = (taskService.listAllThreadTasks?.(task.userId, task.productId, task.threadId)
+          || taskService.listThreadTasks(task.userId, task.productId, task.threadId, 100))
           .filter((item) => item.id !== task.id && item.result?.kind === 'followup' && item.status === 'succeeded')
-          .slice(-6)
           .map((item) => ({ question: item.prompt, answer: item.result.answer }))
       }
       const workflow = task.productId === 'contract-draft'
@@ -303,7 +304,8 @@ export function createTaskProcessor({
         const delay = 1000 * (2 ** Math.max(0, current.attemptCount - 1))
         return taskService.retryTask(taskId, error, delay)
       }
-      return taskService.failTask(taskId, error, { code: isTransient(error) ? 'retry_exhausted' : (error.code || 'task_failed') })
+      const result = current?.productId === 'contract-review' ? buildCommercialRecovery(taskService.listCheckpoints(taskId), error) : null
+      return taskService.failTask(taskId, error, { code: isTransient(error) ? 'retry_exhausted' : (error.code || 'task_failed'), result })
     } finally {
       clearInterval(cancellationTimer)
     }
